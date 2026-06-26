@@ -1024,7 +1024,7 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertEqual(result.metadata["performance"]["agent_mode"], "langgraph")
         self.assertNotEqual(result.metadata["performance"]["agent_mode"], "deterministic_preflight")
-        self.assertEqual(lookup.calls[0]["limit"], 100)
+        self.assertEqual(lookup.calls[0]["limit"], 50)
         self.assertEqual(retrieval.calls, [])
         self.assertIn("Medicines returned by deterministic lookup:", result.answer)
         self.assertIn("1. Morphine", result.answer)
@@ -1071,13 +1071,77 @@ class AgentContractTests(unittest.TestCase):
         result = agent.answer("user", "list all equipment we have", session_id="session")
 
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
-        self.assertEqual(lookup.calls[0]["limit"], 100)
+        self.assertEqual(lookup.calls[0]["limit"], 50)
         self.assertIn("equipment_assets.csv", [asset["filename"] for asset in lookup.calls[0]["csv_assets"]])
         self.assertIn("Equipment returned by deterministic lookup:", result.answer)
         self.assertIn("1. Ventilator", result.answer)
         self.assertIn("2. Infusion Pump", result.answer)
         self.assertNotIn("Equipment fault Desk", result.answer)
         self.assertNotIn("Record", result.answer)
+        self.assertNotIn("Category:", result.answer)
+
+    def test_list_all_equipment_deduplicates_repeated_type_rows(self):
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "directory",
+                    "message": "Found 3 matching row(s).",
+                    "lookup_plan": {
+                        "row_value_search_used": True,
+                        "matched_csv_sources": ["equipment_assets.csv"],
+                    },
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "equipment_assets.csv",
+                            "row": {"equipment_type": "Defibrillator", "location": "Cardiology Ward"},
+                        },
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "equipment_assets.csv",
+                            "row": {"equipment_type": "Defibrillator", "location": "Pathology Ward"},
+                        },
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "equipment_assets.csv",
+                            "row": {"equipment_type": "Ventilator", "location": "Respiratory Ward"},
+                        },
+                    ],
+                }
+            )
+        )
+        agent = make_agent(FakeLLM([fake_tool_call_message("postgres_deterministic_lookup", "list all equipment")]))
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "list all equipment", session_id="session")
+
+        self.assertIn("1. Defibrillator", result.answer)
+        self.assertIn("2. Ventilator", result.answer)
+        self.assertNotIn("3.", result.answer)
+        self.assertNotIn("Pathology Ward", result.answer)
+
+    def test_list_all_medicines_deduplicates_repeated_name_rows(self):
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "formulary",
+                    "message": "Found 3 matching row(s).",
+                    "rows": [
+                        {"medicine_name": "Morphine", "category": "Analgesic"},
+                        {"medicine_name": "Morphine", "category": "Analgesic"},
+                        {"medicine_name": "Diazepam", "category": "Sedative"},
+                    ],
+                }
+            )
+        )
+        agent = make_agent(FakeLLM([fake_tool_call_message("postgres_deterministic_lookup", "list all medicine")]))
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "list all medicine", session_id="session")
+
+        self.assertIn("1. Morphine", result.answer)
+        self.assertIn("2. Diazepam", result.answer)
+        self.assertNotIn("3.", result.answer)
         self.assertNotIn("Category:", result.answer)
 
     def test_equipment_count_formats_total_location_and_status(self):
@@ -1131,11 +1195,59 @@ class AgentContractTests(unittest.TestCase):
         result = agent.answer("user", "how many ventilators do we have", session_id="session")
 
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
-        self.assertEqual(lookup.calls[0]["limit"], 100)
+        self.assertEqual(lookup.calls[0]["limit"], 50)
         self.assertIn("Total: 2 matching row(s) in equipment_assets.csv.", result.answer)
         self.assertIn("- Ventilator; Location: Respiratory Ward; Status: Fault logged", result.answer)
         self.assertIn("- Ventilator; Location: Mental Health Ward; Status: Available", result.answer)
         self.assertNotIn("Source: Postgres deterministic lookup.", result.answer)
+
+    def test_large_deterministic_count_response_uses_expandable_all_rows(self):
+        rows = [
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "equipment_assets.csv",
+                "row": {
+                    "equipment_type": "Defibrillator",
+                    "location": f"Ward {index}",
+                    "status": "Available" if index % 2 else "In use",
+                },
+            }
+            for index in range(1, 13)
+        ]
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "directory",
+                    "message": "Found 12 matching row(s).",
+                    "lookup_plan": {
+                        "aggregate_intent": "count",
+                        "aggregate_result": {
+                            "type": "count",
+                            "matching_rows": 12,
+                            "counts_by_source": {"equipment_assets.csv": 12},
+                            "source_filenames": ["equipment_assets.csv"],
+                        },
+                        "row_value_search_used": True,
+                        "matched_csv_sources": ["equipment_assets.csv"],
+                    },
+                    "rows": rows,
+                }
+            )
+        )
+        agent = make_agent(FakeLLM([fake_tool_call_message("postgres_deterministic_lookup", "how many defibrillators")]))
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "how many defibrillators does the hospital have", session_id="session")
+
+        self.assertEqual(lookup.calls[0]["limit"], 50)
+        self.assertIn("Total: 12 matching row(s) in equipment_assets.csv.", result.answer)
+        self.assertIn("Showing first 10 of 12 matching row(s).", result.answer)
+        self.assertIn("<details>", result.answer)
+        self.assertIn("<summary>Show all matching rows (12 rows)</summary>", result.answer)
+        self.assertIn('<div class="hka-deterministic-row">', result.answer)
+        self.assertIn("<ul><li><strong>Equipment type:</strong> Defibrillator</li>", result.answer)
+        self.assertIn("Ward 12", result.answer)
+        self.assertNotIn("- Defibrillator; Location: Ward 11", result.answer)
 
     def test_multipart_lookup_and_rag_are_chosen_by_llm(self):
         retrieval = FakeRetrieval()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 import threading
@@ -43,6 +44,7 @@ HEALTHCARE_TOOL_NAMES = [
     "safety_guard",
 ]
 RETRIEVAL_SOURCE_TOOLS = {"rag_search", "document_search", "policy_search"}
+DETERMINISTIC_INLINE_ROW_LIMIT = 10
 CHAT_EXECUTION_MODE_LABELS = {
     "supervisor": "Supervisor",
 }
@@ -843,6 +845,78 @@ def _format_count_detail(payload: dict[str, Any]) -> str:
     return _lookup_list_name(payload)
 
 
+def _full_row_fields(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    preferred_fields = (
+        *DETERMINISTIC_LIST_NAME_FIELDS,
+        *DETERMINISTIC_LOCATION_FIELDS,
+        *DETERMINISTIC_STATUS_FIELDS,
+    )
+    seen: set[str] = set()
+    for field in preferred_fields:
+        for key, value in payload.items():
+            if key in seen or value in (None, "", []):
+                continue
+            if _normalize_payload_key(key) == _normalize_payload_key(field):
+                seen.add(key)
+                fields.append((_detail_label(key), _detail_value(key, value)))
+                break
+    for key, value in sorted(payload.items()):
+        if key in seen or key in DETERMINISTIC_OMITTED_DETAIL_FIELDS or value in (None, "", []):
+            continue
+        seen.add(key)
+        fields.append((_detail_label(key), _detail_value(key, value)))
+    return fields
+
+
+def _expandable_record_block(payload: dict[str, Any], index: int) -> str:
+    title = _lookup_list_name(payload)
+    if title == "Record":
+        title = f"Record {index}"
+    fields = _full_row_fields(payload)
+    field_items = "\n".join(
+        f"<li><strong>{html.escape(label, quote=False)}:</strong> {html.escape(value, quote=False)}</li>"
+        for label, value in fields
+    )
+    if not field_items:
+        field_items = "<li>No additional fields.</li>"
+    return (
+        '<div class="hka-deterministic-row">'
+        f"<p><strong>{index}. {html.escape(title, quote=False)}</strong></p>"
+        f"<ul>{field_items}</ul>"
+        "</div>"
+    )
+
+
+def _expandable_all_rows(row_payloads: list[dict[str, Any]], *, summary: str = "Show all rows") -> str:
+    if len(row_payloads) <= DETERMINISTIC_INLINE_ROW_LIMIT:
+        return ""
+    blocks = "\n".join(
+        _expandable_record_block(payload, index)
+        for index, payload in enumerate(row_payloads, start=1)
+    )
+    return (
+        "\n\n"
+        "<details>\n"
+        f"<summary>{html.escape(summary, quote=False)} ({len(row_payloads)} rows)</summary>\n"
+        f"{blocks}\n"
+        "</details>"
+    )
+
+
+def _unique_payloads_by_list_name(row_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for payload in row_payloads:
+        name = _lookup_list_name(payload)
+        key = name.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(payload)
+    return unique
+
+
 def _is_equipment_payload(payload: dict[str, Any]) -> bool:
     normalized_keys = {_normalize_payload_key(key) for key in payload}
     return bool(
@@ -912,7 +986,7 @@ def _format_equipment_availability_answer(
     title = "Available equipment" if prefer_available and available_rows else "Matching equipment"
     lines = [f"{title} returned by deterministic lookup:"]
     lines.append("")
-    for index, payload in enumerate(selected, start=1):
+    for index, payload in enumerate(selected[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
         name = _equipment_name(payload, query)
         status = _payload_value(payload, DETERMINISTIC_STATUS_FIELDS)
         location = _payload_value(payload, DETERMINISTIC_LOCATION_FIELDS)
@@ -923,7 +997,10 @@ def _format_equipment_availability_answer(
             detail_parts.append(f"location: {location}")
         suffix = f" ({'; '.join(detail_parts)})" if detail_parts else ""
         lines.append(f"{index}. {name}{suffix}")
-    return "\n".join(lines)
+    if len(selected) > DETERMINISTIC_INLINE_ROW_LIMIT:
+        lines.append("")
+        lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(selected)} matching row(s).")
+    return "\n".join(lines) + _expandable_all_rows(selected, summary="Show all matching equipment rows")
 
 
 def _detail_label(field: str) -> str:
@@ -969,8 +1046,12 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
             lines = [f"Total: {matching_rows} matching row(s)" + (f" in {source_text}." if source_text else ".")]
             lines.append("")
             lines.append("Details:")
-            for row_payload in row_payloads:
+            for row_payload in row_payloads[:DETERMINISTIC_INLINE_ROW_LIMIT]:
                 lines.append(f"- {_format_count_detail(row_payload)}")
+            if len(row_payloads) > DETERMINISTIC_INLINE_ROW_LIMIT:
+                lines.append("")
+                lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(row_payloads)} matching row(s).")
+                return "\n".join(lines) + _expandable_all_rows(row_payloads, summary="Show all matching rows")
             return "\n".join(lines)
         return (
             "Based on the deterministic database lookup, "
@@ -997,9 +1078,11 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
     on_call_list_intent = any(marker in query.lower() for marker in ["on call", "on-call", "oncall"])
     if (_has_list_lookup_intent(query) or generic_row_list or on_call_list_intent) and len(rows) > 1:
         title = "On-call staff" if on_call_list_intent else _lookup_list_title(query, row_payloads[0] if row_payloads else {})
+        unique_payloads = _unique_payloads_by_list_name(row_payloads)
+        visible_payloads = unique_payloads or row_payloads
         lines = [f"{title} returned by deterministic lookup:"]
         lines.append("")
-        for index, row_payload in enumerate(row_payloads, start=1):
+        for index, row_payload in enumerate(visible_payloads[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
             name = _lookup_list_name(row_payload)
             detail_parts: list[str] = []
             seen_details: set[str] = set()
@@ -1015,7 +1098,10 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
                 detail_parts.append(str(value))
             detail_text = f" ({', '.join(detail_parts)})" if on_call_list_intent and detail_parts else ""
             lines.append(f"{index}. {name}{detail_text}")
-        return "\n".join(lines)
+        if len(visible_payloads) > DETERMINISTIC_INLINE_ROW_LIMIT:
+            lines.append("")
+            lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(visible_payloads)} unique {title.lower()}.")
+        return "\n".join(lines) + _expandable_all_rows(visible_payloads, summary=f"Show all unique {title.lower()}")
 
     first_payload = _lookup_row_payload(rows[0]) if isinstance(rows[0], dict) else {}
     entity_name = _lookup_entity_name(query, first_payload)

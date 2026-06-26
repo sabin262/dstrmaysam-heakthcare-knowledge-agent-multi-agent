@@ -1879,7 +1879,7 @@ def render_chat_messages() -> Any:
             continue
         role = "assistant" if message.get("role") == "assistant" else "user"
         with st.chat_message(role):
-            st.markdown(message.get("content", ""))
+            st.markdown(message.get("content", ""), unsafe_allow_html=role == "assistant")
     progress_placeholder = st.empty()
     st.markdown('<span class="hka-chat-bottom-anchor"></span>', unsafe_allow_html=True)
     return progress_placeholder
