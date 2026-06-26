@@ -1,35 +1,170 @@
 # Healthcare Knowledge Agent
 
-This repository implements a containerized internal knowledge assistant MVP with:
+Containerized healthcare knowledge assistant with a FastAPI backend, Streamlit frontend, LangGraph/LangChain agent orchestration, retrieval augmented generation, deterministic Postgres lookup, admin workflows, observability, and AWS deployment templates.
 
-- FastAPI backend
-- Streamlit chat frontend
-- Simple login
-- Persistent chat history
-- LangGraph agent orchestration with LangChain Azure OpenAI integrations
-- RAG over S3 documents and OpenSearch Serverless
-- Postgres-backed deterministic lookup for patient, doctor, department, contact, appointment, ward, and formulary data
-- Azure OpenAI through `langchain-openai`
-- Langfuse tracing and prompt management
-- RAGAS golden-data evaluation with optional Langfuse score publishing
-- 100-query stress testing
-- AWS Secrets Manager in deployed environments, with a local secret-file fallback for development
-- ECR/ECS Fargate deployment templates
+The application is built for internal healthcare knowledge work: staff can ask document and operational questions, while admins can manage users, upload and index documents, inspect query telemetry, and maintain structured lookup data.
+
+## What It Does
+
+- Authenticated chat with persistent sessions.
+- Streamlit UI for chat, NHS news, dashboards, patient details, user administration, and document administration.
+- FastAPI backend for auth, chat, ingestion, deterministic lookup, documents, dashboard data, and admin APIs.
+- LangGraph/LangChain agent flow using Azure OpenAI chat models through `langchain-openai`.
+- RAG over uploaded PDF, DOCX, markdown, text, and CSV content.
+- Local Chroma vector search for development mode.
+- OpenSearch Serverless vector and keyword retrieval for AWS mode.
+- Postgres-backed deterministic lookup for patients, doctors, departments, contacts, appointments, wards, formulary rows, staff rota style data, and uploaded CSV rows.
+- Role-aware document access and structured-data access filtering.
+- Langfuse tracing, prompt loading, trace enrichment, and optional RAGAS score publishing.
+- Offline golden dataset evaluation and stress testing.
+- Docker Compose local stack and ECS Fargate deployment templates.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    User["User or Admin"] --> Frontend["Streamlit Frontend"]
+    Frontend --> Backend["FastAPI Backend"]
+
+    Backend --> Auth["Auth Service"]
+    Backend --> Agent["KnowledgeAgent"]
+    Backend --> Admin["Admin APIs"]
+    Backend --> News["Guardian NHS News"]
+
+    Agent --> LangGraph["LangGraph Tool Flow"]
+    Agent --> Azure["Azure OpenAI"]
+    Agent --> Retrieval["RAG Retrieval"]
+    Agent --> Lookup["Postgres Deterministic Lookup"]
+    Agent --> History["Chat History"]
+    Agent --> Langfuse["Langfuse"]
+
+    Retrieval --> Chroma["Local Chroma"]
+    Retrieval --> OpenSearch["OpenSearch Serverless"]
+    Admin --> Store["Document Store"]
+    Store --> LocalFiles["data/raw and manifests"]
+    Store --> S3["S3 Raw Documents and Manifest"]
+    Lookup --> Postgres["Postgres Healthcare Tables"]
+```
+
+Local development uses local files, Chroma, `.env` credentials, and Postgres. AWS deployment uses Secrets Manager, S3, OpenSearch Serverless, IAM task roles, and the configured chat history backend.
+
+For a deeper system explanation, see [docs/system_summary.md](docs/system_summary.md).
+
+## Repository Layout
+
+```text
+backend/app/       FastAPI API, agent, retrieval, auth, ingestion, storage, observability
+frontend/          Streamlit application
+database/init/     Postgres schema and seed healthcare data
+data/              Local document, Chroma, and local secret persistence
+evals/             RAGAS golden dataset runner and stress test
+infra/             ECS, IAM, DynamoDB, and OpenSearch templates
+docs/              Architecture, SDLC, AWS, and system summary documentation
+tests/             Unit and integration-style tests
+```
+
+## Quick Start
+
+1. Copy the environment template:
+
+```bash
+cp .env.example .env
+```
+
+2. Fill in Azure OpenAI settings in `.env` if you want LLM answers and embeddings:
+
+```env
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_API_KEY=<your-key>
+AZURE_OPENAI_API_VERSION=2025-04-01-preview
+AZURE_OPENAI_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_FAST_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+```
+
+3. Start the stack:
+
+```bash
+docker compose up --build
+```
+
+4. Open the Streamlit UI:
+
+```text
+http://localhost:8501
+```
+
+Docker Compose starts:
+
+- Backend API at `http://localhost:8000`
+- Frontend UI at `http://localhost:8501`
+- Postgres at `localhost:5432`
+
+For local testing only, Compose enables a seeded admin overlay:
+
+```text
+Username: admin
+Password: admin123
+```
+
+## Runtime Modes
+
+The current code selects local resource implementations through `LOCAL_TEST_ADMIN_ENABLED`.
+
+### Local Mode
+
+Enabled by the Docker Compose default:
+
+```env
+APP_ENV=local
+LOCAL_TEST_ADMIN_ENABLED=true
+```
+
+Local mode uses:
+
+- `EnvSecretProvider`
+- `.env` values for Azure OpenAI and Langfuse credentials
+- `LOCAL_APP_SECRET_FILE` for app auth/session secrets
+- `data/raw/` for uploaded raw documents
+- `data/manifests/documents.json` for the manifest
+- Chroma under `data/chroma`
+- Postgres for deterministic lookup and chat history
+
+If `LOCAL_APP_SECRET_FILE` does not exist, the backend creates it with a generated session secret and the configured local username/password.
+
+### AWS Mode
+
+Use AWS-backed resources by disabling the local overlay:
+
+```env
+APP_ENV=dev
+SECRETS_STAGE=dev
+LOCAL_TEST_ADMIN_ENABLED=false
+```
+
+AWS mode uses:
+
+- AWS Secrets Manager for app, Azure OpenAI, and Langfuse secrets
+- S3 for raw documents and the document manifest
+- OpenSearch Serverless for vector and keyword retrieval
+- DynamoDB, Postgres, or DynamoDB with Postgres fallback for chat history
+- ECS task roles for AWS credentials
+
+Do not provide static AWS access keys to ECS tasks. Let the task role provide AWS credentials.
 
 ## Secret Model
 
 Do not put API keys, passwords, token signing secrets, or Langfuse credentials in source code, Docker images, or Streamlit secrets.
 
-In `APP_ENV=local` or `APP_ENV=test`, the backend uses `LOCAL_APP_SECRET_FILE`
-for app auth/session secrets and reads Azure OpenAI/Langfuse credentials from
-environment variables. If `LOCAL_APP_SECRET_FILE` is missing, the backend creates
-one with a generated session secret and the configured local username/password.
+Expected AWS secret names:
 
-In non-local environments, secrets are loaded from AWS Secrets Manager.
+```text
+/dstrmaysam-healthcare-knowledge-agent/dev/app
+/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
+/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+```
 
-Expected secret JSON documents:
-
-`/dstrmaysam-healthcare-knowledge-agent/dev/app`
+App secret shape:
 
 ```json
 {
@@ -40,13 +175,14 @@ Expected secret JSON documents:
   "user_profiles": {
     "admin": {
       "roles": ["admin", "doctor"],
-      "departments": ["clinical_governance"]
+      "departments": ["clinical_governance"],
+      "password_change_required": false
     }
   }
 }
 ```
 
-`/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai`
+Azure OpenAI secret shape:
 
 ```json
 {
@@ -54,11 +190,12 @@ Expected secret JSON documents:
   "api_key": "azure-openai-key",
   "api_version": "2025-04-01-preview",
   "chat_deployment": "your-chat-deployment",
+  "fast_chat_deployment": "optional-fast-chat-deployment",
   "embedding_deployment": "your-embedding-deployment"
 }
 ```
 
-`/dstrmaysam-healthcare-knowledge-agent/dev/langfuse`
+Langfuse secret shape:
 
 ```json
 {
@@ -74,101 +211,137 @@ Generate a password hash without storing the password:
 python -m backend.app.auth hash-password
 ```
 
-Inside the backend container, use `python -m app.auth hash-password`.
-
-## Local Run
+Inside the backend container:
 
 ```bash
-cp .env.example .env
-docker compose up --build
+python -m app.auth hash-password
 ```
 
-Open the chat UI at `http://localhost:8501`.
+## Chat And Agent Flow
 
-Docker Compose also starts a local Postgres database. The schema and mock data
-are loaded from `database/init/` on first container startup. If you need to
-re-run the init scripts from scratch, remove the `postgres_data` Docker volume
-and start Compose again.
+Chat uses a single supervisor-led multi-agent graph. The frontend sends `query` and `session_id`; the backend supervisor LLM decides whether to call deterministic lookup, RAG, policy, catalog, or safety specialists before synthesis.
 
-For local testing only, Docker Compose can inject a test admin account when
-`APP_ENV=local`:
+There is no online deterministic preflight shortcut and no user-selectable execution-mode switch. Exact operational lookup is handled by the graph-selected `DeterministicLookupAgent` through `postgres_deterministic_lookup`. If the supervisor tries to answer directly or route only to RAG for a clear structured lookup, in-graph deterministic guardrails force a `DeterministicLookupAgent` route before synthesis. A legacy `execution_mode` request field is tolerated for old clients, but it is ignored and normalized to supervisor routing.
 
-- Username: `admin`
-- Password: `admin123`
+Available tools include:
 
-Disable the test-admin overlay by setting `LOCAL_TEST_ADMIN_ENABLED=false`. This
-does not disable the local secret file. The app still authenticates users from
-`LOCAL_APP_SECRET_FILE`, so update that file if you want different development
-users.
+- `document_search` for approved document retrieval
+- `policy_search` for policy, SOP, pathway, and guideline retrieval
+- `catalogue_search` for manifest/catalog metadata
+- `calendar_rota_lookup` for rota and calendar-style sources
+- `formulary_table_lookup` for structured formulary data
+- `postgres_deterministic_lookup` for exact healthcare and uploaded CSV lookup
+- `safety_guard` for safety and escalation checks
 
-## Chat History and Observability Fallbacks
+The backend records tool usage, source snippets, trace IDs, token estimates, latency breakdowns, safety metadata, and RAGAS status with each chat interaction.
 
-Set `CHAT_HISTORY_BACKEND=dynamodb_postgres` to use DynamoDB first and Postgres
-only if DynamoDB operations fail. This keeps production behavior aligned with
-DynamoDB while preserving chat history, previous-chat lists, and dashboard query
-analytics during local credential/network/table failures.
+## API Surface
 
-Supported values:
+Core endpoints:
+
+- `GET /health`
+- `GET /news`
+- `POST /auth/login`
+- `GET /auth/me`
+- `POST /auth/change-password`
+- `POST /chat`
+- `GET /chat/sessions`
+- `GET /chat/sessions/{session_id}`
+- `GET /documents`
+
+Admin endpoints:
+
+- `GET /admin/users`
+- `POST /admin/users`
+- `PATCH /admin/users/{username}`
+- `POST /admin/users/{username}/reset-password`
+- `POST /admin/documents/upload`
+- `PATCH /admin/documents/metadata`
+- `POST /admin/documents/ingest`
+- `POST /admin/documents/delete-indexes`
+- `GET /admin/dashboard`
+- `GET /admin/patient-details`
+- `POST /admin/warmup`
+
+## Documents And Ingestion
+
+Admins can upload PDF, DOCX, TXT, MD, and CSV files from the UI or API.
+
+Non-CSV files are stored under the configured raw document prefix and indexed when ingestion runs. The ingestion job parses files, chunks text, embeds chunks, writes vectors to Chroma or OpenSearch, and updates the manifest.
+
+CSV uploads are special:
+
+- CSV rows are inserted into Postgres `uploaded_lookup_rows`.
+- A metadata-only manifest record is added.
+- The rows become available to `postgres_deterministic_lookup`.
+- Deleting indexes also deletes uploaded lookup rows.
+
+Run ingestion manually from the backend container:
+
+```bash
+docker compose run --rm backend python -m app.ingest
+```
+
+## Deterministic Lookup Data
+
+Local mock healthcare data is created by:
+
+- `database/init/01_schema.sql`
+- `database/init/02_seed.sql`
+
+Structured lookup covers:
+
+- patient details by name, MRN, or NHS number
+- doctor and consultant details
+- department and escalation contacts
+- organization directory entries
+- appointments and clinic slots
+- ward locations, beds, and phone numbers
+- formulary and restricted medicine facts
+- uploaded CSV rows for exact counts, lists, and table-like questions
+
+Example questions:
+
+- "What is the phone number for ICU outreach?"
+- "Which doctor is on call for Cardiology?"
+- "Show patient details for MRN10003."
+- "Does Leo Bennett have any appointments?"
+- "Where is ward W05?"
+- "Is vancomycin restricted?"
+- "How many ventilators are available?"
+
+## Chat History And Observability
+
+Set `CHAT_HISTORY_BACKEND` to choose persistence:
 
 - `dynamodb_postgres`: DynamoDB primary, Postgres fallback
 - `dynamodb`: DynamoDB only
 - `postgres`: Postgres only
 - `memory`: process memory only, not durable
 
-If Langfuse trace updates fail, the backend writes the trace payload to the
-Postgres `langfuse_trace_outbox` table with `status='pending'` so it can be
-retried later. Chat message persistence is independent of Langfuse availability.
+If Langfuse trace updates fail, the backend writes pending trace payloads to the Postgres `langfuse_trace_outbox` table for later retry. Chat message persistence is independent of Langfuse availability.
 
-## Ingest Documents
+## Evaluation And Testing
 
-Upload documents to S3 under the configured `S3_RAW_PREFIX`, then run:
+Run the unit test suite:
 
 ```bash
-docker compose run --rm backend python -m app.ingest
+python -m pytest tests -q
 ```
 
-Supported source formats: PDF, DOCX, markdown, text, and CSV.
+Run compile validation:
 
-## Deterministic Lookup Data
+```bash
+python -m compileall backend frontend tests -q
+```
 
-The backend registers `postgres_deterministic_lookup` for exact structured
-answers. It should be used for questions about:
-
-- patient details by name, MRN, or NHS number
-- doctor or consultant contact details
-- department and escalation contacts
-- organization directory entries
-- appointments and clinic slots
-- ward locations, beds, and phone numbers
-- formulary and restricted medicine facts
-
-Local mock data lives in Postgres tables created by:
-
-- `database/init/01_schema.sql`
-- `database/init/02_seed.sql`
-
-A CSV copy of the organization directory is also available at
-`data/organization_directory.csv`.
-
-Example deterministic lookup questions:
-
-- "What is the phone number for ICU outreach?"
-- "Which doctor is on call for Cardiology?"
-- "Show patient details for MRN10003."
-- "Does Leo Bennett have any appointments?"
-- "Show me a list of available doctors and nurses for today and tomorrow."
-- "Where is ward W05?"
-- "Is vancomycin restricted?"
-
-## Evals
-
-Run the golden-data eval after the API is running:
+Run the golden-data RAGAS eval after the API is running:
 
 ```bash
 python evals/run_ragas_eval.py --api-url http://localhost:8000 --token YOUR_TOKEN
 ```
 
-For the healthcare Phase One scaffold, use:
+Use the healthcare dataset:
 
 ```bash
 python evals/run_ragas_eval.py --dataset evals/healthcare_golden_dataset.csv --api-url http://localhost:8000 --token YOUR_TOKEN
@@ -180,14 +353,7 @@ Publish per-question and summary RAGAS scores to Langfuse:
 python evals/run_ragas_eval.py --api-url http://localhost:8000 --token YOUR_TOKEN --publish-langfuse --secrets-stage dev
 ```
 
-The eval runner loads Langfuse credentials from AWS Secrets Manager using
-`/dstrmaysam-healthcare-knowledge-agent/<stage>/langfuse` unless `--langfuse-secret-name` is provided.
-RAGAS contexts use `/chat` source snippets when available and fall back to source
-URIs.
-
-Run the 100-query stress test. The default workload covers patient details,
-appointments, rota, formulary, catalogue, policy RAG, and safety-sensitive
-questions:
+Run the stress test:
 
 ```bash
 python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN
@@ -195,8 +361,20 @@ python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN
 
 ## AWS Deployment
 
-1. Create S3 bucket, DynamoDB table, OpenSearch Serverless collection/index, ECR repositories, and Secrets Manager entries.
-2. Build and push backend/frontend images to ECR.
-3. Fill in the ECS task definition templates in `infra/`.
-4. Create ECS Fargate services behind an Application Load Balancer.
-5. Attach IAM task roles with least-privilege permissions for Secrets Manager, S3, DynamoDB, OpenSearch, and CloudWatch.
+High-level steps:
+
+1. Create S3 bucket, DynamoDB table, OpenSearch Serverless collection/index, ECR repositories, Secrets Manager entries, CloudWatch log groups, and ECS Fargate services.
+2. Build and push backend, frontend, and database images to ECR.
+3. Fill in task definition and IAM policy templates in `infra/`.
+4. Attach least-privilege task roles for Secrets Manager, S3, DynamoDB, OpenSearch, and CloudWatch.
+5. Deploy the backend and frontend behind an Application Load Balancer.
+6. Set `LOCAL_TEST_ADMIN_ENABLED=false` in ECS.
+
+See [infra/README.md](infra/README.md) and [docs/aws_setup_instructions.md](docs/aws_setup_instructions.md).
+
+## Useful Docs
+
+- [System summary](docs/system_summary.md)
+- [AWS setup instructions](docs/aws_setup_instructions.md)
+- [Multi-agent conversion proposal](docs/multi_agent_conversion_proposal.md)
+- [Multi-agent implementation plan](docs/multi_agent_conversion_implementation_plan.md)

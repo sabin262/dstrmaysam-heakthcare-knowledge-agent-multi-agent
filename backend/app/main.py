@@ -999,8 +999,8 @@ def admin_dashboard(
         )
         agent_errors = metadata.get("agent_errors", []) if isinstance(metadata.get("agent_errors"), list) else []
         sources = metadata.get("sources", []) if isinstance(metadata.get("sources"), list) else []
-        chat_execution_mode = str(metadata.get("chat_execution_mode") or "deterministic_agent")
-        chat_execution_mode_label = str(metadata.get("chat_execution_mode_label") or "Deterministic + Agent")
+        chat_execution_mode = str(metadata.get("chat_execution_mode") or "supervisor")
+        chat_execution_mode_label = str(metadata.get("chat_execution_mode_label") or "Supervisor")
         latency_ms = int(metadata.get("latency_ms") or performance.get("total_ms") or 0)
         latency_breakdown = _dashboard_latency_breakdown(metadata, performance, latency_ms)
         input_token_count = int(metadata.get("input_tokens") or 0)
@@ -1156,7 +1156,7 @@ def chat(request: ChatRequest, user: HealthcareUserContext = Depends(active_user
         query=request.query,
         session_id=request.session_id,
         user_context=user,
-        execution_mode=request.execution_mode,
+        execution_mode=None,
     )
     return ChatResponse(
         session_id=result.session_id,

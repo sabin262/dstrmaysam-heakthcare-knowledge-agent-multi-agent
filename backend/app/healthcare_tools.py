@@ -22,39 +22,7 @@ def _terms(query: str) -> list[str]:
 
 
 def _lookup_limit(query: str) -> int:
-    lowered = query.lower()
-    if any(
-        marker in lowered
-        for marker in [
-            "list all",
-            "show all",
-            "all medicine",
-            "all medicines",
-            "all drug",
-            "all drugs",
-            "how many equipment",
-            "how many assets",
-            "how many asset",
-            "how many devices",
-            "how many device",
-            "how many machines",
-            "how many machine",
-            "how many ecg",
-            "how many ventilator",
-            "how many ventilators",
-            "all equipment",
-            "equipment type",
-            "equipment types",
-            "all asset",
-            "asset type",
-            "asset types",
-            "all device",
-            "device type",
-            "device types",
-        ]
-    ):
-        return 100
-    return 10
+    return 50
 
 
 def _record_matches(record: DocumentRecord, query: str, domains: set[str] | None = None) -> bool:

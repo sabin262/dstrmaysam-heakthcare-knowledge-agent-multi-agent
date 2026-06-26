@@ -289,7 +289,8 @@ class FakeAgent:
                 "safety": {},
                 "audit_event": {},
                 "performance": {
-                    "chat_execution_mode": kwargs.get("execution_mode") or "deterministic_agent",
+                    "chat_execution_mode": "supervisor",
+                    "chat_execution_mode_label": "Supervisor",
                 },
                 "latency_breakdown": {},
             },
@@ -408,7 +409,7 @@ class AdminDocumentApiTests(unittest.TestCase):
         token = self.auth.login(username, password).access_token
         return {"Authorization": f"Bearer {token}"}
 
-    def test_chat_defaults_to_agent_only_execution_mode(self):
+    def test_chat_defaults_to_supervisor_routing(self):
         response = self.client.post(
             "/chat",
             headers=self.headers_for("staff", "staffpass1"),
@@ -416,9 +417,9 @@ class AdminDocumentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.agent.answer_calls[-1]["execution_mode"], "agent_only")
+        self.assertIsNone(self.agent.answer_calls[-1]["execution_mode"])
 
-    def test_chat_accepts_agent_only_execution_mode(self):
+    def test_chat_ignores_legacy_execution_mode(self):
         response = self.client.post(
             "/chat",
             headers=self.headers_for("staff", "staffpass1"),
@@ -426,7 +427,7 @@ class AdminDocumentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.agent.answer_calls[-1]["execution_mode"], "agent_only")
+        self.assertIsNone(self.agent.answer_calls[-1]["execution_mode"])
 
     def test_admin_can_upload_document_to_raw_s3_prefix(self):
         response = self.client.post(
@@ -609,8 +610,8 @@ class AdminDocumentApiTests(unittest.TestCase):
                     "input_tokens": 10,
                     "output_tokens": 6,
                     "model": "gpt-4.1-mini",
-                    "chat_execution_mode": "agent_only",
-                    "chat_execution_mode_label": "Agent only",
+                    "chat_execution_mode": "supervisor",
+                    "chat_execution_mode_label": "Supervisor",
                     "agent_flow": [
                         {
                             "agent": "SupervisorAgent",
@@ -709,8 +710,8 @@ class AdminDocumentApiTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["model_counts"]["gpt-4.1-mini"], 1)
         self.assertEqual(payload["queries"][0]["user_id"], "staff")
         self.assertEqual(payload["queries"][0]["trace_id"], "trace-123")
-        self.assertEqual(payload["queries"][0]["chat_execution_mode"], "agent_only")
-        self.assertEqual(payload["queries"][0]["chat_execution_mode_label"], "Agent only")
+        self.assertEqual(payload["queries"][0]["chat_execution_mode"], "supervisor")
+        self.assertEqual(payload["queries"][0]["chat_execution_mode_label"], "Supervisor")
         self.assertEqual(payload["queries"][0]["total_tokens"], 16)
         self.assertEqual(payload["queries"][0]["tool_flow_summary"], "document_catalog -> rag_search")
         self.assertEqual(payload["queries"][0]["agent_flow_summary"], "RAGAgent -> SynthesisAgent")
