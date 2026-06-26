@@ -701,6 +701,64 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(result.metadata["chat_execution_mode"], "supervisor")
         self.assertEqual(result.metadata["chat_execution_mode_label"], "Supervisor")
 
+    def test_structured_direct_answer_is_forced_to_deterministic_specialist(self):
+        retrieval = FakeRetrieval()
+        fake_llm = FakeLLM([fake_ai_message("Morphine is probably covered in formulary documents.")])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "directory",
+                    "message": "Found 1 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "formulary_upload.csv",
+                            "row": {"medicine_name": "Morphine", "category": "Opioid analgesic", "restricted": "No"},
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm, retrieval=retrieval)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "info on Morphine", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertIn("Morphine details are as follows:", result.answer)
+        self.assertIn("- Category: Opioid analgesic", result.answer)
+        self.assertEqual(retrieval.calls, [])
+        self.assertEqual(len(fake_llm.messages), 1)
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "supervisor_deterministic_guard_direct_answer")
+
+    def test_rag_only_route_for_structured_query_is_replaced_by_deterministic_guard(self):
+        retrieval = FakeRetrieval()
+        fake_llm = FakeLLM([fake_tool_call_message("rag_search", "info on Morphine")])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "directory",
+                    "message": "Found 1 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "formulary_upload.csv",
+                            "row": {"medicine_name": "Morphine", "category": "Opioid analgesic"},
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm, retrieval=retrieval)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "info on Morphine", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(retrieval.calls, [])
+        self.assertEqual(len(lookup.calls), 1)
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "supervisor_deterministic_guard")
+
     def test_short_entity_lookup_retries_medicine_query_inside_specialist(self):
         class SequencedLookup:
             def __init__(self):
@@ -882,6 +940,38 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(result.metadata["performance"]["chat_execution_mode"], "supervisor")
         self.assertEqual(len(fake_llm.messages), 1)
         self.assertEqual(len(lookup.calls), 1)
+
+    def test_legacy_deterministic_agent_mode_is_normalized_to_supervisor_lookup(self):
+        fake_llm = FakeLLM([fake_tool_call_message("postgres_deterministic_lookup", "info on Morphine")])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "directory",
+                    "message": "Found 1 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "formulary_upload.csv",
+                            "row": {"medicine_name": "Morphine", "category": "Opioid analgesic"},
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer(
+            "user",
+            "info on Morphine",
+            session_id="session",
+            execution_mode="deterministic_agent",
+        )
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(result.metadata["chat_execution_mode"], "supervisor")
+        self.assertEqual(result.metadata["chat_execution_mode_label"], "Supervisor")
+        self.assertEqual(result.metadata["performance"]["chat_execution_mode"], "supervisor")
 
     def test_list_all_medicines_uses_full_limit_and_formats_multiple_rows(self):
         retrieval = FakeRetrieval()
@@ -1093,6 +1183,33 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(result.metadata["performance"]["agent_mode"], "langgraph")
         self.assertIn("document_catalog", [step["tool"] for step in result.metadata["tool_flow"]])
 
+    def test_multipart_policy_route_adds_missing_deterministic_guard(self):
+        retrieval = FakeRetrieval()
+        fake_llm = FakeLLM(
+            [
+                fake_tool_call_message("policy_search", "incident reporting policy"),
+                fake_ai_message("Incident reporting policy plus Dr Smith on call."),
+            ]
+        )
+        lookup = FakeDeterministicLookup()
+        agent = make_agent(fake_llm, retrieval=retrieval)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer(
+            "user",
+            "What is the incident reporting policy and who is on call today?",
+            session_id="session",
+        )
+
+        self.assertEqual(result.tools_used, ["policy_search", "postgres_deterministic_lookup"])
+        self.assertEqual(len(retrieval.calls), 1)
+        self.assertEqual(len(lookup.calls), 1)
+        self.assertEqual(lookup.calls[0]["query"], "who is on call today")
+        self.assertIn(
+            "supervisor_deterministic_guard",
+            [step.get("reason") for step in result.metadata["performance"]["agent_flow"]],
+        )
+
     def test_greeting_can_use_supervisor_direct_answer(self):
         fake_llm = FakeLLM([fake_ai_message("Hello.")])
         agent = make_agent(
@@ -1155,7 +1272,7 @@ class AgentContractTests(unittest.TestCase):
     def test_multipart_policy_and_on_call_question_uses_two_tools(self):
         self.assertEqual(
             _planned_tool_names(
-                "I need information on the patient privacy policy and also which doctors are on call today?"
+                "I need information on the patient privacy policy and which doctors are on call today?"
             ),
             ["policy_search", "postgres_deterministic_lookup"],
         )

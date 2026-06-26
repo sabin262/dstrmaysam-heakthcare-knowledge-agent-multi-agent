@@ -309,7 +309,7 @@ flowchart TD
     Trace --> Response["Return ChatResponse"]
 ```
 
-There is no online deterministic preflight shortcut. Structured operational facts such as patient details, rota facts, appointments, wards, contacts, and formulary facts must come from the graph-selected `DeterministicLookupAgent` or retrieved evidence rather than prior chat memory. Offline/no-LLM fallback can still use deterministic lookup because no supervisor LLM is available.
+There is no online deterministic preflight shortcut. Structured operational facts such as patient details, rota facts, appointments, wards, contacts, equipment, uploaded CSV rows, and formulary facts must come from the graph-selected `DeterministicLookupAgent` or retrieved evidence rather than prior chat memory. If the supervisor tries to answer directly or routes only to RAG for a clear structured lookup, in-graph deterministic guardrails force a `DeterministicLookupAgent` route before synthesis. Offline/no-LLM fallback can still use deterministic lookup because no supervisor LLM is available.
 
 ## 11. Agent And Tool Flow
 
@@ -322,7 +322,7 @@ Key stages:
 3. Load the configured system prompt from Langfuse when available.
 4. Add static response style requirements.
 5. Enter the supervisor-led multi-agent graph for online LLM-backed chat.
-6. Let the supervisor choose the first specialist through LLM routing while allowing deterministic lookup when appropriate.
+6. Let the supervisor choose the first specialist through LLM routing, with deterministic guardrails for exact structured lookup, list, count, row-value, medicine, rota, patient, ward, equipment, and uploaded CSV questions.
 7. Run selected specialists and return to the supervisor until enough evidence exists or the agent-step limit is reached.
 8. Have `SynthesisAgent` generate the final answer from accumulated specialist evidence.
 9. Apply response guardrail rewrite when needed.

@@ -221,7 +221,7 @@ python -m app.auth hash-password
 
 Chat uses a single supervisor-led multi-agent graph. The frontend sends `query` and `session_id`; the backend supervisor LLM decides whether to call deterministic lookup, RAG, policy, catalog, or safety specialists before synthesis.
 
-There is no online deterministic preflight shortcut and no user-selectable execution-mode switch. Exact operational lookup is handled by the graph-selected `DeterministicLookupAgent` through `postgres_deterministic_lookup`. A legacy `execution_mode` request field is tolerated for old clients, but it is ignored and normalized to supervisor routing.
+There is no online deterministic preflight shortcut and no user-selectable execution-mode switch. Exact operational lookup is handled by the graph-selected `DeterministicLookupAgent` through `postgres_deterministic_lookup`. If the supervisor tries to answer directly or route only to RAG for a clear structured lookup, in-graph deterministic guardrails force a `DeterministicLookupAgent` route before synthesis. A legacy `execution_mode` request field is tolerated for old clients, but it is ignored and normalized to supervisor routing.
 
 Available tools include:
 

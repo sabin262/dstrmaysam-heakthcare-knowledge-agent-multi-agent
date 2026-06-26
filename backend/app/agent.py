@@ -251,7 +251,7 @@ SAFETY_QUERY_MARKERS = {
     "unsafe",
 }
 MULTIPART_QUERY_PATTERN = re.compile(
-    r"\b(?:and also|also|as well as|plus)\b|[?]\s+(?=\w)",
+    r"\b(?:and also|also|as well as|plus)\b|\band\s+(?=(?:who|which|what|where|when|how|show|list|tell|does|do|is|are)\b)|[?]\s+(?=\w)",
     flags=re.IGNORECASE,
 )
 
@@ -526,6 +526,11 @@ def _has_deterministic_intent(text: str) -> bool:
         or _has_structured_row_value_intent(text)
         or _has_short_entity_lookup_intent(text)
         or _has_list_lookup_intent(text)
+        or _has_equipment_availability_intent(text)
+        or _has_generic_row_value_list_intent(text)
+        or _has_patient_location_lookup_intent(text)
+        or _has_patient_appointment_lookup_intent(text)
+        or _has_identifier_lookup_intent(text)
     )
 
 
@@ -617,7 +622,25 @@ def _has_safety_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_policy_intent(text):
         return False
+    if _has_equipment_availability_intent(text):
+        return False
     return any(marker in lowered for marker in SAFETY_QUERY_MARKERS)
+
+
+def _needs_deterministic_specialist(text: str) -> bool:
+    if _has_policy_intent(text):
+        return False
+    return _has_deterministic_intent(text)
+
+
+def _deterministic_guard_queries(query: str) -> list[str]:
+    queries: list[str] = []
+    for part in _query_parts(query):
+        if _needs_deterministic_specialist(part) and part not in queries:
+            queries.append(part)
+    if not queries and _needs_deterministic_specialist(query):
+        queries.append(query)
+    return queries
 
 
 def _deterministic_tool_output_has_results(output: str) -> bool:
@@ -2587,6 +2610,7 @@ class KnowledgeAgent:
         max_steps = max(1, self.settings.max_graph_llm_calls or MAX_GRAPH_LLM_CALLS)
         tool_names = {tool.name for tool in self.tools}
         bound_llm = llm.bind_tools(self._tool_callables()) if hasattr(llm, "bind_tools") else llm
+        deterministic_guard_queries = _deterministic_guard_queries(original_query)
 
         def initial_state() -> dict[str, Any]:
             return {
@@ -2652,6 +2676,38 @@ class KnowledgeAgent:
                 "agent_flow": list(state.get("agent_flow") or []) + [decision],
             }
 
+        def deterministic_guard_needed(state: dict[str, Any]) -> bool:
+            if not deterministic_guard_queries:
+                return False
+            if "postgres_deterministic_lookup" in list(state.get("tools_used") or []):
+                return False
+            if str(state.get("pending_tool") or "") == "postgres_deterministic_lookup":
+                return False
+            for route in list(state.get("remaining_routes") or []):
+                if str(dict(route).get("tool") or "") == "postgres_deterministic_lookup":
+                    return False
+            return True
+
+        def first_deterministic_guard_query() -> str:
+            return deterministic_guard_queries[0] if deterministic_guard_queries else original_query
+
+        def planned_requires_only_deterministic() -> bool:
+            return _planned_tool_names(original_query) == ["postgres_deterministic_lookup"]
+
+        def apply_deterministic_guard_to_routes(routes: list[dict[str, str]]) -> list[dict[str, str]]:
+            if not deterministic_guard_queries:
+                return routes
+            if any(route.get("tool") == "postgres_deterministic_lookup" for route in routes):
+                return routes
+            guard_route = {
+                "tool": "postgres_deterministic_lookup",
+                "query": first_deterministic_guard_query(),
+                "reason": "supervisor_deterministic_guard",
+            }
+            if planned_requires_only_deterministic():
+                return [guard_route]
+            return [*routes, guard_route]
+
         def supervisor(state: dict[str, Any]) -> dict[str, Any]:
             state = dict(state)
             if state.get("direct_answer"):
@@ -2670,6 +2726,13 @@ class KnowledgeAgent:
                     reason=str(route.get("reason") or "llm_supervisor_tool_call"),
                 )
             if state.get("tool_outputs"):
+                if deterministic_guard_needed(state):
+                    return route_to_tool(
+                        state,
+                        tool_name="postgres_deterministic_lookup",
+                        query=first_deterministic_guard_query(),
+                        reason="supervisor_deterministic_guard_after_tool",
+                    )
                 return append_synthesis_decision(state, "llm_supervisor_routes_complete")
 
             routing_prompt = (
@@ -2707,6 +2770,7 @@ class KnowledgeAgent:
                             "reason": "llm_supervisor_tool_call",
                         }
                     )
+                routes = apply_deterministic_guard_to_routes(routes)
                 first_route = routes.pop(0)
                 state = {**state, "remaining_routes": routes, "performance": performance}
                 return route_to_tool(
@@ -2717,6 +2781,13 @@ class KnowledgeAgent:
                 )
 
             _add_timing(performance, "llm_direct_answer_ms", llm_ms)
+            if deterministic_guard_needed(state):
+                return route_to_tool(
+                    {**state, "performance": performance},
+                    tool_name="postgres_deterministic_lookup",
+                    query=first_deterministic_guard_query(),
+                    reason="supervisor_deterministic_guard_direct_answer",
+                )
             return append_synthesis_decision(
                 {
                     **state,

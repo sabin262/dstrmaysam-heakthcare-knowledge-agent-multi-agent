@@ -4,7 +4,11 @@ from datetime import date
 
 from backend.app.deterministic_lookup import (
     DeterministicLookupService,
+    DOCTOR_ROLE_MARKERS,
     LookupResult,
+    NURSE_ROLE_MARKERS,
+    STAFF_ROTA_QUERY_MARKERS,
+    STOPWORDS,
     _best_search_term,
     _is_staff_rota_query,
     _name_search_terms,
@@ -67,7 +71,21 @@ class FakeUploadedCsvLookup(DeterministicLookupService):
                 "row_number": 1,
                 "row": {"asset_id": "A-001", "equipment_type": "Ventilator", "status": "Available"},
                 "access_level": "all_staff",
-            }
+            },
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "equipment_assets.csv",
+                "row_number": 2,
+                "row": {"asset_id": "A-002", "equipment_type": "Ventilator", "status": "In use"},
+                "access_level": "all_staff",
+            },
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "equipment_assets.csv",
+                "row_number": 3,
+                "row": {"asset_id": "A-003", "equipment_type": "Transport Ventilator", "status": "Available"},
+                "access_level": "all_staff",
+            },
         ]
 
     def _lookup_category(self, category, query, scopes, limit, *, stopwords=None):
@@ -171,6 +189,13 @@ class FakeEquipmentCountLookup(DeterministicLookupService):
                 "row": {"equipment_type": "ECG Machine", "location": "Emergency Department", "status": "In use"},
                 "access_level": "all_staff",
             },
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "equipment_assets.csv",
+                "row_number": 3,
+                "row": {"equipment_type": "Dialysis Machine", "location": "Renal Unit", "status": "Available"},
+                "access_level": "all_staff",
+            },
         ]
 
     def _count_uploaded_lookup_rows(self, query, scopes, *, source_filenames=None, stopwords=None):
@@ -181,7 +206,7 @@ class FakeEquipmentCountLookup(DeterministicLookupService):
                 "stopwords": set(stopwords or set()),
             }
         )
-        return {"equipment_assets.csv": 2}
+        return {"equipment_assets.csv": 3}
 
     def _lookup_category(self, category, query, scopes, limit, *, stopwords=None):
         self.category_calls.append({"category": category, "limit": limit})
@@ -247,6 +272,68 @@ class FakeRotaCsvLookup(DeterministicLookupService):
                 "access_level": "all_staff",
             }
         ]
+
+
+class FakeGenericOnCallRowsLookup(DeterministicLookupService):
+    def __init__(self):
+        super().__init__(FakeSettings())
+        self.local_csv_calls = []
+
+    def _query_staff_rota_rows(self, query, scopes, limit, *, source_filenames=None):
+        requested_dates = _requested_rota_dates(query)
+        requested_groups = _requested_rota_role_groups(query)
+        department_terms = [
+            term
+            for term in self._search_terms(
+                query,
+                STOPWORDS | STAFF_ROTA_QUERY_MARKERS | DOCTOR_ROLE_MARKERS | NURSE_ROLE_MARKERS,
+            )
+            if term not in {"list", "me", "available", "availability", "today", "tomorrow", "csv", "file"}
+        ]
+        return self._query_staff_rota_local_csv(
+            query,
+            scopes,
+            limit,
+            requested_dates=requested_dates,
+            requested_groups=requested_groups,
+            department_terms=department_terms,
+        )
+
+    def _query_staff_rota_local_csv(
+        self,
+        query,
+        scopes,
+        limit,
+        *,
+        requested_dates=None,
+        requested_groups=None,
+        department_terms=None,
+    ):
+        self.local_csv_calls.append(
+            {
+                "query": query,
+                "department_terms": list(department_terms or []),
+                "requested_dates": list(requested_dates or []),
+                "requested_groups": set(requested_groups or set()),
+            }
+        )
+        return [
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "staff_rota.csv",
+                "row_number": 1,
+                "row": {
+                    "staff_name": "Mina Patel",
+                    "role": "Clinical Site Manager",
+                    "department": "Paediatrics",
+                    "on_call": "Yes",
+                },
+                "access_level": "clinical",
+            }
+        ]
+
+    def _lookup_category(self, category, query, scopes, limit, *, stopwords=None):
+        return []
 
 
 class DeterministicLookupToolTests(unittest.TestCase):
@@ -456,8 +543,34 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertNotIn("ecg", service.count_calls[0]["stopwords"])
         self.assertEqual(result.lookup_plan["aggregate_intent"], "count")
         self.assertEqual(result.lookup_plan["aggregate_result"]["matching_rows"], 2)
+        self.assertEqual(result.lookup_plan["aggregate_result"]["counts_by_source"], {"equipment_assets.csv": 2})
         self.assertTrue(result.lookup_plan["row_value_search_used"])
+        self.assertTrue(result.lookup_plan["strict_row_value_filter_applied"])
         self.assertEqual(result.lookup_plan["matched_csv_sources"], ["equipment_assets.csv"])
+        self.assertEqual([row["row"]["equipment_type"] for row in result.rows], ["ECG Machine", "ECG Machine"])
+
+    def test_specific_equipment_count_filters_selected_csv_to_requested_type(self):
+        service = FakeEquipmentCountLookup()
+
+        result = service.lookup(
+            "how many ecg does the hospital have",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+            limit=100,
+            csv_assets=[
+                {
+                    "filename": "equipment_assets.csv",
+                    "columns": ["asset_id", "equipment_type", "location", "status"],
+                    "semantic_terms": ["asset", "equipment", "ecg", "dialysis"],
+                    "categorical_values": {"equipment_type": ["ECG Machine", "Dialysis Machine"]},
+                    "row_count": 30,
+                }
+            ],
+        )
+
+        self.assertEqual(result.lookup_plan["aggregate_result"]["matching_rows"], 2)
+        self.assertEqual(result.lookup_plan["aggregate_result"]["counts_by_source"], {"equipment_assets.csv": 2})
+        self.assertTrue(result.lookup_plan["strict_row_value_filter_applied"])
+        self.assertEqual([row["row"]["equipment_type"] for row in result.rows], ["ECG Machine", "ECG Machine"])
 
     def test_domain_and_schema_words_remain_search_terms(self):
         service = DeterministicLookupService(settings=None)
@@ -485,6 +598,17 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(service._classify("who is on call"), "staff_rota")
         self.assertTrue(_is_staff_rota_query("who is on call"))
         self.assertEqual(_requested_rota_role_groups("who is on call"), set())
+
+    def test_generic_who_is_on_call_does_not_filter_department_by_call(self):
+        service = FakeGenericOnCallRowsLookup()
+
+        result = service.lookup(
+            "who is on call",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+        )
+
+        self.assertEqual(result.rows[0]["row"]["staff_name"], "Mina Patel")
+        self.assertEqual(service.local_csv_calls[0]["department_terms"], [])
 
     def test_generic_on_call_without_rota_rows_falls_back_to_doctors(self):
         service = FakeNoRotaRowsLookup()

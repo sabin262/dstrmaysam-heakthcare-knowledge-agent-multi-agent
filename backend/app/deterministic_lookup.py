@@ -45,6 +45,7 @@ STAFF_ROTA_QUERY_MARKERS = {
     "shift",
     "shifts",
     "oncall",
+    "call",
     "on call",
     "on-call",
     "today",
@@ -161,6 +162,11 @@ CSV_SEMANTIC_TERM_LIMIT = 120
 CSV_CATEGORICAL_COLUMN_LIMIT = 12
 CSV_CATEGORICAL_VALUE_LIMIT = 20
 CSV_SAMPLE_VALUE_LIMIT = 60
+ROW_VALUE_CONTEXT_STOPWORDS = {
+    "hospital",
+    "hospitals",
+    "trust",
+}
 
 BASE_STOPWORDS = {
     "show",
@@ -384,6 +390,62 @@ def _matched_columns(terms: Sequence[str], rows: Sequence[dict[str, Any]]) -> li
     return sorted(columns)
 
 
+def _strict_row_value_term_groups(query: str, stopwords: set[str] | None = None) -> list[set[str]]:
+    active_stopwords = STOPWORDS | AGGREGATE_QUERY_MARKERS | ROW_VALUE_CONTEXT_STOPWORDS | (stopwords or set())
+    groups: list[set[str]] = []
+    seen: set[str] = set()
+    for term in _terms(query):
+        if term in active_stopwords:
+            continue
+        variants = _term_variants(term) - active_stopwords
+        if not variants:
+            continue
+        key = "|".join(sorted(variants))
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.append(variants)
+    return groups
+
+
+def _row_matches_term_groups(row: dict[str, Any], term_groups: Sequence[set[str]]) -> bool:
+    text = _row_text(row)
+    return all(any(term in text for term in group) for group in term_groups)
+
+
+def _filter_uploaded_rows_for_specific_row_values(
+    query: str,
+    rows: Sequence[dict[str, Any]],
+    stopwords: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    term_groups = _strict_row_value_term_groups(query, stopwords)
+    if not term_groups:
+        return list(rows), False
+    uploaded_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("source_table") == "uploaded_lookup_rows"
+    ]
+    if not uploaded_rows:
+        return list(rows), False
+    strict_rows = [row for row in uploaded_rows if _row_matches_term_groups(row, term_groups)]
+    if strict_rows:
+        return strict_rows, True
+    return list(rows), False
+
+
+def _counts_by_source(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("source_table") != "uploaded_lookup_rows":
+            continue
+        source = str(row.get("source_filename") or "")
+        if not source:
+            continue
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
 def _normalized_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
 
@@ -579,6 +641,7 @@ class DeterministicLookupService:
         resolved_today = _resolved_today()
         requested_rota_dates: list[str] = []
         row_value_search_used = False
+        strict_row_value_filter_applied = False
         matched_csv_sources: list[str] = []
         matched_terms: list[str] = []
         matched_columns: list[str] = []
@@ -732,6 +795,28 @@ class DeterministicLookupService:
                         "counts_by_source": counts_by_source,
                         "source_filenames": sorted(counts_by_source),
                     }
+            if row_value_search_used:
+                rows, strict_row_value_filter_applied = _filter_uploaded_rows_for_specific_row_values(
+                    query,
+                    rows,
+                    row_value_count_stopwords,
+                )
+                if strict_row_value_filter_applied:
+                    matched_csv_sources = sorted(
+                        {
+                            str(row.get("source_filename"))
+                            for row in rows
+                            if isinstance(row, dict) and row.get("source_filename")
+                        }
+                    )
+                    if aggregate_intent == "count":
+                        counts_by_source = _counts_by_source(rows)
+                        aggregate_result = {
+                            "type": "count",
+                            "matching_rows": sum(counts_by_source.values()),
+                            "counts_by_source": counts_by_source,
+                            "source_filenames": sorted(counts_by_source),
+                        }
             row_search_terms = _expanded_search_terms(query, row_value_count_stopwords)
             matched_terms = _matched_terms(row_search_terms, rows)
             matched_columns = _matched_columns(row_search_terms, rows)
@@ -748,6 +833,7 @@ class DeterministicLookupService:
                     "aggregate_intent": aggregate_intent,
                     "aggregate_result": aggregate_result,
                     "row_value_search_used": row_value_search_used,
+                    "strict_row_value_filter_applied": strict_row_value_filter_applied,
                     "distinct_field": distinct_field,
                     "matched_csv_sources": matched_csv_sources,
                     "matched_terms": matched_terms,
@@ -777,6 +863,7 @@ class DeterministicLookupService:
                 "aggregate_intent": aggregate_intent,
                 "aggregate_result": aggregate_result,
                 "row_value_search_used": row_value_search_used,
+                "strict_row_value_filter_applied": strict_row_value_filter_applied,
                 "distinct_field": distinct_field,
                 "matched_csv_sources": matched_csv_sources,
                 "matched_terms": matched_terms,
