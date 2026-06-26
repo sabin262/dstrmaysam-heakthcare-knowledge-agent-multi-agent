@@ -1,0 +1,58 @@
+{
+  "family": "dstrmaysam-healthcare-knowledge-agent-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-healthcare-knowledge-agent-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-healthcare-knowledge-agent-backend-task-role",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "APP_ENV", "value": "dev"},
+        {"name": "AWS_REGION", "value": "<region>"},
+        {"name": "SECRETS_STAGE", "value": "dev"},
+        {"name": "APP_SECRET_NAME", "value": "/dstrmaysam-healthcare-knowledge-agent/dev/app"},
+        {"name": "AZURE_OPENAI_SECRET_NAME", "value": "/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai"},
+        {"name": "AZURE_OPENAI_DEPLOYMENT", "value": "gpt-4.1-mini"},
+        {"name": "LANGFUSE_SECRET_NAME", "value": "/dstrmaysam-healthcare-knowledge-agent/dev/langfuse"},
+        {"name": "S3_BUCKET", "value": "dstrmaysam-healthcare-knowledge-agent-dev"},
+        {"name": "S3_RAW_PREFIX", "value": "raw/"},
+        {"name": "S3_MANIFEST_KEY", "value": "manifests/documents.json"},
+        {"name": "OPENSEARCH_ENDPOINT", "value": "https://<collection-id>.<region>.aoss.amazonaws.com"},
+        {"name": "OPENSEARCH_INDEX", "value": "dstrmaysam-healthcare-knowledge-agent-dev"},
+        {"name": "DYNAMODB_CHAT_TABLE", "value": "dstrmaysam-healthcare-knowledge-agent-dev"},
+        {"name": "CHAT_HISTORY_BACKEND", "value": "dynamodb"},
+        {"name": "DOCUMENT_MANIFEST_CACHE_TTL_SECONDS", "value": "300"},
+        {"name": "LANGFUSE_PROMPT_CACHE_TTL_SECONDS", "value": "300"},
+        {"name": "CHAT_FAST_RAG_ENABLED", "value": "true"},
+        {"name": "CHAT_FAST_RAG_MIN_QUERY_TERMS", "value": "3"},
+        {"name": "MAX_GRAPH_LLM_CALLS", "value": "2"},
+        {"name": "RAG_TOP_K", "value": "10"},
+        {"name": "RAG_NEIGHBOR_CHUNKS", "value": "1"},
+        {"name": "INGESTION_CHUNK_SIZE", "value": "1500"},
+        {"name": "INGESTION_CHUNK_OVERLAP", "value": "250"},
+        {"name": "RAG_PARALLEL_SEARCH_ENABLED", "value": "true"},
+        {"name": "CHAT_BACKGROUND_HISTORY_SAVE_ENABLED", "value": "true"},
+        {"name": "LOCAL_TEST_ADMIN_ENABLED", "value": "false"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/dstrmaysam-healthcare-knowledge-agent/backend",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

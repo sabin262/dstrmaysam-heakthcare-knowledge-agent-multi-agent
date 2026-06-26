@@ -1,0 +1,75 @@
+{
+  "settings": {
+    "index.knn": true
+  },
+  "mappings": {
+    "properties": {
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 1536,
+        "method": {
+          "engine": "faiss",
+          "name": "hnsw"
+        }
+      },
+      "key": {
+        "type": "keyword"
+      },
+      "title": {
+        "type": "text"
+      },
+      "uri": {
+        "type": "keyword"
+      },
+      "text": {
+        "type": "text"
+      },
+      "content_type": {
+        "type": "keyword"
+      },
+      "chunk_index": {
+        "type": "integer"
+      },
+      "checksum": {
+        "type": "keyword"
+      },
+      "metadata": {
+        "properties": {
+          "key": {
+            "type": "keyword"
+          },
+          "checksum": {
+            "type": "keyword"
+          },
+          "owner": {
+            "type": "keyword"
+          },
+          "version": {
+            "type": "keyword"
+          },
+          "effective_date": {
+            "type": "keyword"
+          },
+          "review_date": {
+            "type": "keyword"
+          },
+          "approval_status": {
+            "type": "keyword"
+          },
+          "sensitivity": {
+            "type": "keyword"
+          },
+          "domain": {
+            "type": "keyword"
+          },
+          "document_type": {
+            "type": "keyword"
+          },
+          "allowed_roles": {
+            "type": "keyword"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "family": "dstrmaysam-healthcare-knowledge-agent-frontend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-healthcare-knowledge-agent-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-healthcare-knowledge-agent-frontend-task-role",
+  "containerDefinitions": [
+    {
+      "name": "frontend",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-frontend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8501,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "BACKEND_URL", "value": "http://<backend-service-discovery-name>:8000"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/dstrmaysam-healthcare-knowledge-agent/frontend",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

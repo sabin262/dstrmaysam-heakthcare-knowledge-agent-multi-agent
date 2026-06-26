@@ -1,0 +1,53 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadRequiredSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": [
+        "arn:aws:secretsmanager:eu-west-2:666127452756:secret:/dstrmaysam-healthcare-knowledge-agent/dev/app-*",
+        "arn:aws:secretsmanager:eu-west-2:666127452756:secret:/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai-*",
+        "arn:aws:secretsmanager:eu-west-2:666127452756:secret:/dstrmaysam-healthcare-knowledge-agent/dev/langfuse-*"
+      ]
+    },
+    {
+      "Sid": "WriteAppUserSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:PutSecretValue",
+      "Resource": "arn:aws:secretsmanager:eu-west-2:666127452756:secret:/dstrmaysam-healthcare-knowledge-agent/dev/app-*"
+    },
+    {
+      "Sid": "ReadWriteKnowledgeBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::dstrmaysam-healthcare-knowledge-agent-dev",
+        "arn:aws:s3:::dstrmaysam-healthcare-knowledge-agent-dev/*"
+      ]
+    },
+    {
+      "Sid": "ReadWriteChatHistory",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": "arn:aws:dynamodb:eu-west-2:666127452756:table/dstrmaysam-healthcare-knowledge-agent-dev"
+    },
+    {
+      "Sid": "OpenSearchServerlessAccess",
+      "Effect": "Allow",
+      "Action": [
+        "aoss:APIAccessAll"
+      ],
+      "Resource": "arn:aws:aoss:eu-west-2:666127452756:collection/p5if6vfqygl1kxrcs568"
+    }
+  ]
+}

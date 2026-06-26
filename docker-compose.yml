@@ -1,0 +1,108 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-dev:latest_backend
+    environment:
+      APP_ENV: local
+      AWS_REGION: ${AWS_REGION:-eu-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      SECRETS_STAGE: ${SECRETS_STAGE:-dev}
+      APP_SECRET_NAME: ${APP_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-agent/dev/app}
+      AZURE_OPENAI_SECRET_NAME: ${AZURE_OPENAI_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-04-01-preview}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4.1-mini}
+      AZURE_OPENAI_FAST_DEPLOYMENT: ${AZURE_OPENAI_FAST_DEPLOYMENT:-${AZURE_OPENAI_DEPLOYMENT:-gpt-4.1-mini}}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-3-small}
+      LANGFUSE_SECRET_NAME: ${LANGFUSE_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
+      GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
+      GUARDIAN_NEWS_REFRESH_SECONDS: ${GUARDIAN_NEWS_REFRESH_SECONDS:-300}
+      GUARDIAN_NEWS_PAGE_SIZE: ${GUARDIAN_NEWS_PAGE_SIZE:-10}
+      S3_BUCKET: ${S3_BUCKET:-dstrmaysam-healthcare-knowledge-agent-dev}
+      S3_RAW_PREFIX: ${S3_RAW_PREFIX:-raw/}
+      S3_MANIFEST_KEY: ${S3_MANIFEST_KEY:-manifests/documents.json}
+      OPENSEARCH_ENDPOINT: ${OPENSEARCH_ENDPOINT:-}
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-dstrmaysam-healthcare-knowledge-agent-dev}
+      DYNAMODB_CHAT_TABLE: ${DYNAMODB_CHAT_TABLE:-dstrmaysam-healthcare-knowledge-agent-dev}
+      CHAT_HISTORY_BACKEND: ${CHAT_HISTORY_BACKEND:-memory}
+      DOCUMENT_MANIFEST_CACHE_TTL_SECONDS: ${DOCUMENT_MANIFEST_CACHE_TTL_SECONDS:-300}
+      LANGFUSE_PROMPT_CACHE_TTL_SECONDS: ${LANGFUSE_PROMPT_CACHE_TTL_SECONDS:-300}
+      CHAT_FAST_RAG_ENABLED: ${CHAT_FAST_RAG_ENABLED:-false}
+      CHAT_FAST_PLANNED_EXECUTION_ENABLED: ${CHAT_FAST_PLANNED_EXECUTION_ENABLED:-true}
+      CHAT_FAST_RAG_MIN_QUERY_TERMS: ${CHAT_FAST_RAG_MIN_QUERY_TERMS:-3}
+      MAX_GRAPH_LLM_CALLS: ${MAX_GRAPH_LLM_CALLS:-2}
+      RAG_TOP_K: ${RAG_TOP_K:-10}
+      RAG_NEIGHBOR_CHUNKS: ${RAG_NEIGHBOR_CHUNKS:-1}
+      RAG_QUERY_CACHE_TTL_SECONDS: ${RAG_QUERY_CACHE_TTL_SECONDS:-60}
+      RAG_EMBEDDING_CACHE_SIZE: ${RAG_EMBEDDING_CACHE_SIZE:-512}
+      RAG_CONTEXT_MAX_CHARS: ${RAG_CONTEXT_MAX_CHARS:-9000}
+      RAG_SNIPPET_CHARS: ${RAG_SNIPPET_CHARS:-900}
+      INGESTION_CHUNK_SIZE: ${INGESTION_CHUNK_SIZE:-1500}
+      INGESTION_CHUNK_OVERLAP: ${INGESTION_CHUNK_OVERLAP:-250}
+      RAG_PARALLEL_SEARCH_ENABLED: ${RAG_PARALLEL_SEARCH_ENABLED:-true}
+      CHAT_BACKGROUND_HISTORY_SAVE_ENABLED: ${CHAT_BACKGROUND_HISTORY_SAVE_ENABLED:-true}
+      LANGFUSE_BACKGROUND_TRACE_UPDATE_ENABLED: ${LANGFUSE_BACKGROUND_TRACE_UPDATE_ENABLED:-true}
+      CHAT_WARMUP_ENABLED: ${CHAT_WARMUP_ENABLED:-true}
+      CHAT_WARMUP_LLM_CALL_ENABLED: ${CHAT_WARMUP_LLM_CALL_ENABLED:-false}
+      CHAT_WARMUP_RETRIEVAL_ENABLED: ${CHAT_WARMUP_RETRIEVAL_ENABLED:-true}
+      LOCAL_DATA_DIR: ${LOCAL_DATA_DIR:-/app/data}
+      CHROMA_PERSIST_DIR: ${CHROMA_PERSIST_DIR:-/app/data/chroma}
+      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-dstrmaysam-healthcare-knowledge-agent}
+      LOCAL_APP_SECRET_FILE: ${LOCAL_APP_SECRET_FILE:-/app/data/local_app_secret.json}
+      LOCAL_TEST_ADMIN_ENABLED: ${LOCAL_TEST_ADMIN_ENABLED:-true}
+      LOCAL_TEST_ADMIN_USERNAME: ${LOCAL_TEST_ADMIN_USERNAME:-admin}
+      LOCAL_TEST_ADMIN_PASSWORD: ${LOCAL_TEST_ADMIN_PASSWORD:-admin123}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-healthcare_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-healthcare_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-healthcare_agent_dev}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-disable}
+      DETERMINISTIC_LOOKUP_ENABLED: ${DETERMINISTIC_LOOKUP_ENABLED:-true}
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-dev:latest_frontend
+    environment:
+      BACKEND_URL: ${BACKEND_URL:-http://backend:8000}
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+
+  postgres:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-dev:latest_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-healthcare_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-healthcare_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-healthcare_agent_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-healthcare_agent} -d ${POSTGRES_DB:-healthcare_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  postgres_data:
