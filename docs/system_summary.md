@@ -4,92 +4,41 @@ Generated for the `dstrmaysam-healthcare-knowledge-agent` project.
 
 ## 1. Overview
 
-The Healthcare Knowledge Agent is a containerized internal assistant for healthcare knowledge, policy, operational lookup, document search, and admin monitoring. It combines:
+The Healthcare Knowledge Agent is a containerized internal assistant for healthcare document Q&A, operational lookup, policy search, patient-oriented admin dashboards, document administration, observability, and evaluation.
 
-- A Streamlit frontend for chat, document administration, user administration, patient details, and dashboards.
-- A FastAPI backend for authentication, chat orchestration, document ingestion, deterministic lookup, tracing, and admin APIs.
-- LangGraph agent execution with Azure OpenAI chat models through `langchain-openai`.
-- Retrieval augmented generation over uploaded documents.
-- Deterministic Postgres lookup for structured healthcare data and uploaded CSV rows.
-- Langfuse tracing, prompt loading, dashboard metadata, and background RAGAS scoring.
-- Two runtime modes:
-  - Local mode: controlled by `LOCAL_TEST_ADMIN_ENABLED=true`.
-  - AWS dev mode: controlled by `LOCAL_TEST_ADMIN_ENABLED=false`.
+It combines:
 
-The system is designed so local development can use local files, ChromaDB, `.env` secrets, and Postgres chat history, while AWS dev uses S3, OpenSearch Serverless, Secrets Manager, IAM task roles, and the configured chat history backend.
+- A Streamlit frontend for chat, NHS news, admin dashboards, patient details, users, and documents.
+- A FastAPI backend for authentication, chat orchestration, document ingestion, deterministic lookup, tracing, admin APIs, and news.
+- A `KnowledgeAgent` that uses LangGraph/LangChain with Azure OpenAI chat models.
+- RAG over uploaded documents using Chroma locally or OpenSearch Serverless in AWS.
+- Postgres deterministic lookup for structured healthcare tables and uploaded CSV rows.
+- Langfuse tracing, prompt loading, trace enrichment, and optional RAGAS scoring.
+- Docker Compose for local development and ECS/Fargate templates for AWS deployment.
+
+The system has two practical runtime profiles:
+
+- Local profile: local files, Chroma, `.env` credentials, local app secret file, and Postgres.
+- AWS profile: Secrets Manager, S3, OpenSearch Serverless, DynamoDB or Postgres chat history, and ECS task roles.
 
 ## 2. Main Capabilities
 
-- Authenticated chat with persistent sessions.
-- Admin-created users, roles, departments, password reset, and first-login password change.
-- Per-query execution mode:
-  - `Deterministic + Agent`: deterministic preflight and optimized paths are allowed before agent fallback.
-  - `Agent only`: skips deterministic preflight and starts LangGraph so the LLM chooses tools.
-- Document upload and ingestion.
+- Authenticated chat with persistent chat sessions.
+- Admin user management with roles, departments, password resets, and first-login password change support.
+- Single supervisor-led chat routing: the supervisor LLM chooses deterministic lookup, RAG, policy, catalog, or safety specialists before synthesis.
+- Document upload, metadata editing, ingestion, indexing, and full index deletion.
+- Role-aware document access through `allowed_roles` metadata.
 - Catalog-guided RAG for documents, policies, SOPs, pathways, and guidelines.
-- Local vector storage using ChromaDB.
-- AWS vector storage using OpenSearch Serverless.
+- Local vector search through ChromaDB.
+- AWS vector and keyword retrieval through OpenSearch Serverless.
 - Structured lookup against Postgres healthcare tables.
-- Uploaded CSV lookup rows stored in Postgres and exposed as metadata-only catalog assets.
-- Admin document metadata editing for category, roles, and document type.
-- Delete all indexes flow protected by admin password.
-- Langfuse trace IDs, tool flow, latency, token metadata, model metadata, and RAGAS scores.
-- Admin dashboard with range and user filters.
-- Patient details dashboard over Postgres tables.
-- RAGAS and stress-test scripts.
+- Uploaded CSV lookup rows stored in Postgres and represented in the document manifest as metadata-only assets.
+- Guardian NHS news feed surfaced in the frontend.
+- Admin dashboard with query, latency, token, model, trace, tool flow, agent flow, source, safety, and RAGAS metadata.
+- Patient details dashboard over Postgres healthcare tables.
+- Golden dataset evaluation and 100-query stress testing.
 
-## 3. Runtime Modes
-
-### Local Mode
-
-Enabled when:
-
-```env
-LOCAL_TEST_ADMIN_ENABLED=true
-```
-
-Local mode uses:
-
-- `EnvSecretProvider`
-- `.env` values for Azure OpenAI and Langfuse
-- `data/local_app_secret.json` for app auth users
-- `data/raw/` for uploaded files
-- `data/manifests/documents.json` for the document manifest
-- ChromaDB under `data/chroma`
-- Postgres for deterministic lookup and persistent chat history
-
-Local mode ignores AWS S3, OpenSearch, DynamoDB, and Secrets Manager even if those values exist in `.env`.
-
-### AWS Dev Mode
-
-Enabled when:
-
-```env
-LOCAL_TEST_ADMIN_ENABLED=false
-APP_ENV=dev
-SECRETS_STAGE=dev
-```
-
-AWS dev mode uses:
-
-- AWS Secrets Manager for app, Azure OpenAI, and Langfuse secrets.
-- S3 for raw documents and the document manifest.
-- OpenSearch Serverless for vector and keyword retrieval.
-- DynamoDB, Postgres, or DynamoDB with Postgres fallback depending on `CHAT_HISTORY_BACKEND`.
-- ECS task role credentials. AWS credentials should come from the ECS task role, not environment variables.
-
-Important AWS dev names:
-
-```env
-S3_BUCKET=dstrmaysam-healthcare-knowledge-agent-dev
-DYNAMODB_CHAT_TABLE=dstrmaysam-healthcare-knowledge-agent-dev
-OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-agent-dev
-APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/app
-AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
-```
-
-## 4. High-Level Architecture
+## 3. High-Level Architecture
 
 ```mermaid
 flowchart LR
@@ -105,6 +54,7 @@ flowchart LR
     Agent --> Retrieval["Retrieval Service"]
     Agent --> Observability["Langfuse Observability"]
     Agent --> History["Chat History"]
+    Agent --> AzureOpenAI["Azure OpenAI Chat and Embeddings"]
 
     Retrieval --> VectorStore["OpenSearch Serverless or ChromaDB"]
     Retrieval --> Manifest["Document Manifest"]
@@ -115,51 +65,139 @@ flowchart LR
 
     Backend --> Postgres["Postgres Healthcare Tables"]
     Deterministic --> Postgres
-
     Observability --> Langfuse["Langfuse"]
-    Agent --> AzureOpenAI["Azure OpenAI Chat and Embeddings"]
 ```
 
-## 5. Frontend Workflow
+## 4. Repository Map
 
-The frontend is a Streamlit app. It contains pages for:
+| Path | Purpose |
+| --- | --- |
+| `backend/app/main.py` | FastAPI app, dependency wiring, auth, chat, admin, documents, dashboard, and news routes |
+| `backend/app/agent.py` | Main `KnowledgeAgent`, supervisor orchestration, tool flow, guardrails, metadata, and fallback answers |
+| `backend/app/healthcare_tools.py` | Healthcare-specific agent tools |
+| `backend/app/tools.py` | Base agent tools and retrieval formatting |
+| `backend/app/retrieval.py` | OpenSearch retrieval service with vector, keyword, neighbor chunks, and caching |
+| `backend/app/local_chroma.py` | Local Chroma ingestion and retrieval |
+| `backend/app/ingest.py` | Document parsing, chunking, checksums, metadata inference, and OpenSearch ingestion |
+| `backend/app/storage.py` | S3 and local document stores plus manifests |
+| `backend/app/deterministic_lookup.py` | Exact Postgres lookup over healthcare tables and uploaded CSV rows |
+| `backend/app/history.py` | Memory, DynamoDB, Postgres, and fallback chat history repositories |
+| `backend/app/auth.py` | Password hashing, token creation, user and role management |
+| `backend/app/secrets.py` | AWS Secrets Manager provider and local environment/file provider |
+| `backend/app/observability.py` | Langfuse trace handling and trace outbox support |
+| `backend/app/ragas_scoring.py` | Live RAGAS scoring with lexical fallback |
+| `frontend/streamlit_app.py` | Streamlit UI pages and backend API client |
+| `database/init/` | Postgres schema and seed data |
+| `evals/` | RAGAS eval runner, datasets, and stress test |
+| `infra/` | AWS templates for ECS, IAM, DynamoDB, and OpenSearch |
+| `tests/` | Test coverage for auth, storage, retrieval, ingestion, observability, local mode, RAGAS, and agent contract |
 
-- Chat
-- Dashboard
-- Patient Details
-- Documents
-- Users
+## 5. Runtime Modes
 
-The chat page:
+### Local Profile
 
-1. Reads the stored login session.
-2. Lets the user choose `Deterministic + Agent` or `Agent only`.
-3. Shows a local notice when the mode changes.
-4. Sends the selected execution mode with every `/chat` request.
-5. Keeps the query input fixed near the bottom of the chat window.
-6. Shows progress messages while backend processing is happening.
-7. Displays only the final assistant answer when processing is complete.
+Docker Compose defaults to:
 
-The Documents page:
+```env
+APP_ENV=local
+LOCAL_TEST_ADMIN_ENABLED=true
+```
 
-1. Shows the document table at all times.
-2. Allows admins to upload documents.
-3. Allows CSV uploads to be stored as metadata-only catalog assets while their rows are inserted into Postgres.
-4. Allows admins to edit category, access roles, and document type.
-5. Allows admins to ingest and index documents.
-6. Allows admins to delete all indexes after confirming their admin password.
+In current code, `AppSettings.use_local_resources()` returns `LOCAL_TEST_ADMIN_ENABLED`, so local resource implementations are selected when that flag is true.
 
-The Dashboard page:
+Local profile uses:
 
-1. Loads recent chat interactions from history.
-2. Filters by time range and user.
-3. Shows aggregate latency, token, tool, RAGAS, model, and query details.
-4. Shows per-query expanders with trace ID, mode, tools, tool flow, sources, and metadata.
+- `EnvSecretProvider`
+- `.env` values for Azure OpenAI and Langfuse
+- `data/local_app_secret.json` for app auth/session secrets
+- `data/raw/` for uploaded source documents
+- `data/manifests/documents.json` for the document manifest
+- ChromaDB under `data/chroma`
+- Postgres for deterministic lookup and chat history
 
-## 6. Backend API Surface
+Local uploads are constrained under `LOCAL_DATA_DIR`; path traversal is rejected before local file reads/writes.
+
+### AWS Profile
+
+AWS profile is selected by setting:
+
+```env
+APP_ENV=dev
+SECRETS_STAGE=dev
+LOCAL_TEST_ADMIN_ENABLED=false
+```
+
+AWS profile uses:
+
+- AWS Secrets Manager for app, Azure OpenAI, and Langfuse secrets.
+- S3 for raw documents and the document manifest.
+- OpenSearch Serverless for indexed chunks.
+- DynamoDB, Postgres, or DynamoDB with Postgres fallback depending on `CHAT_HISTORY_BACKEND`.
+- ECS task role credentials for AWS API calls.
+
+Important AWS names used by defaults and docs:
+
+```env
+S3_BUCKET=dstrmaysam-healthcare-knowledge-agent-dev
+DYNAMODB_CHAT_TABLE=dstrmaysam-healthcare-knowledge-agent-dev
+OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-agent-dev
+APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/app
+AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
+LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+```
+
+## 6. Frontend Workflow
+
+The frontend is a Streamlit app with role-aware navigation.
+
+Public unauthenticated page:
+
+- Sign in.
+- NHS news carousel when Guardian news is available.
+
+Authenticated non-admin pages:
+
+- Chat.
+- News.
+
+Admin pages:
+
+- Chat.
+- News.
+- Dashboard.
+- Patient Details.
+- Users.
+- Documents.
+
+Chat page behavior:
+
+1. Sends `query` and `session_id` to `POST /chat`.
+2. Shows progress messages while the backend request is running.
+3. Stores the returned session ID.
+4. Displays the assistant answer.
+5. Lists previous chat sessions in the sidebar.
+
+Documents page behavior:
+
+1. Loads indexed document records through `GET /documents`.
+2. Uploads selected files through `POST /admin/documents/upload`.
+3. Edits document category, document type, and allowed roles through `PATCH /admin/documents/metadata`.
+4. Runs ingestion through `POST /admin/documents/ingest`.
+5. Deletes all indexes through `POST /admin/documents/delete-indexes` after admin password confirmation.
+
+Dashboard page behavior:
+
+1. Loads query analytics through `GET /admin/dashboard`.
+2. Filters by range and user.
+3. Shows aggregate counts and latency/token metrics.
+4. Shows tool usage, agent usage, model usage, RAGAS metrics, trace IDs, sources, safety metadata, and latency breakdowns.
+
+## 7. Backend API Surface
 
 Core endpoints:
 
+- `GET /health`
+- `GET /news`
 - `POST /auth/login`
 - `GET /auth/me`
 - `POST /auth/change-password`
@@ -167,8 +205,6 @@ Core endpoints:
 - `GET /chat/sessions`
 - `GET /chat/sessions/{session_id}`
 - `GET /documents`
-- `GET /health`
-- `GET /news`
 
 Admin endpoints:
 
@@ -184,22 +220,48 @@ Admin endpoints:
 - `GET /admin/patient-details`
 - `POST /admin/warmup`
 
-## 7. Chat Request And Response Shape
+## 8. Authentication And Authorization
+
+The backend uses bearer tokens created by `backend/app/auth.py`.
+
+User records contain:
+
+- username
+- password hash
+- roles
+- departments
+- `password_change_required`
+
+Known roles include:
+
+- `admin`
+- `staff`
+- `doctor`
+- `nurse`
+- `pharmacy`
+- `clinical_governance`
+- `manager`
+
+Admin-only APIs require the `admin` role. Active user APIs reject users with `password_change_required=true` until they change their password.
+
+Password hashes use PBKDF2 SHA-256 strings. Generate a hash with:
+
+```bash
+python -m backend.app.auth hash-password
+```
+
+## 9. Chat Request And Response Shape
 
 Request:
 
 ```json
 {
   "query": "How many ventilators do we have?",
-  "session_id": "optional-existing-session-id",
-  "execution_mode": "deterministic_agent"
+  "session_id": "optional-existing-session-id"
 }
 ```
 
-Allowed execution modes:
-
-- `deterministic_agent`
-- `agent_only`
+The legacy `execution_mode` field is tolerated for old clients, but `/chat` ignores it and normalizes execution metadata to `supervisor`.
 
 Response includes:
 
@@ -216,7 +278,7 @@ Response includes:
 - `performance`
 - `latency_breakdown`
 
-Each source has:
+Source objects include:
 
 - `title`
 - `uri`
@@ -224,187 +286,173 @@ Each source has:
 - `metadata`
 - `snippet`
 
-The `snippet` field is important for citations, RAGAS context scoring, and dashboard drilldown.
+The `snippet` field is important for citations, dashboard inspection, and RAGAS context scoring.
 
-## 8. Chat Workflow
+## 10. Chat Workflow
 
 ```mermaid
 flowchart TD
-    Start["POST /chat"] --> Auth["Verify bearer token and password-change status"]
-    Auth --> UserContext["Build healthcare user context"]
-    UserContext --> Redact["Redact PHI from prompt input"]
-    Redact --> Prompt["Load system prompt from Langfuse or fallback prompt"]
+    Start["POST /chat"] --> Auth["Verify bearer token and user status"]
+    Auth --> Context["Build HealthcareUserContext"]
+    Context --> Redact["Redact PHI-like values for prompts"]
+    Redact --> Prompt["Load Langfuse prompt or fallback prompt"]
     Prompt --> Style["Append response style baseline"]
-    Style --> Mode{"Execution mode"}
-
-    Mode -->|"deterministic_agent"| Preflight["Run deterministic preflight and fast paths when applicable"]
-    Preflight -->|"answered"| Safety["Final safety assessment"]
-    Preflight -->|"not answered"| Graph["LangGraph agent flow"]
-
-    Mode -->|"agent_only"| Graph
-
-    Graph --> Answer["Generate final answer"]
-    Answer --> Guardrail{"Guardrail rewrite needed?"}
+    Style --> Graph["Supervisor multi-agent graph"]
+    Graph --> Specialists["Specialist agents collect evidence"]
+    Specialists --> Synthesis["SynthesisAgent drafts final answer"]
+    Synthesis --> Guardrail{"Guardrail rewrite needed?"}
     Guardrail -->|"yes"| Rewrite["Fast model rewrite"]
-    Guardrail -->|"no"| Safety
-    Rewrite --> Safety
-
-    Safety --> Persist["Save chat history and metadata"]
-    Persist --> Trace["Update Langfuse trace and background RAGAS"]
-    Trace --> Response["Return chat response"]
+    Guardrail -->|"no"| FinalSafety
+    Rewrite --> FinalSafety
+    FinalSafety --> Persist["Save history and metadata"]
+    Persist --> Trace["Update Langfuse and run RAGAS enrichment"]
+    Trace --> Response["Return ChatResponse"]
 ```
 
-## 9. Agent Workflow
+There is no online deterministic preflight shortcut. Structured operational facts such as patient details, rota facts, appointments, wards, contacts, and formulary facts must come from the graph-selected `DeterministicLookupAgent` or retrieved evidence rather than prior chat memory. Offline/no-LLM fallback can still use deterministic lookup because no supervisor LLM is available.
 
-The main agent lives in `KnowledgeAgent`. It uses LangGraph for tool-calling behavior and keeps deterministic safety outside the graph.
+## 11. Agent And Tool Flow
 
-Key steps:
+The main agent lives in `KnowledgeAgent`.
 
-1. The backend creates or reuses a Langfuse root trace.
-2. The system prompt is loaded from Langfuse when available.
-3. Static response style requirements are appended to the prompt.
-4. Prior chat history is included only for continuity, not as authoritative evidence for current operational facts.
-5. In `deterministic_agent` mode, deterministic preflight may answer directly.
-6. In `agent_only` mode, deterministic preflight is skipped.
-7. LangGraph receives the current query, user context, tool list, and prompt.
-8. The model chooses tools.
-9. Tool calls are executed and recorded in `tools_used`.
-10. Internal catalog assistance is recorded in `tool_flow` and metadata, but `tools_used` only records tools selected by the LLM or execution path.
-11. The final answer is produced.
-12. Safety, trace metadata, history, and RAGAS enrichment run after the answer path.
+Key stages:
 
-```mermaid
-flowchart TD
-    LLM["LLM node with bound tools"] --> ToolChoice{"Tool calls?"}
-    ToolChoice -->|"yes"| ToolNode["Tool node executes requested tools"]
-    ToolNode --> Record["Record actual tool names and tool flow"]
-    Record --> Loop{"Max LLM calls reached?"}
-    Loop -->|"no"| LLM
-    Loop -->|"yes"| FinalNoTool["Final no-tool answer from accumulated context"]
-    ToolChoice -->|"no"| Final["Final assistant answer"]
-```
+1. Create or reuse a trace ID.
+2. Load chat history for the user/session.
+3. Load the configured system prompt from Langfuse when available.
+4. Add static response style requirements.
+5. Enter the supervisor-led multi-agent graph for online LLM-backed chat.
+6. Let the supervisor choose the first specialist through LLM routing while allowing deterministic lookup when appropriate.
+7. Run selected specialists and return to the supervisor until enough evidence exists or the agent-step limit is reached.
+8. Have `SynthesisAgent` generate the final answer from accumulated specialist evidence.
+9. Apply response guardrail rewrite when needed.
+10. Save chat, trace metadata, latency metrics, source snippets, tool flow, agent flow, and optional RAGAS scores.
 
-The graph loop is bounded by the `MAX_GRAPH_LLM_CALLS` environment setting. The current default is `2`, with a code-level fallback constant of `5`.
+Tool flow is recorded at two levels:
 
-## 10. Agent Tools
+- `tools_used`: tools actually selected by the agent or execution path.
+- `tool_flow`: lower-level execution details, including internal catalog guidance used to narrow RAG searches.
 
-### `rag_search`
-
-General RAG search over indexed knowledge chunks. It is used by the base agent tool set for broad knowledge-base retrieval.
-
-Workflow:
-
-1. Load accessible document catalog records.
-2. Match query terms against title, key, content type, and metadata.
-3. Limit catalog candidates to the strongest matching document keys.
-4. Search vector store using the query and candidate document key filter when available.
-5. Merge vector and keyword hits.
-6. Add neighbor chunks if configured.
-7. Filter hits by user role and document access metadata.
-8. Return snippets, titles, URIs, scores, and metadata.
+## 12. Agent Tools
 
 ### `document_search`
 
-Healthcare document search over approved documents. It is similar to `rag_search`, but exposed as a healthcare-specific tool description so the LLM can choose it for ordinary document questions.
-
-Workflow:
-
-1. LLM chooses `document_search`.
-2. Backend runs catalog-guided candidate selection internally.
-3. Retrieval searches OpenSearch or ChromaDB.
-4. Access control removes documents the user is not allowed to read.
-5. Returned chunks are formatted as evidence for the final answer.
+Semantic search over approved healthcare documents. It retrieves indexed chunks through the configured retrieval backend and applies role-based filtering.
 
 ### `policy_search`
 
-Focused search over clinical policies, admin policies, compliance documents, SOPs, pathways, and guidelines.
-
-Workflow:
-
-1. LLM chooses `policy_search`.
-2. Catalog candidates are selected.
-3. Policy-like records are preferred when metadata `domain` or `document_type` matches policy, SOP, pathway, guideline, clinical policy, admin policy, or compliance.
-4. Retrieval is filtered to candidate keys when candidates exist.
-5. Broad search is used if no candidates are found.
-6. Access control and source formatting are applied.
+Focused retrieval over clinical policies, admin policies, compliance documents, SOPs, pathways, and guidelines. It prefers documents whose metadata `domain` or `document_type` indicates policy-like content.
 
 ### `catalogue_search`
 
-Searches document catalog metadata rather than chunk text.
-
-Workflow:
-
-1. Load the document manifest.
-2. Apply role-based document filtering.
-3. Match query terms against metadata fields.
-4. Return matching catalog records as JSON.
-
-The catalog also acts as an internal helper for RAG narrowing. Internal catalog assistance is visible in `tool_flow`, not as a separate `tools_used` value unless the LLM explicitly calls `catalogue_search`.
-
-### `postgres_deterministic_lookup`
-
-Exact lookup over Postgres healthcare data and uploaded CSV rows.
-
-Workflow:
-
-1. Classify the query as patient, appointment, doctor, ward, department, contact, formulary, uploaded CSV row lookup, or directory lookup.
-2. Build normalized search terms from the user query.
-3. Apply access-level filtering using the current user's roles and departments.
-4. Query the matching Postgres table or `uploaded_lookup_rows`.
-5. For uploaded CSV rows, use full-text search over `searchable_text`, with fallback matching where needed.
-6. Detect list and count intent.
-7. Return exact rows, counts, matched terms, selected CSV assets, and lookup plan metadata.
-
-Examples:
-
-- "How many ventilators do we have?" searches uploaded CSV rows and returns exact counts plus location/status details.
-- "List all equipment we have" returns unique equipment types from `equipment_assets.csv`.
-- "Information on morphine" queries the formulary table and formats the selected medicine details.
+Searches document manifest metadata. It is useful for questions about available departments, services, owners, systems, and approved tools. The catalog is also used internally to narrow RAG searches.
 
 ### `calendar_rota_lookup`
 
-Looks up calendar, clinic, training, on-call, and rota data. Staff availability and rota-style CSV questions prefer the Postgres deterministic lookup path.
+Looks up calendar, clinic, training, on-call, and rota-style data from approved CSV sources. Staff availability and rota questions can use deterministic Postgres lookup when appropriate.
 
 ### `formulary_table_lookup`
 
-Looks up formulary rows, medicine restrictions, approval rules, and structured facts.
+Looks up formulary rows, restricted medicines, approval requirements, maximum adult dose fields, and monitoring requirements.
+
+### `postgres_deterministic_lookup`
+
+Exact lookup over Postgres healthcare data and uploaded CSV rows. It handles patient, appointment, doctor, ward, department, contact, formulary, directory, count, list, and uploaded table-style queries.
 
 ### `safety_guard`
 
 Assesses clinical risk, missing sources, PHI exposure, and escalation needs.
 
-## 11. Retrieval Strategy
+### Base Tools
 
-Retrieval uses hybrid search:
+The base tool set also includes:
 
-- Vector search over embeddings.
-- Keyword search over text, title, key, and metadata.
-- OpenSearch multi-search when available.
-- Parallel vector and keyword fallback when multi-search is not available.
-- Neighbor chunk expansion using `RAG_NEIGHBOR_CHUNKS`.
-- Catalog-guided document key filtering.
-- Role-aware filtering after retrieval.
+- `rag_search`
+- `document_catalog`
+- `table_lookup`
 
-OpenSearch query behavior:
+Healthcare tool descriptions are richer and are the main tools exposed to the healthcare agent path.
 
-1. Embed the query with Azure OpenAI embeddings.
-2. Run kNN vector search when embeddings are available.
-3. Run keyword `multi_match`.
-4. If catalog candidate keys exist, add a `terms` filter on `key`.
-5. Merge duplicate hits.
-6. Fetch neighbor chunks.
-7. Return ranked `RetrievalHit` objects.
+## 13. Retrieval Strategy
 
-Local Chroma behavior:
+OpenSearch retrieval:
+
+1. Ensure the OpenSearch index exists.
+2. Embed the query with Azure OpenAI embeddings.
+3. Run kNN vector search when embeddings are available.
+4. Run keyword multi-match search across text, title, key, and metadata.
+5. Use `msearch` or parallel search when enabled.
+6. Apply document-key filters when catalog candidates exist.
+7. Merge duplicate hits.
+8. Fetch neighbor chunks according to `RAG_NEIGHBOR_CHUNKS`.
+9. Return ranked `RetrievalHit` objects.
+
+Local Chroma retrieval:
 
 1. Embed the query with Azure OpenAI embeddings.
 2. Query the persistent Chroma collection.
-3. Apply document key filtering when supplied.
-4. Return the same `RetrievalHit` shape as OpenSearch.
+3. Apply document-key filtering when supplied.
+4. Fall back to keyword search over Chroma contents or raw local files if needed.
+5. Fetch neighbor chunks.
+6. Return the same `RetrievalHit` shape as OpenSearch.
 
-## 12. Chunking Strategy
+Relevant settings:
 
-Document ingestion uses:
+```env
+RAG_TOP_K=10
+RAG_NEIGHBOR_CHUNKS=1
+RAG_QUERY_CACHE_TTL_SECONDS=60
+RAG_EMBEDDING_CACHE_SIZE=512
+RAG_CONTEXT_MAX_CHARS=9000
+RAG_SNIPPET_CHARS=900
+RAG_PARALLEL_SEARCH_ENABLED=true
+```
+
+## 14. Document Upload And Ingestion
+
+Supported upload extensions:
+
+- `.pdf`
+- `.docx`
+- `.txt`
+- `.md`
+- `.csv`
+
+Non-CSV document flow:
+
+```mermaid
+flowchart TD
+    Upload["Admin uploads document"] --> Store["Store raw file in S3 or data/raw"]
+    Store --> Ingest["Run ingestion"]
+    Ingest --> Parse["Parse text"]
+    Parse --> Chunk["Chunk text"]
+    Chunk --> Embed["Create embeddings"]
+    Embed --> Index["Upsert chunks to OpenSearch or Chroma"]
+    Index --> Manifest["Write manifest record"]
+```
+
+CSV upload flow:
+
+```mermaid
+flowchart TD
+    Upload["Admin uploads CSV"] --> Rows["Insert rows into uploaded_lookup_rows"]
+    Rows --> Metadata["Build semantic metadata"]
+    Metadata --> Manifest["Write metadata-only manifest record"]
+    Manifest --> Lookup["Available to deterministic lookup"]
+```
+
+CSV rows are not indexed as vector chunks by default. They are searched exactly through Postgres.
+
+Ingestion is incremental:
+
+- Unchanged files are skipped by checksum.
+- Changed files are deleted and reindexed.
+- Removed source files remove their indexed chunks.
+- Backend changes in vector backend/index/collection can force reindexing.
+
+## 15. Chunking Strategy
+
+Default chunk settings:
 
 ```env
 INGESTION_CHUNK_SIZE=1500
@@ -414,163 +462,68 @@ INGESTION_CHUNK_OVERLAP=250
 Implementation:
 
 - Primary splitter: LangChain `RecursiveCharacterTextSplitter`.
-- Fallback splitter: fixed-size sliding window over text.
+- Fallback splitter: fixed-size sliding text window.
 - Minimum chunk size is clamped to `300`.
-- Overlap is clamped so it cannot be equal to or larger than the chunk size.
-
-Why this strategy is used:
-
-- Recursive splitting tries to preserve natural boundaries before falling back to smaller text units.
-- `1500` characters keeps chunks large enough to preserve local context such as policy clauses, headings, and paragraphs.
-- `250` characters of overlap reduces the risk that an answer-critical sentence is split across two chunks.
-- Moderate chunk size helps keep retrieval precise and avoids sending very large context payloads to the LLM.
-- The fallback splitter keeps ingestion working even if the optional text splitter package fails.
+- Overlap is clamped below the chunk size.
 
 Chunk records store:
 
-- Document key
-- Title
+- document key
+- title
 - URI
-- Chunk text
-- Content type
-- Chunk index
-- Checksum
-- Metadata
-- Embedding vector
+- content type
+- checksum
+- chunk index
+- metadata
+- text
+- embedding vector
 
-## 13. Document Upload And Ingestion Workflow
-
-```mermaid
-flowchart TD
-    Upload["Admin uploads file"] --> IsCSV{"CSV file?"}
-
-    IsCSV -->|"yes"| CSVRows["Insert rows into Postgres uploaded_lookup_rows"]
-    CSVRows --> CSVManifest["Add metadata-only manifest record"]
-    CSVManifest --> DoneCSV["CSV available for catalog and deterministic lookup"]
-
-    IsCSV -->|"no"| StoreRaw["Store raw file in S3 or data/raw"]
-    StoreRaw --> Ingest["Admin clicks ingest/index"]
-    Ingest --> Parse["Parse text from PDF, DOCX, TXT, CSV"]
-    Parse --> Chunk["Chunk text"]
-    Chunk --> Embed["Create Azure OpenAI embeddings"]
-    Embed --> Index["Upsert chunks to OpenSearch or ChromaDB"]
-    Index --> Manifest["Write document manifest"]
-```
-
-Ingestion is incremental:
-
-- Unchanged files are skipped by checksum.
-- Changed files are deleted and reindexed.
-- Removed files cause their chunks to be deleted.
-- If the OpenSearch index or Chroma collection changes, the ingestion job forces reindexing.
-
-CSV handling is special:
-
-- Uploaded CSV rows are stored in Postgres as the source of truth.
-- CSV manifest records are metadata-only and use `postgres://uploaded_lookup_rows/<filename>` URIs.
-- CSV semantic metadata helps the agent and deterministic lookup choose the right uploaded CSV asset.
-- Deleting indexes also deletes uploaded lookup rows.
-
-## 14. Data Structures
+## 16. Data Stores
 
 ### Postgres Healthcare Tables
 
 Defined in `database/init/01_schema.sql`.
 
-| Table | Purpose | Key fields |
-| --- | --- | --- |
-| `departments` | Department directory | `department_id`, `department_name`, `specialty_group`, `location`, `main_phone`, `service_lead`, `escalation_contact`, `access_level` |
-| `doctors` | Doctor directory and on-call status | `doctor_id`, `full_name`, `grade`, `specialty`, `department_name`, `phone`, `email`, `bleep`, `on_call_today`, `access_level` |
-| `wards` | Ward directory and capacity | `ward_code`, `ward_name`, `department_name`, `floor`, `bed_capacity`, `beds_available`, `nurse_in_charge`, `phone`, `access_level` |
-| `patients` | Patient details | `patient_id`, `mrn`, `nhs_number`, `full_name`, `date_of_birth`, `ward_code`, `department_name`, `named_consultant`, `care_status`, `risk_flags`, `access_level` |
-| `organization_contacts` | Escalation and contact directory | `contact_id`, `contact_type`, `department_name`, `contact_name`, `role`, `phone`, `email`, `available_hours`, `escalation_level`, `access_level` |
-| `appointments` | Appointment lookup | `appointment_id`, `patient_mrn`, `patient_name`, `clinic_name`, `department_name`, `appointment_date`, `appointment_time`, `clinician_name`, `status`, `referral_priority`, `access_level` |
-| `formulary` | Medicine and formulary facts | `medicine_id`, `medicine_name`, `category`, `restricted`, `approval_required`, `max_adult_dose`, `monitoring_required`, `access_level` |
-| `uploaded_lookup_rows` | Uploaded CSV rows | `source_filename`, `row_number`, `row_data`, `searchable_text`, `access_level`, `uploaded_at` |
+| Table | Purpose |
+| --- | --- |
+| `departments` | Department directory, locations, phones, service leads, escalation contacts |
+| `doctors` | Doctor and consultant directory, specialties, contacts, on-call status |
+| `wards` | Ward directory, floors, bed capacity, available beds, nurse in charge |
+| `patients` | Patient details, MRN, NHS number, ward, consultant, status, risk flags |
+| `organization_contacts` | Escalation contacts and organization directory |
+| `appointments` | Appointment lookup by patient, clinic, date, clinician, status |
+| `formulary` | Medicine facts, restrictions, approval, dose, monitoring |
+| `uploaded_lookup_rows` | Uploaded CSV rows as JSONB plus searchable text |
 
-### Uploaded CSV Row Search
+### Chat History Tables
 
-`uploaded_lookup_rows` stores:
+Postgres chat history uses:
 
-- `source_filename`: CSV file name.
-- `row_number`: original CSV row number.
-- `row_data`: full row as JSONB.
-- `searchable_text`: normalized text built from filename, column names, and row values.
-- `access_level`: access scope.
-- `uploaded_at`: insert timestamp.
+- `chat_sessions`
+- `chat_messages`
+- `chat_interactions`
+- `langfuse_trace_outbox`
 
-Indexes:
+DynamoDB history uses a single-table shape with:
 
-- Full-text index on `to_tsvector('simple', searchable_text)`.
-- Source and access indexes for filtering.
-
-### Chat History In Postgres
-
-Used in local mode and optionally as fallback in AWS mode.
-
-`chat_sessions`:
-
-- `user_id`
-- `session_id`
-- `title`
-- `updated_at`
-
-`chat_messages`:
-
-- `message_id`
-- `user_id`
-- `session_id`
-- `role`
-- `content`
-- `created_at`
-- `metadata`
-
-Important indexes:
-
-- `(user_id, session_id, message_id)`
-- `metadata->>'trace_id'`
-
-### Langfuse Trace Outbox
-
-`langfuse_trace_outbox` supports background trace enrichment:
-
-- `id`
-- `trace_id`
-- `user_id`
-- `session_id`
-- `output`
-- `metadata`
-- `status`
-- `retry_count`
-- `last_error`
-- `created_at`
-- `updated_at`
-
-### DynamoDB Chat History
-
-AWS dev can use DynamoDB table:
-
-```json
-{
-  "TableName": "dstrmaysam-healthcare-knowledge-agent-dev",
-  "BillingMode": "PAY_PER_REQUEST",
-  "KeySchema": [
-    {"AttributeName": "user_id", "KeyType": "HASH"},
-    {"AttributeName": "sort_key", "KeyType": "RANGE"}
-  ]
-}
-```
-
-Session rows use `SESSION#...` sort keys and message rows use `MESSAGE#...` sort keys.
+- partition key `user_id`
+- sort key values such as `SESSION#...` and `MESSAGE#...`
 
 ### Document Manifest
 
-The document manifest lives at:
+AWS path:
 
-- AWS mode: `s3://<S3_BUCKET>/<S3_MANIFEST_KEY>`
-- Local mode: `data/manifests/documents.json`
+```text
+s3://<S3_BUCKET>/<S3_MANIFEST_KEY>
+```
 
-Common fields:
+Local path:
+
+```text
+data/manifests/documents.json
+```
+
+Common manifest fields:
 
 - `documents`
 - `indexed_chunks`
@@ -579,8 +532,9 @@ Common fields:
 - `skipped_documents`
 - `deleted_documents`
 - `deleted_chunks`
+- `force_reindex`
 
-Each document record contains:
+Document records contain:
 
 - `key`
 - `title`
@@ -590,43 +544,6 @@ Each document record contains:
 - `metadata`
 - `chunk_count`
 - `ingestion_status`
-
-Local Chroma manifests also store:
-
-- `vector_backend`
-- `chroma_collection`
-- `previous_vector_backend`
-- `previous_chroma_collection`
-
-AWS manifests also store:
-
-- `opensearch_index`
-- `previous_opensearch_index`
-
-### Document Metadata
-
-Typical metadata fields:
-
-- `owner`
-- `version`
-- `effective_date`
-- `review_date`
-- `approval_status`
-- `sensitivity`
-- `domain`
-- `document_type`
-- `allowed_roles`
-- `category`
-
-CSV metadata-only assets can also include:
-
-- `asset_source=postgres_uploaded_lookup`
-- `source_table=uploaded_lookup_rows`
-- `row_count`
-- `columns`
-- `semantic_terms`
-- `categorical_values`
-- `sample_values`
 
 ### OpenSearch Chunk Mapping
 
@@ -642,24 +559,13 @@ OpenSearch stores:
 - `metadata`
 - `embedding`
 
-The vector field:
+The default vector dimension is `1536`, matching `text-embedding-3-small`.
 
-```json
-{
-  "type": "knn_vector",
-  "dimension": 1536,
-  "method": {
-    "engine": "faiss",
-    "name": "hnsw"
-  }
-}
-```
+### Chroma Metadata
 
-### Chroma Chunk Metadata
+Local Chroma stores:
 
-Local Chroma chunks store:
-
-- chunk document text
+- chunk text
 - embedding vector
 - `key`
 - `title`
@@ -667,50 +573,29 @@ Local Chroma chunks store:
 - `chunk_index`
 - `checksum`
 - `content_type`
-- flattened metadata fields
+- flattened metadata
 - `metadata_json`
 
-### App Secret Shape
+## 17. Access Control
 
-The app secret contains:
+Users have roles and departments. Documents can define `allowed_roles` in metadata.
 
-```json
-{
-  "session_secret": "...",
-  "auth_users": {
-    "admin": "password-hash"
-  },
-  "user_profiles": {
-    "admin": {
-      "roles": ["admin"],
-      "departments": ["operations"],
-      "password_change_required": false
-    }
-  }
-}
-```
+Document access behavior:
 
-Local mode persists this structure in `data/local_app_secret.json`.
+- If `allowed_roles` is present and non-empty, the user must have at least one matching role.
+- If `allowed_roles` is absent or empty, the document is broadly available subject to other checks.
 
-AWS mode persists it in Secrets Manager.
+Structured row access behavior:
 
-## 15. Access Control
+- Postgres rows include `access_level`.
+- The deterministic lookup service converts the user context into allowed access scopes.
+- Queries filter rows before returning results.
 
-Users have:
+The default local admin user has broad local roles so development can exercise all workflows.
 
-- `roles`
-- `departments`
-- `password_change_required`
+## 18. Observability And Dashboard Metadata
 
-Document metadata can include `allowed_roles`.
-
-If a document has an `allowed_roles` list, the user must have at least one matching role to access it. If the list is empty or absent, the document is broadly accessible subject to the rest of the access-control checks.
-
-Structured Postgres rows use `access_level` values. The deterministic lookup service converts the user context into allowed access scopes and applies filtering before returning rows.
-
-## 16. Traces, Metadata, And Dashboard Fields
-
-Langfuse and saved chat metadata include:
+Saved metadata can include:
 
 - `trace_id`
 - `user_id`
@@ -720,6 +605,10 @@ Langfuse and saved chat metadata include:
 - `agent_mode`
 - `tools_used`
 - `tool_flow`
+- `agent_flow`
+- `supervisor_decisions`
+- `agent_latencies_ms`
+- `agent_errors`
 - `model`
 - `prompt_label`
 - `input_tokens`
@@ -727,24 +616,36 @@ Langfuse and saved chat metadata include:
 - `latency_ms`
 - `latency_breakdown`
 - `sources`
-- `source_count`
 - `source_document_keys`
+- `ragas`
 - `ragas_status`
-- `ragas_scores`
 - `safety`
 - `audit_event`
 
-Tool flow is more detailed than `tools_used`. For example, if `rag_search` internally used the document catalog to narrow candidates, `tools_used` may show only `rag_search`, while `tool_flow` shows the catalog-assisted step.
+If Langfuse trace updates fail, the payload is written to `langfuse_trace_outbox` with `status='pending'` for retry.
 
-## 17. Caching And Latency Features
+## 19. Safety And Guardrails
 
-The system uses several short-lived caches:
+The agent includes several healthcare-oriented safeguards:
 
-- Document manifest cache: controlled by `DOCUMENT_MANIFEST_CACHE_TTL_SECONDS`.
-- Langfuse prompt cache: controlled by `LANGFUSE_PROMPT_CACHE_TTL_SECONDS`.
-- Query embedding cache: controlled by `RAG_EMBEDDING_CACHE_SIZE`.
-- Retrieval result cache: controlled by `RAG_QUERY_CACHE_TTL_SECONDS`.
-- Catalog candidate cache inside the agent.
+- PHI-like prompt redaction before model calls.
+- User-context-aware source access control.
+- Safety assessment for clinical risk and missing-source situations.
+- Response style baseline appended to prompts.
+- Response guardrail rewrite when risky style or persona terms are detected.
+- Audit metadata recorded with chat interactions.
+
+The system is an internal knowledge assistant. It is not a replacement for clinical judgment, live clinical systems, emergency escalation pathways, or prescribing governance.
+
+## 20. Caching And Warmup
+
+Caching settings:
+
+- `DOCUMENT_MANIFEST_CACHE_TTL_SECONDS`
+- `LANGFUSE_PROMPT_CACHE_TTL_SECONDS`
+- `RAG_QUERY_CACHE_TTL_SECONDS`
+- `RAG_EMBEDDING_CACHE_SIZE`
+- agent catalog candidate cache
 
 Warmup settings:
 
@@ -754,8 +655,6 @@ CHAT_WARMUP_LLM_CALL_ENABLED=false
 CHAT_WARMUP_RETRIEVAL_ENABLED=true
 ```
 
-`CHAT_WARMUP_LLM_CALL_ENABLED=false` means the backend warmup avoids a paid or latency-producing LLM call. It can still initialize local services and retrieval paths when warmup is enabled.
-
 Background settings:
 
 ```env
@@ -763,18 +662,16 @@ CHAT_BACKGROUND_HISTORY_SAVE_ENABLED=true
 LANGFUSE_BACKGROUND_TRACE_UPDATE_ENABLED=true
 ```
 
-These keep trace enrichment, history enrichment, and RAGAS scoring away from the synchronous answer path where possible.
+These settings reduce answer-path latency by caching repeated work and moving enrichment work out of the synchronous response path where possible.
 
-## 18. RAGAS And Evaluation
+## 21. Evaluation
 
-RAGAS is implemented in two places:
+RAGAS is implemented in:
 
 1. Live background scoring after chat responses.
 2. Offline golden dataset evaluation through `evals/run_ragas_eval.py`.
 
-RAGAS needs retrieved contexts to score properly. The system provides those through `source.snippet` values returned by `/chat`. If snippets are missing, the eval runner falls back to source URIs, but that produces weaker scoring because URIs are not real context.
-
-Scores used:
+Scores include:
 
 - `ragas_faithfulness`
 - `ragas_answer_relevancy`
@@ -782,99 +679,57 @@ Scores used:
 - `ragas_context_recall`
 - `simple_expected_overlap`
 
-When Langfuse is configured, scores can be published to:
+RAGAS depends on retrieved context. The `/chat` response includes `source.snippet` values so evaluation can score against source content rather than only source URIs.
 
-- The matching chat trace for per-question scores.
-- A synthetic evaluation-run trace for aggregate scores.
+Stress testing uses `evals/stress_test.py` to run paraphrased workloads and report latency, failures, source overlap, and answer similarity.
 
-## 19. Stress Testing
+## 22. Local Runbook
 
-The stress test sends 100 paraphrased queries:
-
-- 20 base questions.
-- 5 paraphrases per base question.
-
-It reports:
-
-- Total queries.
-- Failed queries.
-- Min, max, and average latency.
-- Answer similarity across paraphrases.
-- Source overlap.
-- Per-query errors.
-
-## 20. How To Run Locally
-
-1. Configure `.env`.
-
-Minimum useful local values:
-
-```env
-LOCAL_TEST_ADMIN_ENABLED=true
-LOCAL_TEST_ADMIN_USERNAME=admin
-LOCAL_TEST_ADMIN_PASSWORD=admin123
-
-AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_API_KEY=<your-key>
-AZURE_OPENAI_API_VERSION=2025-04-01-preview
-AZURE_OPENAI_DEPLOYMENT=gpt-4.1-mini
-AZURE_OPENAI_FAST_DEPLOYMENT=gpt-4.1-mini
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
-
-LANGFUSE_PUBLIC_KEY=<optional>
-LANGFUSE_SECRET_KEY=<optional>
-LANGFUSE_BASE_URL=<optional>
-```
-
-2. Start the stack:
+1. Copy `.env.example` to `.env`.
+2. Add Azure OpenAI credentials for chat and embeddings.
+3. Optionally add Langfuse credentials.
+4. Start Docker Compose:
 
 ```bash
 docker compose up --build
 ```
 
-3. Open:
+5. Open:
 
 ```text
 http://localhost:8501
 ```
 
-4. Log in with the local admin user.
-
-5. Upload files from the Documents page.
-
-6. Click ingest/index from the Documents page.
-
-7. Ask questions from the Chat page.
-
-Backend is available at:
+6. Log in with the local admin user:
 
 ```text
-http://localhost:8000
+admin / admin123
 ```
 
-Postgres is available at:
+7. Upload documents from the Documents page.
+8. Run ingestion from the Documents page or with:
+
+```bash
+docker compose run --rm backend python -m app.ingest
+```
+
+9. Ask questions from the Chat page.
+
+Useful local endpoints:
 
 ```text
-localhost:5432
+Backend:  http://localhost:8000
+Frontend: http://localhost:8501
+Postgres: localhost:5432
 ```
 
-## 21. How To Run In AWS Dev
+## 23. AWS Deployment Runbook
 
 At a high level:
 
-1. Build and push backend, frontend, and Postgres images to ECR.
-2. Create or confirm the S3 bucket:
-
-```text
-dstrmaysam-healthcare-knowledge-agent-dev
-```
-
-3. Create or confirm the DynamoDB table:
-
-```text
-dstrmaysam-healthcare-knowledge-agent-dev
-```
-
+1. Build and push backend, frontend, and database images to ECR.
+2. Create or confirm the S3 bucket.
+3. Create or confirm the DynamoDB table if DynamoDB history is used.
 4. Create or confirm the OpenSearch Serverless collection and index.
 5. Create Secrets Manager secrets:
 
@@ -892,17 +747,17 @@ APP_ENV=dev
 SECRETS_STAGE=dev
 ```
 
-7. Ensure the ECS task role has access to:
+7. Ensure the ECS task role can access:
 
-- Secrets Manager app, Azure OpenAI, and Langfuse secrets.
-- S3 bucket read/write/list.
-- DynamoDB table access if DynamoDB history is enabled.
-- OpenSearch Serverless collection and index access.
-- CloudWatch logs.
+- app, Azure OpenAI, and Langfuse secrets
+- S3 bucket and manifest object
+- DynamoDB table when enabled
+- OpenSearch Serverless collection/index
+- CloudWatch logs
 
-8. Do not provide static AWS access keys to ECS. The backend should use the task role.
+8. Do not provide static AWS access keys to ECS.
 
-## 22. How To Run Tests
+## 24. Test And Evaluation Commands
 
 Run unit tests:
 
@@ -916,27 +771,13 @@ Run compile validation:
 python -m compileall backend frontend tests -q
 ```
 
-Run tests in Docker:
-
-```bash
-docker compose run --rm -v "${PWD}:/workspace" -w /workspace backend python -m pytest tests -q
-```
-
-Run compile validation in Docker:
-
-```bash
-docker compose run --rm -v "${PWD}:/workspace" -w /workspace backend python -m compileall backend frontend tests -q
-```
-
-## 23. How To Run RAGAS Evaluation
-
-Start the API first, then run:
+Run RAGAS evaluation after the API is running:
 
 ```bash
 python evals/run_ragas_eval.py --api-url http://localhost:8000 --token YOUR_TOKEN
 ```
 
-Use the healthcare dataset:
+Run the healthcare dataset:
 
 ```bash
 python evals/run_ragas_eval.py --dataset evals/healthcare_golden_dataset.csv --api-url http://localhost:8000 --token YOUR_TOKEN
@@ -948,38 +789,20 @@ Publish scores to Langfuse:
 python evals/run_ragas_eval.py --api-url http://localhost:8000 --token YOUR_TOKEN --publish-langfuse --secrets-stage dev
 ```
 
-Useful arguments:
-
-- `--api-url`
-- `--token`
-- `--dataset`
-- `--output`
-- `--publish-langfuse`
-- `--aws-region`
-- `--secrets-stage`
-- `--langfuse-secret-name`
-- `--eval-run-name`
-
-## 24. How To Run Stress Testing
-
-Start the API first, then run:
+Run stress testing:
 
 ```bash
 python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN
 ```
 
-Optional output path:
-
-```bash
-python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN --output stress_report.json
-```
-
 ## 25. Operational Notes
 
-- If chat says Azure OpenAI deployment is missing, check `AZURE_OPENAI_DEPLOYMENT`; the expected deployment is commonly `gpt-4.1-mini`.
-- If AWS mode still reads `.env` for auth, confirm `LOCAL_TEST_ADMIN_ENABLED=false` is reaching the backend container.
-- If OpenSearch returns authorization errors, check both IAM policy and OpenSearch Serverless data access policy.
-- If RAGAS scores are low, inspect whether chat traces have non-empty `source.snippet` values.
-- If deterministic lookup misses row values, verify the uploaded CSV rows exist in `uploaded_lookup_rows` and that `searchable_text` includes the expected row values.
-- If document ingestion skips files, compare checksums in the manifest; unchanged files are intentionally skipped.
-- If changing the OpenSearch index, run ingestion again so chunks are created in the new index.
+- If chat says Azure OpenAI deployment is missing, check `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_API_KEY`.
+- If local mode unexpectedly calls AWS, check that `LOCAL_TEST_ADMIN_ENABLED=true` is reaching the backend.
+- If AWS mode still uses local files or `.env` secrets, check that `LOCAL_TEST_ADMIN_ENABLED=false` is reaching the backend container.
+- If OpenSearch authorization fails, check IAM permissions and OpenSearch Serverless data access policy.
+- If documents do not appear in RAG results, confirm ingestion completed and the manifest contains nonzero `chunk_count`.
+- If RAGAS scores are weak, inspect whether returned sources contain meaningful `snippet` values.
+- If deterministic lookup misses uploaded CSV facts, confirm rows exist in `uploaded_lookup_rows` and that the CSV manifest record has `asset_source=postgres_uploaded_lookup`.
+- If ingestion skips a document, compare its checksum in the manifest; unchanged files are intentionally skipped.
+- If changing the OpenSearch index or Chroma collection, run ingestion again so chunks are created in the new target.

@@ -1,7 +1,5 @@
 import unittest
 
-from pydantic import ValidationError
-
 from backend.app.models import ChatRequest, ChatResponse, LoginResponse, Source
 
 
@@ -42,19 +40,20 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(response.performance, {})
         self.assertEqual(response.latency_breakdown, {})
 
-    def test_chat_request_execution_mode_defaults_to_agent_only(self):
+    def test_chat_request_execution_mode_defaults_to_none(self):
         request = ChatRequest(query="hello")
 
-        self.assertEqual(request.execution_mode, "agent_only")
+        self.assertIsNone(request.execution_mode)
 
-    def test_chat_request_accepts_agent_only_execution_mode(self):
+    def test_chat_request_accepts_legacy_execution_mode_for_compatibility(self):
         request = ChatRequest(query="hello", execution_mode="agent_only")
 
         self.assertEqual(request.execution_mode, "agent_only")
 
-    def test_chat_request_rejects_unknown_execution_mode(self):
-        with self.assertRaises(ValidationError):
-            ChatRequest(query="hello", execution_mode="deterministic_only")
+    def test_chat_request_accepts_unknown_legacy_execution_mode_as_inert_data(self):
+        request = ChatRequest(query="hello", execution_mode="deterministic_only")
+
+        self.assertEqual(request.execution_mode, "deterministic_only")
 
 
 if __name__ == "__main__":

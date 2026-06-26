@@ -49,8 +49,14 @@ def _lookup_limit(query: str) -> int:
             "asset type",
             "asset types",
             "all device",
+            "devices",
             "device type",
             "device types",
+            "iot device",
+            "iot devices",
+            "need ventilator",
+            "ventilator quick",
+            "urgent ventilator",
         ]
     ):
         return 100

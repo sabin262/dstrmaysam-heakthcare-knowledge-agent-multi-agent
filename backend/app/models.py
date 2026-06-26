@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,7 @@ class ChangePasswordRequest(BaseModel):
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1)
     session_id: str | None = None
-    execution_mode: Literal["deterministic_agent", "agent_only"] = "agent_only"
+    execution_mode: str | None = None
 
 
 class Source(BaseModel):

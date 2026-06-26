@@ -2,9 +2,9 @@
 
 ## Summary
 
-Convert the current single-agent `KnowledgeAgent` into a supervisor-led multi-agent LangGraph workflow while keeping the public `/chat` API stable.
+Convert the current single-agent `KnowledgeAgent` into a supervisor-led multi-agent LangGraph workflow while keeping the public `/chat` API stable and removing the online deterministic preflight shortcut.
 
-The goal is to preserve all existing behavior, including deterministic lookup, catalog-guided RAG, policy search, safety checks, Langfuse tracing, RAGAS scoring, dashboard metadata, local/AWS modes, and chat history, while making the internal agent flow clearer, more testable, and easier to extend.
+The goal is to preserve deterministic lookup, catalog-guided RAG, policy search, safety checks, Langfuse tracing, RAGAS scoring, dashboard metadata, local/AWS modes, and chat history, while making the internal agent flow truly supervisor-led, clearer, more testable, and easier to extend.
 
 ## Target Architecture
 
@@ -60,9 +60,7 @@ Wrap the existing deterministic lookup behavior:
 - Count/list intent.
 - Structured output preservation.
 
-In `deterministic_agent` mode, high-confidence deterministic preflight remains a no-extra-LLM fast path.
-
-In `agent_only` mode, deterministic preflight is skipped, but the supervisor may still route to this specialist.
+Online LLM-backed chat never calls deterministic lookup before the graph. The user-facing execution-mode selector has been removed; all online chat enters the supervisor graph, and the supervisor LLM routes to this specialist when the query asks for structured facts.
 
 ### RAGAgent
 
@@ -165,24 +163,15 @@ The final graph result should still be converted into the existing `GraphAgentRe
 - `catalog_guidance`
 - `performance`
 
-## Execution Modes
+## Supervisor Routing
 
-### `deterministic_agent`
+Use graph-first behavior for every online LLM-backed chat request:
 
-Preserve current behavior:
-
-- Run deterministic preflight for high-confidence structured queries.
-- Use fast RAG when applicable.
-- Use supervisor graph when preflight and fast paths do not answer.
-
-### `agent_only`
-
-Preserve current meaning:
-
-- Skip deterministic preflight.
-- Skip direct deterministic fast paths.
-- Start the supervisor graph.
-- Allow the supervisor to route to `DeterministicLookupAgent` when appropriate.
+- Start the supervisor graph without user-selectable routing modes.
+- Let the supervisor LLM choose the first specialist.
+- Route deterministic facts through `DeterministicLookupAgent`, not a pre-graph shortcut.
+- Preserve offline/no-LLM deterministic fallback because no supervisor LLM is available.
+- Tolerate the legacy `execution_mode` request field for old clients, but ignore it in `/chat` and normalize metadata to `supervisor`.
 
 ## LangGraph Design
 
@@ -249,11 +238,11 @@ Dashboard updates:
 ## Implementation Steps
 
 1. Introduce internal specialist result types and graph state types.
-2. Extract deterministic preflight into `DeterministicLookupAgent`.
+2. Move deterministic lookup behind `DeterministicLookupAgent`.
 3. Extract RAG, policy, catalog, and safety behavior into specialist wrappers around existing tools/services.
 4. Replace the current single-node LangGraph wrapper with a real supervisor graph.
-5. Preserve current fast paths in `deterministic_agent` mode.
-6. Add supervisor graph path for `agent_only` mode.
+5. Remove online deterministic preflight and direct fast-answer paths.
+6. Remove the frontend execution-mode selector and route all online chat through the supervisor graph.
 7. Add metadata fields for agent flow and per-agent latency.
 8. Update dashboard metadata parsing to display agent flow.
 9. Add tests for routing, compatibility, metadata, and regression behavior.
@@ -268,8 +257,8 @@ Dashboard updates:
 - General document questions route to `RAGAgent`.
 - Safety-sensitive questions route to `SafetyAgent`.
 - Multipart questions call multiple specialists and synthesize one answer.
-- `deterministic_agent` keeps deterministic preflight behavior.
-- `agent_only` skips deterministic preflight but can still route to deterministic lookup through the supervisor.
+- Legacy execution-mode values normalize to `supervisor`.
+- Deterministic lookup still routes through the supervisor-selected specialist.
 - `tools_used` remains backend/tool calls.
 - `agent_flow` records supervisor and specialist steps.
 - Loop limit produces a final answer instead of hanging.
@@ -280,7 +269,7 @@ Dashboard updates:
 - `/chat` response schema remains backward compatible.
 - Saved message metadata includes `agent_flow`, `agents_used`, and `chat_execution_mode`.
 - Dashboard rows expose agent flow from metadata.
-- Existing mode selector still sends `execution_mode`.
+- The frontend no longer sends `execution_mode`; legacy clients may send it without changing routing.
 
 ### Regression Tests
 
@@ -316,4 +305,3 @@ docker compose run --rm -v "${PWD}:/workspace" -w /workspace backend python -m c
 - Top-level public API fields do not change.
 - Existing latency optimizations should be preserved where possible.
 - Langfuse and dashboard visibility come from metadata, not API schema changes.
-

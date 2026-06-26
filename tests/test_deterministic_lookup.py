@@ -193,12 +193,60 @@ class FakeNoRotaRowsLookup(DeterministicLookupService):
         super().__init__(FakeSettings())
         self.category_calls = []
 
-    def _query_staff_rota_rows(self, query, scopes, limit):
+    def _query_staff_rota_rows(self, query, scopes, limit, *, source_filenames=None):
         return []
 
     def _lookup_category(self, category, query, scopes, limit, *, stopwords=None):
-        self.category_calls.append(category)
+        self.category_calls.append({"category": category, "query": query})
         return [{"source_table": category, "full_name": "Fallback Doctor"}]
+
+
+class FakePatientPreferredLookup(DeterministicLookupService):
+    def __init__(self, patient_rows):
+        super().__init__(FakeSettings())
+        self.patient_rows = patient_rows
+        self.category_calls = []
+        self.row_search_calls = []
+
+    def _lookup_category(self, category, query, scopes, limit, *, stopwords=None):
+        self.category_calls.append({"category": category, "query": query})
+        if category == "patients":
+            return list(self.patient_rows)
+        return []
+
+    def _query_uploaded_lookup_rows(self, query, scopes, limit, *, source_filenames=None, stopwords=None):
+        self.row_search_calls.append({"query": query, "source_filenames": list(source_filenames or [])})
+        return [
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "equipment_assets.csv",
+                "row_number": 1,
+                "row": {
+                    "equipment_type": "Patient hoist",
+                    "location": "Paediatrics Ward",
+                    "status": "Fault logged",
+                },
+                "access_level": "all_staff",
+            }
+        ]
+
+
+class FakeRotaCsvLookup(DeterministicLookupService):
+    def __init__(self):
+        super().__init__(FakeSettings())
+        self.rota_calls = []
+
+    def _query_staff_rota_rows(self, query, scopes, limit, *, source_filenames=None):
+        self.rota_calls.append({"query": query, "source_filenames": list(source_filenames or [])})
+        return [
+            {
+                "source_table": "uploaded_lookup_rows",
+                "source_filename": "doctor_rota.csv",
+                "row_number": 1,
+                "row": {"date": "Today", "doctor": "Dr Aisha Malik", "status": "On call"},
+                "access_level": "all_staff",
+            }
+        ]
 
 
 class DeterministicLookupToolTests(unittest.TestCase):
@@ -260,6 +308,24 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(matches[0]["filename"], "doctor_rota.csv")
         self.assertEqual(matches[0]["columns"], ["date", "doctor", "status"])
         self.assertEqual(matches[0]["row_count"], 12)
+
+    def test_generic_on_call_query_selects_rota_like_csv_assets(self):
+        service = FakeRotaCsvLookup()
+
+        result = service.lookup(
+            "who is on call",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+            csv_assets=[
+                {
+                    "filename": "doctor_rota.csv",
+                    "columns": ["date", "doctor", "status"],
+                    "row_count": 12,
+                }
+            ],
+        )
+
+        self.assertEqual(result.rows[0]["row"]["doctor"], "Dr Aisha Malik")
+        self.assertIn("doctor_rota.csv", service.rota_calls[0]["source_filenames"])
 
     def test_csv_semantic_metadata_includes_sampled_row_values(self):
         metadata = build_csv_semantic_metadata(
@@ -412,6 +478,74 @@ class DeterministicLookupToolTests(unittest.TestCase):
             _requested_rota_dates(query, today=date(2026, 6, 23)),
             ["2026-06-23", "2026-06-24"],
         )
+
+    def test_generic_who_is_on_call_classifies_as_rota_lookup(self):
+        service = DeterministicLookupService(settings=None)
+
+        self.assertEqual(service._classify("who is on call"), "staff_rota")
+        self.assertTrue(_is_staff_rota_query("who is on call"))
+        self.assertEqual(_requested_rota_role_groups("who is on call"), set())
+
+    def test_generic_on_call_without_rota_rows_falls_back_to_doctors(self):
+        service = FakeNoRotaRowsLookup()
+
+        result = service.lookup(
+            "who is on call",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+        )
+
+        self.assertEqual(result.category, "staff_rota")
+        self.assertEqual(result.rows[0]["full_name"], "Fallback Doctor")
+        self.assertEqual(service.category_calls, [{"category": "doctors", "query": "doctor on call"}])
+
+    def test_patient_lookup_prefers_patient_table_over_matching_uploaded_csv(self):
+        service = FakePatientPreferredLookup(
+            [
+                {
+                    "patient_id": "PAT-001",
+                    "mrn": "MRN10001",
+                    "full_name": "John Spencer",
+                    "ward_code": "W02",
+                    "access_level": "clinical",
+                }
+            ]
+        )
+
+        result = service.lookup(
+            "details on patient John Spencer",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+            csv_assets=[
+                {
+                    "filename": "equipment_assets.csv",
+                    "columns": ["equipment_type", "location", "status"],
+                    "semantic_terms": ["patient", "hoist", "john", "spencer"],
+                    "row_count": 1,
+                }
+            ],
+        )
+
+        self.assertEqual(result.rows[0]["full_name"], "John Spencer")
+        self.assertEqual(service.category_calls[0]["category"], "patients")
+        self.assertEqual(service.row_search_calls, [])
+
+    def test_patient_lookup_falls_back_to_uploaded_csv_when_patient_table_misses(self):
+        service = FakePatientPreferredLookup([])
+
+        result = service.lookup(
+            "details on patient John Spencer",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+            csv_assets=[
+                {
+                    "filename": "equipment_assets.csv",
+                    "columns": ["equipment_type", "location", "status"],
+                    "semantic_terms": ["patient", "hoist", "john", "spencer"],
+                    "row_count": 1,
+                }
+            ],
+        )
+
+        self.assertEqual(result.rows[0]["row"]["equipment_type"], "Patient hoist")
+        self.assertEqual(service.row_search_calls[0]["source_filenames"], ["equipment_assets.csv"])
 
     def test_today_doctor_rota_query_does_not_fall_back_to_other_dates_or_tables(self):
         service = FakeNoRotaRowsLookup()

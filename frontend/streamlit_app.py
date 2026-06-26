@@ -23,15 +23,6 @@ CHAT_PROGRESS_MESSAGES = [
     "Checking structured lookup data and indexed documents if needed.",
     "Preparing a concise answer.",
 ]
-CHAT_EXECUTION_MODE_OPTIONS = {
-    "Deterministic + Agent": "deterministic_agent",
-    "Agent only": "agent_only",
-}
-CHAT_EXECUTION_MODE_LABELS = {value: label for label, value in CHAT_EXECUTION_MODE_OPTIONS.items()}
-CHAT_EXECUTION_MODE_NOTICES = {
-    "deterministic_agent": "Mode changed to Deterministic + Agent. New questions may use deterministic lookup before agent flow.",
-    "agent_only": "Mode changed to Agent only. New questions will be handled through agent LLM tool selection.",
-}
 DASHBOARD_RANGE_OPTIONS = [
     ("30mins", "30m"),
     ("1hr", "1h"),
@@ -1193,10 +1184,7 @@ def render_query_detail(item: dict[str, Any]) -> None:
     detail_columns[4].metric("Total tokens", item.get("total_tokens") or 0)
     st.caption(f"Trace ID: {item.get('trace_id') or 'unavailable'}")
     st.caption(f"Session ID: {item.get('session_id')}")
-    st.caption(
-        "Execution mode: "
-        f"{item.get('chat_execution_mode_label') or item.get('chat_execution_mode') or 'Deterministic + Agent'}"
-    )
+    st.caption(f"Routing: {item.get('chat_execution_mode_label') or 'Supervisor'}")
     st.caption(f"Agent mode: {item.get('agent_mode') or 'unknown'}")
     st.caption(f"Agents: {item.get('agent_flow_summary') or ', '.join(item.get('agents_used') or []) or 'unavailable'}")
     if display_supervisor_decisions:
@@ -1804,33 +1792,10 @@ def format_score(value: Any) -> str:
         return "-"
 
 
-def current_chat_execution_mode() -> str:
-    mode = str(st.session_state.get("chat_execution_mode") or "agent_only")
-    return mode if mode in CHAT_EXECUTION_MODE_LABELS else "agent_only"
-
-
-def append_chat_mode_notice() -> None:
-    selected_label = str(
-        st.session_state.get(
-            "chat_execution_mode_label",
-            CHAT_EXECUTION_MODE_LABELS[current_chat_execution_mode()],
-        )
-    )
-    mode = CHAT_EXECUTION_MODE_OPTIONS.get(selected_label, current_chat_execution_mode())
-    st.session_state.chat_execution_mode = mode
-    st.session_state.setdefault("messages", []).append(
-        {
-            "role": "notice",
-            "content": CHAT_EXECUTION_MODE_NOTICES[mode],
-        }
-    )
-
-
 def submit_chat_query(query: str) -> None:
     payload = {
         "query": query,
         "session_id": st.session_state.get("session_id"),
-        "execution_mode": current_chat_execution_mode(),
     }
     data = post_json("/chat", payload)
     st.session_state.session_id = data["session_id"]
@@ -1840,14 +1805,13 @@ def submit_chat_query(query: str) -> None:
 def _chat_request_worker(
     query: str,
     session_id: str | None,
-    execution_mode: str,
     headers: dict[str, str],
     result_queue: "queue.Queue[tuple[str, Any]]",
 ) -> None:
     try:
         response = requests.post(
             f"{BACKEND_URL}/chat",
-            json={"query": query, "session_id": session_id, "execution_mode": execution_mode},
+            json={"query": query, "session_id": session_id},
             headers=headers,
             timeout=300,
         )
@@ -1874,10 +1838,9 @@ def render_chat_progress(
 def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> None:
     result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=1)
     headers = api_headers()
-    execution_mode = str(st.session_state.get("pending_chat_execution_mode") or current_chat_execution_mode())
     worker = threading.Thread(
         target=_chat_request_worker,
-        args=(query, st.session_state.get("session_id"), execution_mode, headers, result_queue),
+        args=(query, st.session_state.get("session_id"), headers, result_queue),
         daemon=True,
     )
     worker.start()
@@ -1899,10 +1862,8 @@ def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> No
 
     state, payload = result_queue.get()
     if state == "error":
-        st.session_state.pop("pending_chat_execution_mode", None)
         progress_placeholder.empty()
         raise payload
-    st.session_state.pop("pending_chat_execution_mode", None)
     st.session_state.session_id = payload["session_id"]
     st.session_state.messages.append({"role": "assistant", "content": payload["answer"]})
 
@@ -1993,7 +1954,6 @@ def render_chat_page() -> None:
     inject_chat_layout_css()
     st.markdown('<span class="hka-chat-page-marker"></span>', unsafe_allow_html=True)
     render_page_title("Chat")
-    st.session_state.setdefault("chat_execution_mode", "agent_only")
     pending_query = st.session_state.pop("pending_chat_query", None)
     with st.container(height=620, border=True):
         if pending_query:
@@ -2009,24 +1969,9 @@ def render_chat_page() -> None:
                 return
             scroll_chat_to_latest()
             st.rerun()
-    mode_labels = list(CHAT_EXECUTION_MODE_OPTIONS.keys())
-    selected_mode = current_chat_execution_mode()
-    selected_label = CHAT_EXECUTION_MODE_LABELS[selected_mode]
-    st.selectbox(
-        "Execution mode",
-        mode_labels,
-        index=mode_labels.index(selected_label),
-        key="chat_execution_mode_label",
-        on_change=append_chat_mode_notice,
-        help="Choose whether deterministic lookup can answer before the agent flow, or force the LLM agent to choose tools.",
-    )
-    st.session_state.chat_execution_mode = CHAT_EXECUTION_MODE_OPTIONS[
-        st.session_state.get("chat_execution_mode_label", selected_label)
-    ]
     query = st.chat_input("Ask a question about healthcare knowledge")
     if query and query.strip():
         st.session_state.pending_chat_query = query.strip()
-        st.session_state.pending_chat_execution_mode = current_chat_execution_mode()
         scroll_chat_to_latest()
         st.rerun()
     scroll_chat_to_latest()

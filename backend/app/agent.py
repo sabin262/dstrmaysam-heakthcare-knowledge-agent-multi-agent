@@ -44,8 +44,7 @@ HEALTHCARE_TOOL_NAMES = [
 ]
 RETRIEVAL_SOURCE_TOOLS = {"rag_search", "document_search", "policy_search"}
 CHAT_EXECUTION_MODE_LABELS = {
-    "deterministic_agent": "Deterministic + Agent",
-    "agent_only": "Agent only",
+    "supervisor": "Supervisor",
 }
 MAX_GRAPH_LLM_CALLS = 5
 CATALOG_RAG_CANDIDATE_LIMIT = 8
@@ -117,6 +116,10 @@ POLICY_QUERY_MARKERS = {
     "governance",
     "safeguarding",
     "escalation policy",
+    "retention",
+    "retained",
+    "records management",
+    "record retention",
 }
 DETERMINISTIC_QUERY_MARKERS = {
     "doctor",
@@ -195,6 +198,58 @@ LIST_LOOKUP_MARKERS = {
     "list",
     "show",
 }
+EQUIPMENT_AVAILABILITY_REQUEST_MARKERS = {
+    "available",
+    "availability",
+    "need",
+    "needed",
+    "quick",
+    "quickly",
+    "urgent",
+    "urgently",
+    "where",
+}
+GENERIC_ROW_VALUE_LIST_MARKERS = {
+    "assets",
+    "devices",
+    "equipment",
+    "iot device",
+    "iot devices",
+    "machines",
+    "monitors",
+    "pumps",
+}
+CATALOG_QUERY_MARKERS = {
+    "available documents",
+    "available policies",
+    "catalog",
+    "catalogue",
+    "document inventory",
+    "document list",
+    "documents exist",
+    "list documents",
+    "list policies",
+    "policy inventory",
+    "what documents",
+    "what policies",
+}
+SAFETY_QUERY_MARKERS = {
+    "anaphylaxis",
+    "cardiac arrest",
+    "chest pain",
+    "emergency",
+    "escalate",
+    "escalation",
+    "not breathing",
+    "overdose",
+    "safeguarding",
+    "self harm",
+    "sepsis",
+    "stroke",
+    "suicide",
+    "urgent",
+    "unsafe",
+}
 MULTIPART_QUERY_PATTERN = re.compile(
     r"\b(?:and also|also|as well as|plus)\b|[?]\s+(?=\w)",
     flags=re.IGNORECASE,
@@ -210,11 +265,11 @@ def _elapsed_ms(started: float) -> int:
 
 
 def _normalize_chat_execution_mode(mode: str | None) -> str:
-    return mode if mode in CHAT_EXECUTION_MODE_LABELS else "deterministic_agent"
+    return "supervisor"
 
 
 def _chat_execution_mode_label(mode: str | None) -> str:
-    return CHAT_EXECUTION_MODE_LABELS[_normalize_chat_execution_mode(mode)]
+    return CHAT_EXECUTION_MODE_LABELS["supervisor"]
 
 
 def _add_timing(timing: dict[str, int], key: str, elapsed_ms: int) -> None:
@@ -456,11 +511,54 @@ def _contains_marker(text: str, markers: set[str]) -> bool:
 
 
 def _has_policy_intent(text: str) -> bool:
-    return _contains_marker(text, POLICY_QUERY_MARKERS)
+    lowered = text.lower()
+    if _contains_marker(lowered, POLICY_QUERY_MARKERS):
+        return True
+    retention_question = any(marker in lowered for marker in ["how long", "duration", "period"])
+    retention_subject = any(marker in lowered for marker in ["data", "record", "records", "history", "patient"])
+    retention_action = any(marker in lowered for marker in ["stored", "storage", "retained", "retention", "kept", "keep"])
+    return retention_question and retention_subject and retention_action
 
 
 def _has_deterministic_intent(text: str) -> bool:
-    return _contains_marker(text, DETERMINISTIC_QUERY_MARKERS) or _has_structured_row_value_intent(text)
+    return (
+        _contains_marker(text, DETERMINISTIC_QUERY_MARKERS)
+        or _has_structured_row_value_intent(text)
+        or _has_short_entity_lookup_intent(text)
+        or _has_list_lookup_intent(text)
+    )
+
+
+def _has_patient_location_lookup_intent(text: str) -> bool:
+    lowered = text.lower()
+    location_marker = any(marker in lowered for marker in ["ward", "bed", "ipd", "inpatient", "location", "located", "where"])
+    terms = [
+        term
+        for term in re.findall(r"[A-Za-z0-9@._+-]+", lowered)
+        if len(term) >= 3
+        and term not in DETERMINISTIC_QUERY_MARKERS
+        and term not in ENTITY_LOOKUP_MARKERS
+        and term not in {"which", "where", "what"}
+    ]
+    return location_marker and len(terms) >= 2
+
+
+def _has_patient_appointment_lookup_intent(text: str) -> bool:
+    lowered = text.lower()
+    appointment_marker = any(marker in lowered for marker in ["appointment", "appointments", "clinic", "slot", "referral"])
+    patient_marker = any(marker in lowered for marker in ["patient", "mrn", "nhs"]) or len(
+        [
+            term
+            for term in re.findall(r"[A-Za-z0-9@._+-]+", lowered)
+            if len(term) >= 3 and term not in DETERMINISTIC_QUERY_MARKERS and term not in ENTITY_LOOKUP_MARKERS
+        ]
+    ) >= 2
+    return appointment_marker and patient_marker
+
+
+def _has_identifier_lookup_intent(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\b(?:mrn|nhs)?\d{4,}\b", lowered)) or bool(re.search(r"\bw\d+\b", lowered))
 
 
 def _has_structured_row_value_intent(text: str) -> bool:
@@ -492,6 +590,34 @@ def _has_list_lookup_intent(text: str) -> bool:
     if not (terms & LIST_LOOKUP_MARKERS):
         return False
     return _contains_marker(lowered, DETERMINISTIC_QUERY_MARKERS | STRUCTURED_ROW_VALUE_MARKERS)
+
+
+def _has_equipment_availability_intent(text: str) -> bool:
+    lowered = text.lower()
+    if _has_policy_intent(text):
+        return False
+    return _contains_marker(lowered, STRUCTURED_ROW_VALUE_MARKERS) and any(
+        marker in lowered for marker in EQUIPMENT_AVAILABILITY_REQUEST_MARKERS
+    )
+
+
+def _has_generic_row_value_list_intent(text: str) -> bool:
+    lowered = text.lower()
+    if _has_policy_intent(text):
+        return False
+    return any(marker in lowered for marker in GENERIC_ROW_VALUE_LIST_MARKERS)
+
+
+def _has_catalog_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in CATALOG_QUERY_MARKERS)
+
+
+def _has_safety_intent(text: str) -> bool:
+    lowered = text.lower()
+    if _has_policy_intent(text):
+        return False
+    return any(marker in lowered for marker in SAFETY_QUERY_MARKERS)
 
 
 def _deterministic_tool_output_has_results(output: str) -> bool:
@@ -555,6 +681,7 @@ DETERMINISTIC_LIST_NAME_FIELDS = (
     "equipment_type",
     "device_name",
     "department_name",
+    "doctor",
     "doctor_name",
     "contact_name",
     "ward_name",
@@ -575,6 +702,20 @@ DETERMINISTIC_STATUS_FIELDS = (
     "availability",
     "state",
     "condition",
+)
+EQUIPMENT_DETAIL_ORDER = (
+    "status",
+    "location",
+    "ward",
+    "ward_name",
+    "department",
+    "department_name",
+    "clinical_engineering_contact",
+    "contact",
+    "phone",
+    "last_service_date",
+    "next_service_due",
+    "access_level",
 )
 DETERMINISTIC_OMITTED_DETAIL_FIELDS = {
     "id",
@@ -679,6 +820,89 @@ def _format_count_detail(payload: dict[str, Any]) -> str:
     return _lookup_list_name(payload)
 
 
+def _is_equipment_payload(payload: dict[str, Any]) -> bool:
+    normalized_keys = {_normalize_payload_key(key) for key in payload}
+    return bool(
+        normalized_keys
+        & {
+            "asset_id",
+            "asset_name",
+            "equipment_name",
+            "equipment_type",
+            "device_name",
+            "device_type",
+            "clinical_engineering_contact",
+            "last_service_date",
+            "next_service_due",
+        }
+    )
+
+
+def _is_available_status(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"available", "free", "ready", "in stock", "yes", "true"}
+
+
+def _equipment_name(payload: dict[str, Any], query: str) -> str:
+    value = _payload_value(payload, DETERMINISTIC_LIST_NAME_FIELDS)
+    if value not in (None, "", []):
+        return str(value)
+    for term in ["ventilator", "defibrillator", "monitor", "pump", "wheelchair", "device", "equipment"]:
+        if term in query.lower():
+            return term.capitalize()
+    return "Equipment"
+
+
+def _format_equipment_availability_answer(
+    query: str,
+    row_payloads: list[dict[str, Any]],
+    *,
+    prefer_available: bool,
+) -> str:
+    available_rows = [
+        payload
+        for payload in row_payloads
+        if _is_available_status(_payload_value(payload, DETERMINISTIC_STATUS_FIELDS))
+    ]
+    selected = (available_rows or row_payloads) if prefer_available else row_payloads
+    if not selected:
+        return "No matching equipment rows were found."
+
+    if len(selected) == 1:
+        payload = selected[0]
+        name = _equipment_name(payload, query)
+        status = _payload_value(payload, DETERMINISTIC_STATUS_FIELDS)
+        location = _payload_value(payload, DETERMINISTIC_LOCATION_FIELDS)
+        heading = "availability" if prefer_available else "details"
+        lines = [f"{name} {heading} from deterministic lookup:"]
+        lines.append("")
+        if status not in (None, "", []):
+            lines.append(f"- Status: {_detail_value('status', status)}")
+        if location not in (None, "", []):
+            lines.append(f"- Location: {location}")
+        for field in EQUIPMENT_DETAIL_ORDER:
+            if field in {"status", "location", "ward", "ward_name", "department", "department_name"}:
+                continue
+            if field in payload and payload[field] not in (None, "", []):
+                lines.append(f"- {_detail_label(field)}: {_detail_value(field, payload[field])}")
+        return "\n".join(lines)
+
+    title = "Available equipment" if prefer_available and available_rows else "Matching equipment"
+    lines = [f"{title} returned by deterministic lookup:"]
+    lines.append("")
+    for index, payload in enumerate(selected, start=1):
+        name = _equipment_name(payload, query)
+        status = _payload_value(payload, DETERMINISTIC_STATUS_FIELDS)
+        location = _payload_value(payload, DETERMINISTIC_LOCATION_FIELDS)
+        detail_parts = []
+        if status not in (None, "", []):
+            detail_parts.append(f"status: {_detail_value('status', status)}")
+        if location not in (None, "", []):
+            detail_parts.append(f"location: {location}")
+        suffix = f" ({'; '.join(detail_parts)})" if detail_parts else ""
+        lines.append(f"{index}. {name}{suffix}")
+    return "\n".join(lines)
+
+
 def _detail_label(field: str) -> str:
     return DETERMINISTIC_DETAIL_LABELS.get(field, field.replace("_", " ").capitalize())
 
@@ -736,14 +960,38 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
     if not isinstance(rows, list) or not rows:
         return str(payload.get("message") or "No matching deterministic database rows were found.")
 
-    if _has_list_lookup_intent(query) and len(rows) > 1:
-        row_payloads = [_lookup_row_payload(row) for row in rows if isinstance(row, dict)]
-        title = _lookup_list_title(query, row_payloads[0] if row_payloads else {})
+    row_payloads = [_lookup_row_payload(row) for row in rows if isinstance(row, dict)]
+    equipment_payloads = [payload for payload in row_payloads if _is_equipment_payload(payload)]
+    equipment_availability = _has_equipment_availability_intent(query)
+    generic_row_list = _has_generic_row_value_list_intent(query)
+    if equipment_payloads and (equipment_availability or (generic_row_list and not _has_list_lookup_intent(query))):
+        return _format_equipment_availability_answer(
+            query,
+            equipment_payloads,
+            prefer_available=equipment_availability,
+        )
+
+    on_call_list_intent = any(marker in query.lower() for marker in ["on call", "on-call", "oncall"])
+    if (_has_list_lookup_intent(query) or generic_row_list or on_call_list_intent) and len(rows) > 1:
+        title = "On-call staff" if on_call_list_intent else _lookup_list_title(query, row_payloads[0] if row_payloads else {})
         lines = [f"{title} returned by deterministic lookup:"]
         lines.append("")
         for index, row_payload in enumerate(row_payloads, start=1):
             name = _lookup_list_name(row_payload)
-            lines.append(f"{index}. {name}")
+            detail_parts: list[str] = []
+            seen_details: set[str] = set()
+            for value in (
+                row_payload.get("department_name"),
+                row_payload.get("specialty"),
+                row_payload.get("phone"),
+                row_payload.get("bleep"),
+            ):
+                if value in (None, "", []) or str(value) in seen_details:
+                    continue
+                seen_details.add(str(value))
+                detail_parts.append(str(value))
+            detail_text = f" ({', '.join(detail_parts)})" if on_call_list_intent and detail_parts else ""
+            lines.append(f"{index}. {name}{detail_text}")
         return "\n".join(lines)
 
     first_payload = _lookup_row_payload(rows[0]) if isinstance(rows[0], dict) else {}
@@ -762,8 +1010,12 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
 def _planned_tool_names(query: str) -> list[str]:
     planned: list[str] = []
     for part in _query_parts(query):
-        if _has_policy_intent(part):
-            tool = "rag_search"
+        if _has_safety_intent(part):
+            tool = "safety_guard"
+        elif _has_catalog_intent(part):
+            tool = "catalogue_search"
+        elif _has_policy_intent(part):
+            tool = "policy_search"
         elif _has_deterministic_intent(part):
             tool = "postgres_deterministic_lookup"
         else:
@@ -771,11 +1023,34 @@ def _planned_tool_names(query: str) -> list[str]:
         if tool not in planned:
             planned.append(tool)
 
-    if _has_policy_intent(query) and "rag_search" not in planned:
-        planned.insert(0, "rag_search")
+    if _has_policy_intent(query) and "policy_search" not in planned:
+        planned.insert(0, "policy_search")
     if _has_deterministic_intent(query) and not _has_policy_intent(query) and "postgres_deterministic_lookup" not in planned:
         planned.append("postgres_deterministic_lookup")
     return planned or ["rag_search"]
+
+
+def _node_for_tool(tool_name: str) -> str:
+    agent_name = _agent_name_for_tool(tool_name)
+    if agent_name == "DeterministicLookupAgent":
+        return "deterministic_lookup"
+    if agent_name == "PolicyAgent":
+        return "policy"
+    if agent_name == "CatalogAgent":
+        return "catalog"
+    if agent_name == "SafetyAgent":
+        return "safety"
+    return "rag"
+
+
+def _tool_for_agent_node(node_name: str) -> str:
+    return {
+        "deterministic_lookup": "postgres_deterministic_lookup",
+        "policy": "policy_search",
+        "catalog": "catalogue_search",
+        "safety": "safety_guard",
+        "rag": "rag_search",
+    }.get(node_name, "rag_search")
 
 
 def _message_text(message: Any) -> str:
@@ -999,7 +1274,8 @@ def _agent_metadata_from_flow(agent_flow: list[dict[str, Any]]) -> dict[str, Any
             latency_ms = int(step.get("latency_ms") or 0)
         except Exception:
             latency_ms = 0
-        if latency_ms:
+        if agent != "SupervisorAgent":
+            latencies.setdefault(agent, 0)
             latencies[agent] = latencies.get(agent, 0) + latency_ms
         error = step.get("error")
         if error:
@@ -1823,6 +2099,24 @@ class KnowledgeAgent:
         started = time.perf_counter()
         try:
             output, sources, catalog_guidance = self._run_graph_tool(name, query, user_context)
+            effective_query = query
+            if (
+                name == "postgres_deterministic_lookup"
+                and not _deterministic_tool_output_has_results(output)
+                and _has_short_entity_lookup_intent(query)
+                and not query.lower().strip().startswith("medicine ")
+            ):
+                medicine_query = f"medicine {query}"
+                medicine_output, medicine_sources, medicine_guidance = self._run_graph_tool(
+                    name,
+                    medicine_query,
+                    user_context,
+                )
+                if _deterministic_tool_output_has_results(medicine_output):
+                    output = medicine_output
+                    sources = medicine_sources
+                    catalog_guidance = medicine_guidance
+                    effective_query = medicine_query
             latency_ms = _elapsed_ms(started)
             status = "ok"
             if name in RETRIEVAL_SOURCE_TOOLS and not sources:
@@ -1839,7 +2133,7 @@ class KnowledgeAgent:
                 tools_used=[name],
                 tool_flow=tool_flow,
                 catalog_guidance=catalog_guidance,
-                performance={agent_name: latency_ms},
+                performance={agent_name: latency_ms, "effective_query": effective_query},
             )
         except Exception as exc:
             latency_ms = _elapsed_ms(started)
@@ -1915,6 +2209,7 @@ class KnowledgeAgent:
             "- Use deterministic Postgres lookup for exact structured facts such as doctors on call, patients, appointments, wards, contacts, departments, CSV lookup rows, and formulary rows.\n"
             "- Use deterministic Postgres lookup for count, total, inventory, equipment, asset, device, stock, or availability questions that may be answered by uploaded CSV row values.\n"
             "- For short entity questions such as 'info on X' or 'details about X', call deterministic Postgres lookup first when X may be a medication, asset, contact, rota, or uploaded CSV row value.\n"
+            "- For operational facts, do not answer from memory; call the relevant specialist/tool and answer from the returned evidence.\n"
             "- If the deterministic lookup result fully answers the question, answer from that result without calling extra tools.\n"
             "- For rota/date questions, only call a row 'today' when its date equals the lookup result's resolved_today value; otherwise say no matching row was found for today.\n"
             "- If a multipart question needs more than one tool, call every relevant tool and combine the results into one answer.\n"
@@ -1932,7 +2227,7 @@ class KnowledgeAgent:
         query: str,
         user_context: HealthcareUserContext,
         initial_safety: dict[str, Any],
-        execution_mode: str = "deterministic_agent",
+        execution_mode: str = "supervisor",
     ) -> GraphAgentResult:
         performance: dict[str, Any] = {}
         execution_mode = _normalize_chat_execution_mode(execution_mode)
@@ -1950,19 +2245,6 @@ class KnowledgeAgent:
         performance["llm_cache_hit"] = bool(llm_cache_hit and llm is not None)
         performance["llm_setup_cold_start"] = bool(not llm_cache_hit and llm is not None)
         if llm is None:
-            if execution_mode == "deterministic_agent":
-                preflight_result = self._call_deterministic_entity_preflight(
-                    llm=None,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    original_query=query,
-                    user_context=user_context,
-                    config=None,
-                )
-                if preflight_result is not None:
-                    preflight_result.performance["agent_mode"] = "deterministic_preflight"
-                    preflight_result.performance.update(performance)
-                    return preflight_result
             result = self._offline_graph_answer(query=query, user_context=user_context)
             result.performance.update(performance)
             return result
@@ -1973,72 +2255,16 @@ class KnowledgeAgent:
         config = {"callbacks": callbacks} if callbacks else None
         try:
             agent_started = time.perf_counter()
-            if execution_mode == "agent_only":
-                result = self._call_langgraph_agent(
-                    llm=llm,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    original_query=query,
-                    user_context=user_context,
-                    config=config,
-                )
-                result.performance["agent_mode"] = "langgraph"
-            else:
-                result = self._call_deterministic_entity_preflight(
-                    llm=llm,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    original_query=query,
-                    user_context=user_context,
-                    config=config,
-                )
-                if result is not None:
-                    result.performance["agent_mode"] = "deterministic_preflight"
-                else:
-                    fast_planned_tools = self._fast_planned_tools(query)
-                    if fast_planned_tools:
-                        fast_setup_started = time.perf_counter()
-                        fast_cache_hit = self._llm_cache_hit(fast=True)
-                        fast_llm = self._get_llm(fast=True)
-                        performance["fast_llm_setup_ms"] = _elapsed_ms(fast_setup_started)
-                        performance["fast_llm_cache_hit"] = bool(fast_cache_hit and fast_llm is not None)
-                        performance["fast_llm_setup_cold_start"] = bool(not fast_cache_hit and fast_llm is not None)
-                        result = self._call_fast_planned_agent(
-                            llm=fast_llm or llm,
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            original_query=query,
-                            user_context=user_context,
-                            config=config,
-                            planned_tools=fast_planned_tools,
-                        )
-                        result.performance["agent_mode"] = "fast_planned"
-                    elif self._should_use_fast_rag(query):
-                        fast_setup_started = time.perf_counter()
-                        fast_cache_hit = self._llm_cache_hit(fast=True)
-                        fast_llm = self._get_llm(fast=True)
-                        performance["fast_llm_setup_ms"] = _elapsed_ms(fast_setup_started)
-                        performance["fast_llm_cache_hit"] = bool(fast_cache_hit and fast_llm is not None)
-                        performance["fast_llm_setup_cold_start"] = bool(not fast_cache_hit and fast_llm is not None)
-                        result = self._call_fast_rag_agent(
-                            llm=fast_llm or llm,
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            original_query=query,
-                            user_context=user_context,
-                            config=config,
-                        )
-                        result.performance["agent_mode"] = "fast_rag"
-                    else:
-                        result = self._call_langgraph_agent(
-                            llm=llm,
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            original_query=query,
-                            user_context=user_context,
-                            config=config,
-                        )
-                        result.performance["agent_mode"] = "langgraph"
+            result = self._call_langgraph_agent(
+                llm=llm,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                original_query=query,
+                user_context=user_context,
+                execution_mode=execution_mode,
+                config=config,
+            )
+            result.performance["agent_mode"] = "langgraph"
             result.performance.update(performance)
             result.performance["agent_execution_ms"] = _elapsed_ms(agent_started)
             return result
@@ -2070,80 +2296,6 @@ class KnowledgeAgent:
                 result = self._offline_graph_answer(query=query, user_context=user_context)
                 result.performance.update(performance)
                 return result
-
-    def _call_deterministic_entity_preflight(
-        self,
-        *,
-        llm: Any,
-        system_prompt: str,
-        user_prompt: str,
-        original_query: str,
-        user_context: HealthcareUserContext,
-        config: dict[str, Any] | None,
-    ) -> GraphAgentResult | None:
-        if not self.settings.deterministic_lookup_enabled:
-            return None
-        if not (
-            _has_short_entity_lookup_intent(original_query)
-            or _has_structured_row_value_intent(original_query)
-            or _has_list_lookup_intent(original_query)
-        ):
-            return None
-
-        started = time.perf_counter()
-        tool_query = original_query
-        tool_started = time.perf_counter()
-        tool_output, sources, catalog_guidance = self._run_graph_tool(
-            "postgres_deterministic_lookup",
-            tool_query,
-            user_context,
-        )
-        tool_ms = _elapsed_ms(tool_started)
-        if not _deterministic_tool_output_has_results(tool_output) and _has_short_entity_lookup_intent(original_query):
-            medicine_query = f"medicine {original_query}"
-            tool_started = time.perf_counter()
-            medicine_output, medicine_sources, medicine_guidance = self._run_graph_tool(
-                "postgres_deterministic_lookup",
-                medicine_query,
-                user_context,
-            )
-            if _deterministic_tool_output_has_results(medicine_output):
-                tool_query = medicine_query
-                tool_output = medicine_output
-                sources = medicine_sources
-                catalog_guidance = medicine_guidance
-                tool_ms += _elapsed_ms(tool_started)
-
-        if not _deterministic_tool_output_has_results(tool_output):
-            return None
-
-        tool_context = "postgres_deterministic_lookup results:\n" + tool_output
-        try:
-            payload = json.loads(tool_output)
-        except json.JSONDecodeError:
-            payload = {}
-        agent_flow = _agent_flow_for_tool(
-            tool_name="postgres_deterministic_lookup",
-            query=tool_query,
-            reason="deterministic_preflight",
-            latency_ms=tool_ms,
-        )
-        agent_metadata = _agent_metadata_from_flow(agent_flow)
-        return GraphAgentResult(
-            answer=_format_deterministic_lookup_payload(original_query, payload if isinstance(payload, dict) else {}),
-            sources=sources,
-            tools_used=["postgres_deterministic_lookup"],
-            tool_context=self._bounded_context(tool_context),
-            catalog_guidance=catalog_guidance,
-            performance={
-                "deterministic_preflight_ms": _elapsed_ms(started),
-                "deterministic_lookup_ms": tool_ms,
-                "deterministic_preflight_query": tool_query,
-                "planned_tools": ["postgres_deterministic_lookup"],
-                "deterministic_formatter": "entity_details",
-                **agent_metadata,
-            },
-        )
 
     def _offline_graph_answer(
         self, *, query: str, user_context: HealthcareUserContext
@@ -2428,54 +2580,309 @@ class KnowledgeAgent:
         user_prompt: str,
         original_query: str,
         user_context: HealthcareUserContext,
+        execution_mode: str = "supervisor",
         config: dict[str, Any] | None,
     ) -> GraphAgentResult:
+        execution_mode = _normalize_chat_execution_mode(execution_mode)
+        max_steps = max(1, self.settings.max_graph_llm_calls or MAX_GRAPH_LLM_CALLS)
+        tool_names = {tool.name for tool in self.tools}
+        bound_llm = llm.bind_tools(self._tool_callables()) if hasattr(llm, "bind_tools") else llm
+
+        def initial_state() -> dict[str, Any]:
+            return {
+                "query": original_query,
+                "remaining_routes": [],
+                "pending_tool": "",
+                "pending_query": "",
+                "pending_reason": "",
+                "next_node": "supervisor",
+                "direct_answer": "",
+                "tools_used": [],
+                "sources": [],
+                "tool_outputs": [],
+                "catalog_guidance": [],
+                "agent_flow": [],
+                "performance": {"llm_call_count": 0},
+                "step_count": 0,
+                "result": None,
+            }
+
+        def append_synthesis_decision(state: dict[str, Any], reason: str) -> dict[str, Any]:
+            agent_flow = list(state.get("agent_flow") or [])
+            if not (
+                agent_flow
+                and isinstance(agent_flow[-1], dict)
+                and agent_flow[-1].get("agent") == "SupervisorAgent"
+                and agent_flow[-1].get("decision") == "synthesize"
+            ):
+                agent_flow.append(
+                    {
+                        "agent": "SupervisorAgent",
+                        "kind": "supervisor",
+                        "decision": "synthesize",
+                        "selected_agent": "SynthesisAgent",
+                        "reason": reason,
+                    }
+                )
+            return {**state, "agent_flow": agent_flow, "next_node": "synthesis"}
+
+        def route_to_tool(
+            state: dict[str, Any],
+            *,
+            tool_name: str,
+            query: str,
+            reason: str,
+        ) -> dict[str, Any]:
+            agent_name = _agent_name_for_tool(tool_name)
+            decision = {
+                "agent": "SupervisorAgent",
+                "kind": "supervisor",
+                "decision": "route",
+                "selected_agent": agent_name,
+                "tool": tool_name,
+                "query": query,
+                "reason": reason,
+            }
+            return {
+                **state,
+                "pending_tool": tool_name,
+                "pending_query": query,
+                "pending_reason": reason,
+                "next_node": _node_for_tool(tool_name),
+                "agent_flow": list(state.get("agent_flow") or []) + [decision],
+            }
+
+        def supervisor(state: dict[str, Any]) -> dict[str, Any]:
+            state = dict(state)
+            if state.get("direct_answer"):
+                return append_synthesis_decision(state, "llm_supervisor_direct_answer")
+            if int(state.get("step_count") or 0) >= max_steps:
+                return append_synthesis_decision(state, "max_agent_steps_reached")
+
+            remaining_routes = list(state.get("remaining_routes") or [])
+            if remaining_routes:
+                route = dict(remaining_routes.pop(0))
+                state["remaining_routes"] = remaining_routes
+                return route_to_tool(
+                    state,
+                    tool_name=str(route.get("tool") or "rag_search"),
+                    query=str(route.get("query") or original_query),
+                    reason=str(route.get("reason") or "llm_supervisor_tool_call"),
+                )
+            if state.get("tool_outputs"):
+                return append_synthesis_decision(state, "llm_supervisor_routes_complete")
+
+            routing_prompt = (
+                f"{user_prompt}\n\n"
+                "Supervisor routing task:\n"
+                "- Choose the best specialist tool call(s) for this healthcare question.\n"
+                "- Use postgres_deterministic_lookup for exact structured facts, counts, lists, rota, patients, appointments, wards, contacts, departments, CSV rows, and formulary rows.\n"
+                "- Use policy_search for policies, SOPs, pathways, guidelines, compliance, privacy, confidentiality, and governance.\n"
+                "- Use catalogue_search for document inventory and metadata questions.\n"
+                "- Use safety_guard for urgent clinical risk, escalation, PHI, or unsafe requests.\n"
+                "- Use rag_search for general document retrieval.\n"
+                "- For any operational, patient, appointment, rota, equipment, formulary, contact, ward, or policy fact, call a specialist tool; do not answer from memory.\n"
+                "- If the query has multiple parts, call every relevant specialist before synthesis.\n"
+                "Only answer directly for greetings or questions that genuinely need no knowledge source."
+            )
+            llm_started = time.perf_counter()
+            response = self._invoke_model(
+                bound_llm,
+                [_make_system_message(system_prompt), _make_human_message(routing_prompt)],
+                config,
+            )
+            llm_ms = _elapsed_ms(llm_started)
+            performance = dict(state.get("performance") or {})
+            performance["llm_call_count"] = int(performance.get("llm_call_count") or 0) + 1
+            _add_timing(performance, "llm_tool_choice_ms", llm_ms)
+            tool_calls = _message_tool_calls(response)
+            if tool_calls:
+                routes: list[dict[str, str]] = []
+                for tool_call in tool_calls:
+                    tool_name = _tool_call_name(tool_call)
+                    routes.append(
+                        {
+                            "tool": tool_name,
+                            "query": _tool_query(_tool_call_args(tool_call), original_query),
+                            "reason": "llm_supervisor_tool_call",
+                        }
+                    )
+                first_route = routes.pop(0)
+                state = {**state, "remaining_routes": routes, "performance": performance}
+                return route_to_tool(
+                    state,
+                    tool_name=first_route["tool"],
+                    query=first_route["query"],
+                    reason=first_route["reason"],
+                )
+
+            _add_timing(performance, "llm_direct_answer_ms", llm_ms)
+            return append_synthesis_decision(
+                {
+                    **state,
+                    "direct_answer": _message_text(response),
+                    "performance": performance,
+                },
+                "llm_supervisor_direct_answer",
+            )
+
+        def run_specialist_node(state: dict[str, Any], node_name: str) -> dict[str, Any]:
+            state = dict(state)
+            tool_name = str(state.get("pending_tool") or _tool_for_agent_node(node_name))
+            query = str(state.get("pending_query") or original_query)
+            agent_name = _agent_name_for_tool(tool_name)
+            if tool_name not in tool_names:
+                specialist_result = SpecialistAgentResult(
+                    agent_name=agent_name,
+                    status="failed",
+                    answer_fragment=f"Tool {tool_name!r} is not registered.",
+                    tool_context=f"{tool_name} failed:\nTool {tool_name!r} is not registered.",
+                    errors=[f"Tool {tool_name!r} is not registered."],
+                )
+            else:
+                specialist_result = self._run_specialist_agent(tool_name, query, user_context)
+
+            latency_ms = int(specialist_result.performance.get(agent_name, 0) or 0)
+            specialist_flow = {
+                "agent": specialist_result.agent_name,
+                "kind": "specialist",
+                "tool": tool_name,
+                "query": str(specialist_result.performance.get("effective_query") or query),
+                "status": specialist_result.status,
+                "latency_ms": latency_ms,
+                "source_count": len(specialist_result.sources),
+            }
+            if specialist_result.errors:
+                specialist_flow["error"] = "; ".join(specialist_result.errors)
+
+            performance = dict(state.get("performance") or {})
+            _add_tool_timing(performance, specialist_result.catalog_guidance)
+            tools_used = list(state.get("tools_used") or [])
+            if tool_name in tool_names:
+                tools_used.extend(specialist_result.tools_used)
+            return {
+                **state,
+                "pending_tool": "",
+                "pending_query": "",
+                "pending_reason": "",
+                "next_node": "supervisor",
+                "tools_used": tools_used,
+                "sources": list(state.get("sources") or []) + list(specialist_result.sources),
+                "tool_outputs": list(state.get("tool_outputs") or []) + [specialist_result.tool_context],
+                "catalog_guidance": list(state.get("catalog_guidance") or [])
+                + list(specialist_result.catalog_guidance),
+                "agent_flow": list(state.get("agent_flow") or []) + [specialist_flow],
+                "performance": performance,
+                "step_count": int(state.get("step_count") or 0) + 1,
+            }
+
+        def synthesize(state: dict[str, Any]) -> dict[str, Any]:
+            state = dict(state)
+            started = time.perf_counter()
+            tool_context = "\n\n".join(state.get("tool_outputs") or [])
+            tools_used = list(state.get("tools_used") or [])
+            performance = dict(state.get("performance") or {})
+            direct_answer = str(state.get("direct_answer") or "").strip()
+
+            if direct_answer and not tool_context:
+                answer = direct_answer
+                synthesis_status = "direct_answer"
+                synthesis_ms = 0
+            elif tools_used and set(tools_used) == {"postgres_deterministic_lookup"}:
+                answer = self._offline_answer(query=original_query, tool_context=tool_context)
+                synthesis_status = "deterministic_structured_answer"
+                synthesis_ms = _elapsed_ms(started)
+            else:
+                answer_prompt = (
+                    f"{user_prompt}\n\n"
+                    "Specialist evidence:\n"
+                    f"{self._bounded_context(tool_context or 'No specialist evidence was returned.')}\n\n"
+                    "Produce the final answer using only the specialist evidence above. "
+                    "Preserve exact deterministic values. Include citations when document sources are present. "
+                    "Use a consistent structure: start with the direct answer, then concise bullet details when there are multiple facts, "
+                    "then a short source/evidence note if relevant. If the evidence is insufficient, say what is missing."
+                )
+                llm_started = time.perf_counter()
+                response = self._invoke_model(
+                    llm,
+                    [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+                    config,
+                )
+                synthesis_ms = _elapsed_ms(llm_started)
+                _add_timing(performance, "llm_final_ms", synthesis_ms)
+                performance["llm_call_count"] = int(performance.get("llm_call_count") or 0) + 1
+                answer = _message_text(response).strip()
+                if not answer:
+                    answer = self._offline_answer(query=original_query, tool_context=tool_context)
+                    synthesis_status = "fallback_offline_answer"
+                else:
+                    synthesis_status = "answered"
+
+            agent_flow = list(state.get("agent_flow") or [])
+            agent_flow.append(
+                {
+                    "agent": "SynthesisAgent",
+                    "kind": "synthesis",
+                    "status": synthesis_status,
+                    "latency_ms": synthesis_ms,
+                }
+            )
+            performance.update(_agent_metadata_from_flow(agent_flow))
+            result = GraphAgentResult(
+                answer=answer,
+                sources=_dedupe_sources(list(state.get("sources") or [])),
+                tools_used=tools_used,
+                tool_context=self._bounded_context(tool_context or "No graph tools were executed."),
+                catalog_guidance=list(state.get("catalog_guidance") or []),
+                performance=performance,
+            )
+            return {**state, "agent_flow": agent_flow, "performance": performance, "result": result}
+
+        def next_node(state: dict[str, Any]) -> str:
+            return str(state.get("next_node") or "supervisor")
+
+        def run_without_langgraph() -> GraphAgentResult:
+            state = initial_state()
+            while True:
+                state = supervisor(state)
+                node_name = next_node(state)
+                if node_name == "synthesis":
+                    state = synthesize(state)
+                    return state["result"]
+                state = run_specialist_node(state, node_name)
+
         try:
             from langgraph.graph import END, START, StateGraph
         except Exception:
-            return self._call_tool_loop_agent(
-                llm=llm,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                original_query=original_query,
-                user_context=user_context,
-                config=config,
-            )
+            return run_without_langgraph()
 
-        try:
-            from typing_extensions import TypedDict
-        except Exception:
-            from typing import TypedDict  # type: ignore
-
-        class GraphState(TypedDict, total=False):
-            supervisor_ready: bool
-            result: GraphAgentResult
-
-        def supervisor(state: GraphState) -> GraphState:
-            return {**state, "supervisor_ready": True}
-
-        def specialist_loop(state: GraphState) -> GraphState:
-            return {
-                **state,
-                "result": self._call_tool_loop_agent(
-                    llm=llm,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    original_query=original_query,
-                    user_context=user_context,
-                    config=config,
-                )
-            }
-
-        graph_builder = StateGraph(GraphState)
+        graph_builder = StateGraph(dict)
         graph_builder.add_node("supervisor", supervisor)
-        graph_builder.add_node("specialist_loop", specialist_loop)
+        graph_builder.add_node("deterministic_lookup", lambda state: run_specialist_node(state, "deterministic_lookup"))
+        graph_builder.add_node("rag", lambda state: run_specialist_node(state, "rag"))
+        graph_builder.add_node("policy", lambda state: run_specialist_node(state, "policy"))
+        graph_builder.add_node("catalog", lambda state: run_specialist_node(state, "catalog"))
+        graph_builder.add_node("safety", lambda state: run_specialist_node(state, "safety"))
+        graph_builder.add_node("synthesis", synthesize)
         graph_builder.add_edge(START, "supervisor")
-        graph_builder.add_edge("supervisor", "specialist_loop")
-        graph_builder.add_edge("specialist_loop", END)
+        graph_builder.add_conditional_edges(
+            "supervisor",
+            next_node,
+            {
+                "deterministic_lookup": "deterministic_lookup",
+                "rag": "rag",
+                "policy": "policy",
+                "catalog": "catalog",
+                "safety": "safety",
+                "synthesis": "synthesis",
+            },
+        )
+        for node_name in ("deterministic_lookup", "rag", "policy", "catalog", "safety"):
+            graph_builder.add_edge(node_name, "supervisor")
+        graph_builder.add_edge("synthesis", END)
         graph = graph_builder.compile()
 
-        final_state = graph.invoke({})
+        final_state = graph.invoke(initial_state())
         return final_state["result"]
 
     def _call_tool_loop_agent(
