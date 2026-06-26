@@ -526,7 +526,6 @@ def _has_deterministic_intent(text: str) -> bool:
     return (
         _contains_marker(text, DETERMINISTIC_QUERY_MARKERS)
         or _has_structured_row_value_intent(text)
-        or _has_short_entity_lookup_intent(text)
         or _has_list_lookup_intent(text)
         or _has_equipment_availability_intent(text)
         or _has_generic_row_value_list_intent(text)
@@ -587,6 +586,13 @@ def _has_short_entity_lookup_intent(text: str) -> bool:
         if len(term) >= 3 and term not in ENTITY_LOOKUP_MARKERS and term not in {"tell", "show", "give", "need"}
     ]
     return 1 <= len(useful_terms) <= 3
+
+
+def _has_generic_info_intent(text: str) -> bool:
+    lowered = text.lower()
+    if _has_policy_intent(text):
+        return False
+    return any(marker in lowered for marker in ENTITY_LOOKUP_MARKERS)
 
 
 def _has_list_lookup_intent(text: str) -> bool:
@@ -686,6 +692,7 @@ DETERMINISTIC_NAME_FIELDS = (
     "medicine",
     "drug_name",
     "drug",
+    "staff_name",
     "name",
     "full_name",
     "asset_name",
@@ -699,6 +706,7 @@ DETERMINISTIC_LIST_NAME_FIELDS = (
     "medicine",
     "drug_name",
     "drug",
+    "staff_name",
     "name",
     "full_name",
     "asset_name",
@@ -1087,8 +1095,11 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
             detail_parts: list[str] = []
             seen_details: set[str] = set()
             for value in (
+                row_payload.get("department"),
                 row_payload.get("department_name"),
+                row_payload.get("role"),
                 row_payload.get("specialty"),
+                row_payload.get("contact"),
                 row_payload.get("phone"),
                 row_payload.get("bleep"),
             ):
@@ -1212,6 +1223,16 @@ def _tool_query(args: Any, default_query: str) -> str:
             if key in args and args[key] is not None:
                 return str(args[key])
     return default_query
+
+
+def _is_sqlish_tool_query(query: str) -> bool:
+    lowered = query.strip().lower()
+    return bool(
+        re.search(r"^\s*(select|with|insert|update|delete)\b", lowered)
+        or re.search(r"\bfrom\s+[a-z_][a-z0-9_]*\b", lowered)
+        or re.search(r"\bwhere\b.+=", lowered)
+        or re.search(r"\border\s+by\b", lowered)
+    )
 
 
 def _dedupe_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2317,7 +2338,7 @@ class KnowledgeAgent:
             "- Use RAG document search for policy, procedure, SOP, guideline, privacy, confidentiality, and governance questions.\n"
             "- Use deterministic Postgres lookup for exact structured facts such as doctors on call, patients, appointments, wards, contacts, departments, CSV lookup rows, and formulary rows.\n"
             "- Use deterministic Postgres lookup for count, total, inventory, equipment, asset, device, stock, or availability questions that may be answered by uploaded CSV row values.\n"
-            "- For short entity questions such as 'info on X' or 'details about X', call deterministic Postgres lookup first when X may be a medication, asset, contact, rota, or uploaded CSV row value.\n"
+            "- Do not treat 'info on X' or 'information on X' as automatically deterministic. Use deterministic lookup only when X is clearly a medication, asset, contact, rota, patient, appointment, ward, count/list target, or uploaded CSV row value; otherwise use RAG or policy search.\n"
             "- For operational facts, do not answer from memory; call the relevant specialist/tool and answer from the returned evidence.\n"
             "- If the deterministic lookup result fully answers the question, answer from that result without calling extra tools.\n"
             "- For rota/date questions, only call a row 'today' when its date equals the lookup result's resolved_today value; otherwise say no matching row was found for today.\n"
@@ -2780,11 +2801,22 @@ class KnowledgeAgent:
         def planned_requires_only_deterministic() -> bool:
             return _planned_tool_names(original_query) == ["postgres_deterministic_lookup"]
 
+        def deterministic_specialist_query(query: str) -> str:
+            if not query.strip() or _is_sqlish_tool_query(query):
+                return first_deterministic_guard_query()
+            return query
+
         def apply_deterministic_guard_to_routes(routes: list[dict[str, str]]) -> list[dict[str, str]]:
             if not deterministic_guard_queries:
                 return routes
-            if any(route.get("tool") == "postgres_deterministic_lookup" for route in routes):
-                return routes
+            normalized_routes: list[dict[str, str]] = []
+            for route in routes:
+                if route.get("tool") == "postgres_deterministic_lookup":
+                    normalized_routes.append({**route, "query": deterministic_specialist_query(str(route.get("query") or ""))})
+                else:
+                    normalized_routes.append(route)
+            if any(route.get("tool") == "postgres_deterministic_lookup" for route in normalized_routes):
+                return normalized_routes
             guard_route = {
                 "tool": "postgres_deterministic_lookup",
                 "query": first_deterministic_guard_query(),
@@ -2792,7 +2824,17 @@ class KnowledgeAgent:
             }
             if planned_requires_only_deterministic():
                 return [guard_route]
-            return [*routes, guard_route]
+            return [*normalized_routes, guard_route]
+
+        def deterministic_no_result_seen(state: dict[str, Any]) -> bool:
+            for output in list(state.get("tool_outputs") or []):
+                text = str(output or "")
+                if not text.startswith("postgres_deterministic_lookup results:"):
+                    continue
+                payload_text = text.split("postgres_deterministic_lookup results:", 1)[-1].strip()
+                if not _deterministic_tool_output_has_results(payload_text):
+                    return True
+            return False
 
         def supervisor(state: dict[str, Any]) -> dict[str, Any]:
             state = dict(state)
@@ -2812,6 +2854,18 @@ class KnowledgeAgent:
                     reason=str(route.get("reason") or "llm_supervisor_tool_call"),
                 )
             if state.get("tool_outputs"):
+                if (
+                    _has_generic_info_intent(original_query)
+                    and deterministic_no_result_seen(state)
+                    and "rag_search" not in list(state.get("tools_used") or [])
+                    and "document_search" not in list(state.get("tools_used") or [])
+                ):
+                    return route_to_tool(
+                        state,
+                        tool_name="rag_search",
+                        query=original_query,
+                        reason="deterministic_no_evidence_rag_fallback",
+                    )
                 if deterministic_guard_needed(state):
                     return route_to_tool(
                         state,
@@ -2830,6 +2884,7 @@ class KnowledgeAgent:
                 "- Use catalogue_search for document inventory and metadata questions.\n"
                 "- Use safety_guard for urgent clinical risk, escalation, PHI, or unsafe requests.\n"
                 "- Use rag_search for general document retrieval.\n"
+                "- Generic 'info on X' or 'information on X' questions should use rag_search or policy_search unless X is clearly an exact structured lookup target.\n"
                 "- For any operational, patient, appointment, rota, equipment, formulary, contact, ward, or policy fact, call a specialist tool; do not answer from memory.\n"
                 "- If the query has multiple parts, call every relevant specialist before synthesis.\n"
                 "Only answer directly for greetings or questions that genuinely need no knowledge source."
@@ -2887,6 +2942,8 @@ class KnowledgeAgent:
             state = dict(state)
             tool_name = str(state.get("pending_tool") or _tool_for_agent_node(node_name))
             query = str(state.get("pending_query") or original_query)
+            if tool_name == "postgres_deterministic_lookup":
+                query = deterministic_specialist_query(query)
             agent_name = _agent_name_for_tool(tool_name)
             if tool_name not in tool_names:
                 specialist_result = SpecialistAgentResult(

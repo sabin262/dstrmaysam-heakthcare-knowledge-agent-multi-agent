@@ -485,6 +485,31 @@ def _is_equipment_asset_list_query(query: str) -> bool:
     )
 
 
+def _is_medicine_list_query(query: str) -> bool:
+    if not _has_list_intent(query):
+        return False
+    terms = set(_terms(query))
+    return bool(terms & {"medicine", "medicines", "medication", "medications", "drug", "drugs", "formulary"})
+
+
+def _csv_filenames_with_fields(
+    csv_assets: Sequence[dict[str, Any]],
+    field_candidates: Sequence[str],
+    filename_markers: Sequence[str],
+) -> list[str]:
+    candidate_fields = {_normalized_key(field) for field in field_candidates}
+    filenames: list[str] = []
+    for asset in csv_assets:
+        filename = str(asset.get("filename") or asset.get("title") or "")
+        normalized_filename = filename.lower()
+        columns = {_normalized_key(str(column)) for column in asset.get("columns") or []}
+        if not (columns & candidate_fields or any(marker in normalized_filename for marker in filename_markers)):
+            continue
+        if filename and filename not in filenames:
+            filenames.append(filename)
+    return filenames
+
+
 def _requested_rota_dates(query: str, today: date | None = None) -> list[str]:
     q = query.lower()
     base_date = today or date.today()
@@ -540,10 +565,13 @@ def _requires_on_call(query: str) -> bool:
 
 def _is_rota_csv_asset(asset: dict[str, Any]) -> bool:
     filename = str(asset.get("filename") or asset.get("title") or "").lower()
-    columns = " ".join(str(column).lower() for column in asset.get("columns") or [])
-    semantic_terms = " ".join(str(term).lower() for term in asset.get("semantic_terms") or [])
-    haystack = f"{filename} {columns} {semantic_terms}"
-    return any(marker in haystack for marker in ["rota", "schedule", "oncall", "on_call", "on-call", "doctor", "nurse", "staff"])
+    if any(marker in filename for marker in ["rota", "oncall", "on_call", "on-call"]):
+        return True
+    columns = {str(column).lower() for column in asset.get("columns") or []}
+    has_date_or_shift = bool(columns & {"date", "shift_date", "day", "shift_start", "shift_end"})
+    has_staff_identity = bool(columns & {"staff_name", "doctor", "nurse", "clinician", "name", "role"})
+    has_rota_state = bool(columns & {"on_call", "status", "shift", "shift_start", "shift_end"})
+    return has_date_or_shift and has_staff_identity and has_rota_state
 
 
 def _rota_csv_filenames(
@@ -554,14 +582,12 @@ def _rota_csv_filenames(
     if not _is_staff_rota_query(query):
         return []
     filenames: list[str] = []
-    for filename in selected_filenames:
-        if filename and filename not in filenames:
-            filenames.append(str(filename))
+    selected = {str(filename) for filename in selected_filenames if filename}
     for asset in csv_assets:
         if not _is_rota_csv_asset(asset):
             continue
         filename = str(asset.get("filename") or asset.get("title") or "")
-        if filename and filename not in filenames:
+        if filename and (filename in selected or not selected) and filename not in filenames:
             filenames.append(filename)
     if "staff_rota.csv" not in filenames:
         filenames.append("staff_rota.csv")
@@ -584,6 +610,13 @@ def _access_scopes(user: HealthcareUserContext) -> tuple[str, ...]:
     if roles & {"ig_manager", "information_governance"}:
         scopes.add("ig_manager")
     return tuple(sorted(scopes))
+
+
+def _staff_rota_access_scopes(scopes: Sequence[str]) -> tuple[str, ...]:
+    expanded = set(scopes)
+    if "all_staff" in expanded:
+        expanded.update({"clinical", "manager"})
+    return tuple(sorted(expanded))
 
 
 @dataclass(frozen=True)
@@ -656,11 +689,43 @@ class DeterministicLookupService:
             if _is_equipment_asset_list_query(query):
                 distinct_field = "equipment_type"
                 row_value_search_used = True
+                distinct_filenames = _csv_filenames_with_fields(
+                    csv_assets or [],
+                    ("equipment_type", "asset_type", "device_type", "type"),
+                    ("equipment", "asset", "device"),
+                )
                 rows = self._query_uploaded_distinct_field_values(
                     scopes,
                     ("equipment_type", "asset_type", "device_type", "type"),
-                    source_filenames=selected_filenames or None,
+                    source_filenames=distinct_filenames or None,
                     limit=limit,
+                    output_field="equipment_type",
+                    fallback_markers=("equipment", "asset", "device"),
+                )
+                if rows:
+                    handled_distinct_lookup = True
+                    matched_csv_sources = sorted(
+                        {
+                            str(row.get("source_filename"))
+                            for row in rows
+                            if row.get("source_filename")
+                        }
+                    )
+            elif _is_medicine_list_query(query):
+                distinct_field = "medicine"
+                row_value_search_used = True
+                distinct_filenames = _csv_filenames_with_fields(
+                    csv_assets or [],
+                    ("medicine", "medicine_name", "medication", "drug", "drug_name"),
+                    ("medication", "medicine", "formulary", "drug"),
+                )
+                rows = self._query_uploaded_distinct_field_values(
+                    scopes,
+                    ("medicine", "medicine_name", "medication", "drug", "drug_name"),
+                    source_filenames=distinct_filenames or None,
+                    limit=limit,
+                    output_field="medicine",
+                    fallback_markers=("medication", "medicine", "formulary", "drug"),
                 )
                 if rows:
                     handled_distinct_lookup = True
@@ -1048,7 +1113,7 @@ class DeterministicLookupService:
         stopwords: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         terms = _terms(query)
-        primary = terms[0] if terms else ""
+        primary = _best_search_term(terms, stopwords)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 if category == "patients":
@@ -1105,6 +1170,8 @@ class DeterministicLookupService:
         *,
         source_filenames: Sequence[str] | None = None,
         limit: int = 100,
+        output_field: str = "equipment_type",
+        fallback_markers: Sequence[str] = ("equipment", "asset", "device"),
     ) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
@@ -1116,15 +1183,11 @@ class DeterministicLookupService:
         else:
             filename_filter = """
                       AND (
-                        lower(source_filename) LIKE %s
-                        OR lower(source_filename) LIKE %s
-                        OR lower(source_filename) LIKE %s
-                        OR lower(searchable_text) LIKE %s
-                        OR lower(searchable_text) LIKE %s
-                        OR lower(searchable_text) LIKE %s
+                        {" OR ".join(["lower(source_filename) LIKE %s" for _ in fallback_markers] + ["lower(searchable_text) LIKE %s" for _ in fallback_markers])}
                       )
             """
-            params.extend(["%equipment%", "%asset%", "%device%", "%equipment%", "%asset%", "%device%"])
+            marker_patterns = [f"%{marker.lower()}%" for marker in fallback_markers]
+            params.extend([*marker_patterns, *marker_patterns])
         params.append(max(limit * 50, 500))
 
         with self._connect() as conn:
@@ -1166,7 +1229,7 @@ class DeterministicLookupService:
                             "source_table": "uploaded_lookup_rows",
                             "source_filename": row_dict.get("source_filename"),
                             "row_number": row_dict.get("row_number"),
-                            "row": {"equipment_type": text_value},
+                            "row": {output_field: text_value},
                             "access_level": row_dict.get("access_level"),
                         }
                     )
@@ -1184,6 +1247,9 @@ class DeterministicLookupService:
         stopwords: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         terms = _expanded_search_terms(query, stopwords or set())
+        terms = [term for term in terms if len(term) > 3]
+        if not terms:
+            return []
         patterns = [_like(term) for term in terms[:8]]
         where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
         filename_filter = ""
@@ -1262,8 +1328,12 @@ class DeterministicLookupService:
                 source_filenames=source_filenames,
                 stopwords=stopwords,
             )
-        patterns = [_like(term) for term in terms[:8]]
+        like_terms = [term for term in terms[:8] if len(term) > 3]
+        patterns = [_like(term) for term in like_terms]
         like_where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
+        match_where = "to_tsvector('simple', searchable_text) @@ to_tsquery('simple', %s)"
+        if like_where:
+            match_where = f"({match_where} OR {like_where})"
         filename_filter = ""
         params: list[Any] = [tsquery, list(scopes)]
         if source_filenames:
@@ -1280,10 +1350,7 @@ class DeterministicLookupService:
                     FROM uploaded_lookup_rows
                     WHERE {self._access_sql()}
                       {filename_filter}
-                      AND (
-                        to_tsvector('simple', searchable_text) @@ to_tsquery('simple', %s)
-                        OR {like_where}
-                      )
+                      AND {match_where}
                     ORDER BY rank DESC, source_filename, row_number
                     LIMIT %s
                     """,
@@ -1359,6 +1426,9 @@ class DeterministicLookupService:
         stopwords: set[str] | None = None,
     ) -> dict[str, int]:
         terms = _expanded_search_terms(query, stopwords or set())
+        terms = [term for term in terms if len(term) > 3]
+        if not terms:
+            return {}
         patterns = [_like(term) for term in terms[:8]]
         where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
         filename_filter = ""
@@ -1401,8 +1471,12 @@ class DeterministicLookupService:
                 source_filenames=source_filenames,
                 stopwords=stopwords,
             )
-        patterns = [_like(term) for term in terms[:8]]
+        like_terms = [term for term in terms[:8] if len(term) > 3]
+        patterns = [_like(term) for term in like_terms]
         like_where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
+        match_where = "to_tsvector('simple', searchable_text) @@ to_tsquery('simple', %s)"
+        if like_where:
+            match_where = f"({match_where} OR {like_where})"
         filename_filter = ""
         params: list[Any] = [list(scopes)]
         if source_filenames:
@@ -1418,10 +1492,7 @@ class DeterministicLookupService:
                     FROM uploaded_lookup_rows
                     WHERE {self._access_sql()}
                       {filename_filter}
-                      AND (
-                        to_tsvector('simple', searchable_text) @@ to_tsquery('simple', %s)
-                        OR {like_where}
-                      )
+                      AND {match_where}
                     GROUP BY source_filename
                     ORDER BY source_filename
                     """,
@@ -1536,11 +1607,12 @@ class DeterministicLookupService:
         if limit <= 0:
             return []
 
+        lookup_scopes = _staff_rota_access_scopes(scopes)
         requested_dates = _requested_rota_dates(query)
         requested_groups = _requested_rota_role_groups(query)
         rota_filenames = [filename.lower() for filename in (source_filenames or ["staff_rota.csv"]) if filename]
         where_parts = [self._access_sql(), "lower(source_filename) = ANY(%s)"]
-        params: list[Any] = [list(scopes), rota_filenames]
+        params: list[Any] = [list(lookup_scopes), rota_filenames]
         if requested_dates:
             accepted_dates = list(requested_dates)
             if _resolved_today() in accepted_dates:
@@ -1631,7 +1703,7 @@ class DeterministicLookupService:
                     )
                 return rows or self._query_staff_rota_local_csv(
                     query,
-                    scopes,
+                    lookup_scopes,
                     limit,
                     requested_dates=requested_dates,
                     requested_groups=requested_groups,
@@ -1654,6 +1726,7 @@ class DeterministicLookupService:
         if not rota_path.exists():
             return []
 
+        lookup_scopes = _staff_rota_access_scopes(scopes)
         dates = set(requested_dates or _requested_rota_dates(query))
         role_groups = requested_groups if requested_groups is not None else _requested_rota_role_groups(query)
         search_terms = [term.lower() for term in (department_terms or [])]
@@ -1665,7 +1738,7 @@ class DeterministicLookupService:
             for row_number, payload in enumerate(reader, start=1):
                 cleaned = {str(key).strip(): str(value).strip() for key, value in payload.items() if key}
                 access_level = cleaned.get("access_level") or "all_staff"
-                if access_level not in scopes:
+                if access_level not in lookup_scopes:
                     continue
                 if dates and cleaned.get("date") not in dates:
                     continue

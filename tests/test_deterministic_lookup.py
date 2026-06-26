@@ -14,6 +14,8 @@ from backend.app.deterministic_lookup import (
     _name_search_terms,
     _requested_rota_dates,
     _requested_rota_role_groups,
+    _rota_csv_filenames,
+    _staff_rota_access_scopes,
     _terms,
     build_csv_semantic_metadata,
 )
@@ -128,14 +130,42 @@ class FakeDistinctEquipmentTypeLookup(DeterministicLookupService):
         self.distinct_calls = []
         self.category_calls = []
 
-    def _query_uploaded_distinct_field_values(self, scopes, field_candidates, *, source_filenames=None, limit=100):
+    def _query_uploaded_distinct_field_values(
+        self,
+        scopes,
+        field_candidates,
+        *,
+        source_filenames=None,
+        limit=100,
+        output_field="equipment_type",
+        fallback_markers=("equipment", "asset", "device"),
+    ):
         self.distinct_calls.append(
             {
                 "field_candidates": list(field_candidates),
                 "source_filenames": list(source_filenames or []),
                 "limit": limit,
+                "output_field": output_field,
+                "fallback_markers": list(fallback_markers),
             }
         )
+        if output_field == "medicine":
+            return [
+                {
+                    "source_table": "uploaded_lookup_rows",
+                    "source_filename": "medication_formulary.csv",
+                    "row_number": 1,
+                    "row": {"medicine": "Vancomycin"},
+                    "access_level": "clinical",
+                },
+                {
+                    "source_table": "uploaded_lookup_rows",
+                    "source_filename": "medication_formulary.csv",
+                    "row_number": 2,
+                    "row": {"medicine": "Gentamicin"},
+                    "access_level": "clinical",
+                },
+            ]
         return [
             {
                 "source_table": "uploaded_lookup_rows",
@@ -414,6 +444,30 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(result.rows[0]["row"]["doctor"], "Dr Aisha Malik")
         self.assertIn("doctor_rota.csv", service.rota_calls[0]["source_filenames"])
 
+    def test_rota_csv_filenames_ignore_non_rota_selected_assets(self):
+        filenames = _rota_csv_filenames(
+            "who is on call",
+            [
+                {
+                    "filename": "department_contacts.csv",
+                    "columns": ["department", "contact_name", "role", "phone"],
+                    "semantic_terms": ["staff absence", "duty manager"],
+                },
+                {
+                    "filename": "audit_schedule.csv",
+                    "columns": ["audit_id", "department", "lead", "status", "due_date"],
+                    "semantic_terms": ["audit schedule"],
+                },
+                {
+                    "filename": "staff_rota.csv",
+                    "columns": ["date", "staff_name", "role", "on_call", "shift_start"],
+                },
+            ],
+            ["department_contacts.csv", "audit_schedule.csv"],
+        )
+
+        self.assertEqual(filenames, ["staff_rota.csv"])
+
     def test_csv_semantic_metadata_includes_sampled_row_values(self):
         metadata = build_csv_semantic_metadata(
             "equipment_assets.csv",
@@ -523,6 +577,62 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(result.lookup_plan["distinct_field"], "equipment_type")
         self.assertEqual(result.lookup_plan["matched_csv_sources"], ["equipment_assets.csv"])
 
+    def test_equipment_type_list_ignores_non_equipment_selected_assets(self):
+        service = FakeDistinctEquipmentTypeLookup()
+
+        result = service.lookup(
+            "list all equipment",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+            limit=100,
+            csv_assets=[
+                {
+                    "filename": "department_contacts.csv",
+                    "columns": ["department", "contact_name", "role", "phone"],
+                    "semantic_terms": ["equipment fault"],
+                    "row_count": 30,
+                },
+                {
+                    "filename": "equipment_assets.csv",
+                    "columns": ["asset_id", "equipment_type", "location", "status"],
+                    "semantic_terms": ["asset", "equipment"],
+                    "row_count": 30,
+                },
+            ],
+        )
+
+        self.assertEqual([row["row"]["equipment_type"] for row in result.rows], ["Ventilator", "Infusion Pump"])
+        self.assertEqual(service.distinct_calls[0]["source_filenames"], ["equipment_assets.csv"])
+
+    def test_medicine_list_uses_distinct_formulary_rows_without_directory_fallback(self):
+        service = FakeDistinctEquipmentTypeLookup()
+
+        result = service.lookup(
+            "list all drugs",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+            limit=100,
+            csv_assets=[
+                {
+                    "filename": "audit_schedule.csv",
+                    "columns": ["audit_id", "topic", "status"],
+                    "semantic_terms": ["medication safety"],
+                    "row_count": 30,
+                },
+                {
+                    "filename": "medication_formulary.csv",
+                    "columns": ["medicine", "category", "restricted"],
+                    "semantic_terms": ["medicine", "drug", "formulary"],
+                    "row_count": 30,
+                },
+            ],
+        )
+
+        self.assertEqual([row["row"]["medicine"] for row in result.rows], ["Vancomycin", "Gentamicin"])
+        self.assertEqual(service.category_calls, [])
+        self.assertEqual(service.distinct_calls[0]["source_filenames"], ["medication_formulary.csv"])
+        self.assertEqual(service.distinct_calls[0]["output_field"], "medicine")
+        self.assertEqual(result.lookup_plan["distinct_field"], "medicine")
+        self.assertEqual(result.lookup_plan["matched_csv_sources"], ["medication_formulary.csv"])
+
     def test_equipment_count_uses_uploaded_rows_before_directory_fallback(self):
         service = FakeEquipmentCountLookup()
 
@@ -598,6 +708,14 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(service._classify("who is on call"), "staff_rota")
         self.assertTrue(_is_staff_rota_query("who is on call"))
         self.assertEqual(_requested_rota_role_groups("who is on call"), set())
+
+    def test_staff_rota_lookup_expands_general_staff_scope(self):
+        scopes = _staff_rota_access_scopes(("all_staff",))
+
+        self.assertIn("all_staff", scopes)
+        self.assertIn("clinical", scopes)
+        self.assertIn("manager", scopes)
+        self.assertNotIn("pharmacy", scopes)
 
     def test_generic_who_is_on_call_does_not_filter_department_by_call(self):
         service = FakeGenericOnCallRowsLookup()

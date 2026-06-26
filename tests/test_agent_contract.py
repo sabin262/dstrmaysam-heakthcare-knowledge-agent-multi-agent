@@ -636,6 +636,66 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(lookup.calls[0]["query"], "which doctor is on call")
         self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "llm_supervisor_tool_call")
 
+    def test_sqlish_supervisor_query_uses_original_text_for_deterministic_lookup(self):
+        fake_llm = FakeLLM(
+            [
+                fake_ai_message(
+                    tool_calls=[
+                        {
+                            "name": "postgres_deterministic_lookup",
+                            "args": {
+                                "query": "select date, department, role, staff_name, on_call from staff_rota where on_call = 'yes' order by date desc limit 5"
+                            },
+                            "id": "call-1",
+                        }
+                    ]
+                )
+            ]
+        )
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "staff_rota",
+                    "message": "Found 2 matching staff_rota.csv row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "staff_rota.csv",
+                            "row": {
+                                "staff_name": "Aisha Malik",
+                                "role": "Consultant Physician",
+                                "department": "Emergency Department",
+                                "on_call": "Yes",
+                            },
+                            "access_level": "manager",
+                        },
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "staff_rota.csv",
+                            "row": {
+                                "staff_name": "Marcus Reed",
+                                "role": "Staff Nurse",
+                                "department": "ICU",
+                                "on_call": "Yes",
+                            },
+                            "access_level": "clinical",
+                        },
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "who is on call", session_id="session")
+
+        self.assertIn("Aisha Malik (Emergency Department, Consultant Physician)", result.answer)
+        self.assertIn("Marcus Reed (ICU, Staff Nurse)", result.answer)
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(lookup.calls[0]["query"], "who is on call")
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["query"], "who is on call")
+        self.assertEqual(result.metadata["performance"]["agent_flow"][1]["query"], "who is on call")
+
     def test_short_entity_info_query_uses_deterministic_specialist(self):
         retrieval = FakeRetrieval()
         fake_llm = FakeLLM([fake_tool_call_message("postgres_deterministic_lookup", "info on Morphine")])
@@ -701,7 +761,7 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(result.metadata["chat_execution_mode"], "supervisor")
         self.assertEqual(result.metadata["chat_execution_mode_label"], "Supervisor")
 
-    def test_structured_direct_answer_is_forced_to_deterministic_specialist(self):
+    def test_explicit_medicine_direct_answer_is_forced_to_deterministic_specialist(self):
         retrieval = FakeRetrieval()
         fake_llm = FakeLLM([fake_ai_message("Morphine is probably covered in formulary documents.")])
         lookup = FakeDeterministicLookup(
@@ -722,7 +782,7 @@ class AgentContractTests(unittest.TestCase):
         agent = make_agent(fake_llm, retrieval=retrieval)
         agent.deterministic_lookup = lookup
 
-        result = agent.answer("user", "info on Morphine", session_id="session")
+        result = agent.answer("user", "medicine info on Morphine", session_id="session")
 
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertIn("Morphine details are as follows:", result.answer)
@@ -731,9 +791,41 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(len(fake_llm.messages), 1)
         self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "supervisor_deterministic_guard_direct_answer")
 
-    def test_rag_only_route_for_structured_query_is_replaced_by_deterministic_guard(self):
+    def test_generic_info_query_falls_back_to_rag_when_deterministic_has_no_rows(self):
         retrieval = FakeRetrieval()
-        fake_llm = FakeLLM([fake_tool_call_message("rag_search", "info on Morphine")])
+        fake_llm = FakeLLM(
+            [
+                fake_tool_call_message("postgres_deterministic_lookup", "iot"),
+                fake_ai_message("IoT information should come from retrieved documents."),
+            ]
+        )
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "directory",
+                    "message": "No matching rows found.",
+                    "rows": [],
+                }
+            )
+        )
+        agent = make_agent(fake_llm, retrieval=retrieval)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "information on iot", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup", "rag_search"])
+        self.assertEqual(lookup.calls[0]["query"], "iot")
+        self.assertTrue(retrieval.calls)
+        self.assertEqual(retrieval.calls[-1]["query"], "information on iot")
+        self.assertEqual(result.answer, "IoT information should come from retrieved documents.")
+        self.assertEqual(
+            result.metadata["performance"]["agent_flow"][2]["reason"],
+            "deterministic_no_evidence_rag_fallback",
+        )
+
+    def test_rag_only_route_for_explicit_medicine_query_is_replaced_by_deterministic_guard(self):
+        retrieval = FakeRetrieval()
+        fake_llm = FakeLLM([fake_tool_call_message("rag_search", "medicine info on Morphine")])
         lookup = FakeDeterministicLookup(
             FakeLookupResult(
                 {
@@ -752,7 +844,7 @@ class AgentContractTests(unittest.TestCase):
         agent = make_agent(fake_llm, retrieval=retrieval)
         agent.deterministic_lookup = lookup
 
-        result = agent.answer("user", "info on Morphine", session_id="session")
+        result = agent.answer("user", "medicine info on Morphine", session_id="session")
 
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertEqual(retrieval.calls, [])
@@ -1143,6 +1235,36 @@ class AgentContractTests(unittest.TestCase):
         self.assertIn("2. Diazepam", result.answer)
         self.assertNotIn("3.", result.answer)
         self.assertNotIn("Category:", result.answer)
+
+    def test_list_all_medicines_uses_inline_limit_and_expander(self):
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "formulary",
+                    "message": "Found 12 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "medication_formulary.csv",
+                            "row": {"medicine": f"Medicine {index:02d}", "category": "Test"},
+                        }
+                        for index in range(1, 13)
+                    ],
+                }
+            )
+        )
+        agent = make_agent(FakeLLM([fake_tool_call_message("postgres_deterministic_lookup", "list all drugs")]))
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "list all drugs", session_id="session")
+
+        self.assertIn("1. Medicine 01", result.answer)
+        self.assertIn("10. Medicine 10", result.answer)
+        self.assertNotIn("11. Medicine 11\n", result.answer)
+        self.assertIn("Showing first 10 of 12 unique medicines.", result.answer)
+        self.assertIn("<details>", result.answer)
+        self.assertIn("Show all unique medicines (12 rows)", result.answer)
+        self.assertIn("<strong>11. Medicine 11</strong>", result.answer)
 
     def test_equipment_count_formats_total_location_and_status(self):
         retrieval = FakeRetrieval()
