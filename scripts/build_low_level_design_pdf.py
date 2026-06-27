@@ -165,7 +165,7 @@ def header_footer(canvas, doc):
     width, height = LETTER
     canvas.setFont("Helvetica-Bold", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(inch, height - 0.55 * inch, "Healthcare Knowledge Agent - Low-Level Design")
+    canvas.drawString(inch, height - 0.55 * inch, "Healthcare Knowledge Multi-Agent - Low-Level Design")
     canvas.setStrokeColor(colors.HexColor("#E5E7EB"))
     canvas.setLineWidth(0.5)
     canvas.line(inch, height - 0.64 * inch, width - inch, height - 0.64 * inch)
@@ -258,7 +258,7 @@ def build_story():
     story = []
     story.extend(
         [
-            p("Low-Level Design: Healthcare Knowledge Agent Tech Stack", "title"),
+            p("Low-Level Design: Healthcare Knowledge Multi-Agent Tech Stack", "title"),
             p(
                 "Detailed implementation-level design covering runtime stack, AWS deployment, external services, agent orchestration, and tool workflows. Generated from the current repository implementation.",
                 "subtitle",
@@ -536,10 +536,10 @@ def build_story():
                 ["SECRETS_STAGE", "dev"],
                 ["CHAT_HISTORY_BACKEND", "dynamodb"],
                 ["LOCAL_TEST_ADMIN_ENABLED", "false"],
-                ["APP_SECRET_NAME", "/dstrmaysam-healthcare-knowledge-agent/dev/app"],
-                ["AZURE_OPENAI_SECRET_NAME", "/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai"],
-                ["LANGFUSE_SECRET_NAME", "/dstrmaysam-healthcare-knowledge-agent/dev/langfuse"],
-                ["S3_BUCKET", "dstrmaysam-healthcare-knowledge-agent-dev"],
+                ["APP_SECRET_NAME", "/dstrmaysam-healthcare-knowledge-multi-agent/dev/app"],
+                ["AZURE_OPENAI_SECRET_NAME", "/dstrmaysam-healthcare-knowledge-multi-agent/dev/azure-openai"],
+                ["LANGFUSE_SECRET_NAME", "/dstrmaysam-healthcare-knowledge-multi-agent/dev/langfuse"],
+                ["S3_BUCKET", "dstrmaysam-healthcare-knowledge-multi-agent-dev"],
                 ["OPENSEARCH_ENDPOINT", "OpenSearch Serverless collection endpoint"],
                 ["BACKEND_URL", "Service discovery name or ALB/API URL"],
             ],
@@ -618,7 +618,7 @@ def build_pdf() -> Path:
         rightMargin=inch,
         topMargin=0.82 * inch,
         bottomMargin=0.78 * inch,
-        title="Low-Level Design: Healthcare Knowledge Agent Tech Stack",
+        title="Low-Level Design: Healthcare Knowledge Multi-Agent Tech Stack",
         author="Codex",
         subject="Low-level design and workflow diagrams",
     )

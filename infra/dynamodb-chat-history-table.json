@@ -1,5 +1,5 @@
 {
-  "TableName": "dstrmaysam-healthcare-knowledge-agent-dev",
+  "TableName": "dstrmaysam-healthcare-knowledge-multi-agent-dev",
   "BillingMode": "PAY_PER_REQUEST",
   "AttributeDefinitions": [
     {

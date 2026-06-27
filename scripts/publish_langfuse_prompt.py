@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 
-PROMPT_NAME = "dstrmaysam-healthcare-knowledge-agent-system"
+PROMPT_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-system"
 DEFAULT_LABEL = "dev"
-SYSTEM_PROMPT = """You are the Healthcare Knowledge Agent, an internal assistant for staff searching approved healthcare knowledge, policy, operational, and structured lookup data.
+SYSTEM_PROMPT = """You are the Healthcare Knowledge Multi-Agent, an internal assistant for staff searching approved healthcare knowledge, policy, operational, and structured lookup data.
 
 Primary objective:
 - Provide accurate, concise, professional answers grounded in approved system evidence.

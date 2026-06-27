@@ -176,7 +176,7 @@ def header_footer(canvas, doc):
     width, height = LETTER
     canvas.setFont("Helvetica-Bold", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(inch, height - 0.55 * inch, "Healthcare Knowledge Agent")
+    canvas.drawString(inch, height - 0.55 * inch, "Healthcare Knowledge Multi-Agent")
     canvas.setStrokeColor(colors.HexColor("#D9E2EC"))
     canvas.setLineWidth(0.5)
     canvas.line(inch, height - 0.64 * inch, width - inch, height - 0.64 * inch)
@@ -302,7 +302,7 @@ def code_block(text: str):
 
 def build_story():
     story = []
-    story.extend([p("Healthcare Knowledge Agent", "title")])
+    story.extend([p("Healthcare Knowledge Multi-Agent", "title")])
     story.append(
         p(
             "Detailed project explanation for the FastAPI, Streamlit, LangChain, Azure OpenAI, AWS, Langfuse, and RAGAS MVP.",
@@ -354,7 +354,7 @@ def build_story():
     story.extend(section("1. Executive Overview"))
     story.append(
         p(
-            "The Healthcare Knowledge Agent is a containerized application that lets employees ask questions against company knowledge. It combines a Streamlit chat interface, a FastAPI backend, a LangChain agent, Azure OpenAI, AWS storage and hosting services, Langfuse observability, and RAGAS evaluation.",
+            "The Healthcare Knowledge Multi-Agent is a containerized application that lets employees ask questions against company knowledge. It combines a Streamlit chat interface, a FastAPI backend, a LangChain agent, Azure OpenAI, AWS storage and hosting services, Langfuse observability, and RAGAS evaluation.",
         )
     )
     story.append(
@@ -551,9 +551,9 @@ def build_story():
         table(
             [
                 ["Secret name", "Contains", "Used by"],
-                ["/dstrmaysam-healthcare-knowledge-agent/{stage}/app", "session_secret and auth_users password-hash map.", "FastAPI authentication service."],
-                ["/dstrmaysam-healthcare-knowledge-agent/{stage}/azure-openai", "endpoint, api_key, api_version, chat deployment, embedding deployment.", "LangChain chat and embedding clients."],
-                ["/dstrmaysam-healthcare-knowledge-agent/{stage}/langfuse", "public key, secret key, base URL.", "Langfuse tracing and prompt management."],
+                ["/dstrmaysam-healthcare-knowledge-multi-agent/{stage}/app", "session_secret and auth_users password-hash map.", "FastAPI authentication service."],
+                ["/dstrmaysam-healthcare-knowledge-multi-agent/{stage}/azure-openai", "endpoint, api_key, api_version, chat deployment, embedding deployment.", "LangChain chat and embedding clients."],
+                ["/dstrmaysam-healthcare-knowledge-multi-agent/{stage}/langfuse", "public key, secret key, base URL.", "Langfuse tracing and prompt management."],
             ],
             [2.25 * inch, 2.9 * inch, 1.35 * inch],
         )
@@ -711,7 +711,7 @@ def build_pdf() -> Path:
         rightMargin=inch,
         topMargin=0.82 * inch,
         bottomMargin=0.8 * inch,
-        title="Healthcare Knowledge Agent Project Explanation",
+        title="Healthcare Knowledge Multi-Agent Project Explanation",
         author="Codex",
         subject="Detailed project explanation",
     )

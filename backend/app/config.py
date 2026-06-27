@@ -56,7 +56,7 @@ class AppSettings:
     chat_warmup_retrieval_enabled: bool = True
     local_data_dir: str = "/app/data"
     chroma_persist_dir: str = "/app/data/chroma"
-    chroma_collection: str = "dstrmaysam-healthcare-knowledge-agent"
+    chroma_collection: str = "dstrmaysam-healthcare-knowledge-multi-agent"
     local_app_secret_file: str = "/app/data/local_app_secret.json"
     local_test_admin_enabled: bool = False
     local_test_admin_username: str = "admin"
@@ -76,7 +76,7 @@ class AppSettings:
     @classmethod
     def from_env(cls) -> "AppSettings":
         stage = _env("SECRETS_STAGE", "dev")
-        default_prefix = f"/dstrmaysam-healthcare-knowledge-agent/{stage}"
+        default_prefix = f"/dstrmaysam-healthcare-knowledge-multi-agent/{stage}"
         origins = tuple(
             origin.strip()
             for origin in _env("CORS_ORIGINS", "http://localhost:8501").split(",")
@@ -100,10 +100,10 @@ class AppSettings:
             s3_raw_prefix=_env("S3_RAW_PREFIX", "raw/"),
             s3_manifest_key=_env("S3_MANIFEST_KEY", "manifests/documents.json"),
             opensearch_endpoint=_env("OPENSEARCH_ENDPOINT"),
-            opensearch_index=_env("OPENSEARCH_INDEX", "dstrmaysam-healthcare-knowledge-agent-dev"),
+            opensearch_index=_env("OPENSEARCH_INDEX", "dstrmaysam-healthcare-knowledge-multi-agent-dev"),
             dynamodb_chat_table=_env(
                 "DYNAMODB_CHAT_TABLE",
-                "dstrmaysam-healthcare-knowledge-agent-dev",
+                "dstrmaysam-healthcare-knowledge-multi-agent-dev",
             ),
             chat_history_backend=_env("CHAT_HISTORY_BACKEND", "dynamodb_postgres"),
             cors_origins=origins,
@@ -135,7 +135,7 @@ class AppSettings:
             chat_warmup_retrieval_enabled=_env_bool("CHAT_WARMUP_RETRIEVAL_ENABLED", True),
             local_data_dir=_env("LOCAL_DATA_DIR", "/app/data"),
             chroma_persist_dir=_env("CHROMA_PERSIST_DIR", "/app/data/chroma"),
-            chroma_collection=_env("CHROMA_COLLECTION", "dstrmaysam-healthcare-knowledge-agent"),
+            chroma_collection=_env("CHROMA_COLLECTION", "dstrmaysam-healthcare-knowledge-multi-agent"),
             local_app_secret_file=_env("LOCAL_APP_SECRET_FILE", "/app/data/local_app_secret.json"),
             local_test_admin_enabled=_env_bool("LOCAL_TEST_ADMIN_ENABLED", False),
             local_test_admin_username=_env("LOCAL_TEST_ADMIN_USERNAME", "admin"),

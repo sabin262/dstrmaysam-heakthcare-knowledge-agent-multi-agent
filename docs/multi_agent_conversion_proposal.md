@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The Healthcare Knowledge Agent currently works as a single agent that performs routing, retrieval, deterministic lookup, safety handling, answer synthesis, tracing, and metadata generation in one orchestration layer.
+The Healthcare Knowledge Multi-Agent currently works as a single agent that performs routing, retrieval, deterministic lookup, safety handling, answer synthesis, tracing, and metadata generation in one orchestration layer.
 
 This proposal recommends converting the system to a supervisor-led multi-agent architecture. The new design keeps the existing user experience and `/chat` API stable while improving routing clarity, testability, observability, and future extensibility.
 

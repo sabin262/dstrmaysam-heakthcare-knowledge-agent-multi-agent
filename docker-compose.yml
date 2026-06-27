@@ -2,7 +2,7 @@ services:
   backend:
     build:
       context: ./backend
-    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-dev:latest_backend
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-multi-agent-dev:latest_backend
     environment:
       APP_ENV: local
       AWS_REGION: ${AWS_REGION:-eu-west-2}
@@ -10,27 +10,27 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       SECRETS_STAGE: ${SECRETS_STAGE:-dev}
-      APP_SECRET_NAME: ${APP_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-agent/dev/app}
-      AZURE_OPENAI_SECRET_NAME: ${AZURE_OPENAI_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai}
+      APP_SECRET_NAME: ${APP_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-multi-agent/dev/app}
+      AZURE_OPENAI_SECRET_NAME: ${AZURE_OPENAI_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-multi-agent/dev/azure-openai}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-04-01-preview}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4.1-mini}
       AZURE_OPENAI_FAST_DEPLOYMENT: ${AZURE_OPENAI_FAST_DEPLOYMENT:-${AZURE_OPENAI_DEPLOYMENT:-gpt-4.1-mini}}
       AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-3-small}
-      LANGFUSE_SECRET_NAME: ${LANGFUSE_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse}
+      LANGFUSE_SECRET_NAME: ${LANGFUSE_SECRET_NAME:-/dstrmaysam-healthcare-knowledge-multi-agent/dev/langfuse}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
       GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
       GUARDIAN_NEWS_REFRESH_SECONDS: ${GUARDIAN_NEWS_REFRESH_SECONDS:-300}
       GUARDIAN_NEWS_PAGE_SIZE: ${GUARDIAN_NEWS_PAGE_SIZE:-10}
-      S3_BUCKET: ${S3_BUCKET:-dstrmaysam-healthcare-knowledge-agent-dev}
+      S3_BUCKET: ${S3_BUCKET:-dstrmaysam-healthcare-knowledge-multi-agent-dev}
       S3_RAW_PREFIX: ${S3_RAW_PREFIX:-raw/}
       S3_MANIFEST_KEY: ${S3_MANIFEST_KEY:-manifests/documents.json}
       OPENSEARCH_ENDPOINT: ${OPENSEARCH_ENDPOINT:-}
-      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-dstrmaysam-healthcare-knowledge-agent-dev}
-      DYNAMODB_CHAT_TABLE: ${DYNAMODB_CHAT_TABLE:-dstrmaysam-healthcare-knowledge-agent-dev}
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-dstrmaysam-healthcare-knowledge-multi-agent-dev}
+      DYNAMODB_CHAT_TABLE: ${DYNAMODB_CHAT_TABLE:-dstrmaysam-healthcare-knowledge-multi-agent-dev}
       CHAT_HISTORY_BACKEND: ${CHAT_HISTORY_BACKEND:-memory}
       DOCUMENT_MANIFEST_CACHE_TTL_SECONDS: ${DOCUMENT_MANIFEST_CACHE_TTL_SECONDS:-300}
       LANGFUSE_PROMPT_CACHE_TTL_SECONDS: ${LANGFUSE_PROMPT_CACHE_TTL_SECONDS:-300}
@@ -54,7 +54,7 @@ services:
       CHAT_WARMUP_RETRIEVAL_ENABLED: ${CHAT_WARMUP_RETRIEVAL_ENABLED:-true}
       LOCAL_DATA_DIR: ${LOCAL_DATA_DIR:-/app/data}
       CHROMA_PERSIST_DIR: ${CHROMA_PERSIST_DIR:-/app/data/chroma}
-      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-dstrmaysam-healthcare-knowledge-agent}
+      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-dstrmaysam-healthcare-knowledge-multi-agent}
       LOCAL_APP_SECRET_FILE: ${LOCAL_APP_SECRET_FILE:-/app/data/local_app_secret.json}
       LOCAL_TEST_ADMIN_ENABLED: ${LOCAL_TEST_ADMIN_ENABLED:-true}
       LOCAL_TEST_ADMIN_USERNAME: ${LOCAL_TEST_ADMIN_USERNAME:-admin}
@@ -77,7 +77,7 @@ services:
   frontend:
     build:
       context: ./frontend
-    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-dev:latest_frontend
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-multi-agent-dev:latest_frontend
     environment:
       BACKEND_URL: ${BACKEND_URL:-http://backend:8000}
     ports:
@@ -89,7 +89,7 @@ services:
     build:
       context: ./database
       dockerfile: Dockerfile
-    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-dev:latest_postgres
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-multi-agent-dev:latest_postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-healthcare_agent}
       POSTGRES_USER: ${POSTGRES_USER:-healthcare_agent}

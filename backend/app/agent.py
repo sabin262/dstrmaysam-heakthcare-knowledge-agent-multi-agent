@@ -19,16 +19,16 @@ from .healthcare import (
     HealthcareUserContext,
     PHIRedactor,
 )
-from .healthcare_tools import build_healthcare_agent_tools
 from .history import ChatHistoryRepository, ChatMessage, build_history_context
 from .observability import ObservabilityClient
 from .ragas_scoring import compute_live_ragas_scores
 from .retrieval import RetrievalHit, RetrievalService
 from .secrets import SecretProvider
 from .storage import DocumentStore
-from .tools import (
+from .tooling import (
     AgentTool,
     build_agent_tools,
+    build_healthcare_agent_tools,
     catalog_query_terms,
     document_matches_catalog_query,
 )

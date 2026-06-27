@@ -11,7 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 
-APP_TITLE = "⚕️ Healthcare Knowledge Agent"
+APP_TITLE = "⚕️ Healthcare Knowledge Multi-Agent"
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 KNOWN_ROLES = ["admin", "staff", "doctor", "nurse", "pharmacy", "clinical_governance", "manager"]
 MIN_PASSWORD_LENGTH = 8

@@ -1,1 +1,1 @@
-"""Healthcare Knowledge Agent backend."""
+"""Healthcare Knowledge Multi-Agent backend."""

@@ -6,7 +6,7 @@ from xml.etree import ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs"
-DRAWIO_PATH = OUT_DIR / "dstrmaysam_healthcare_knowledge_agent_lld_diagrams.drawio"
+DRAWIO_PATH = OUT_DIR / "dstrmaysam_healthcare_knowledge_multi_agent_lld_diagrams.drawio"
 
 BLUE = "#1D4ED8"
 NAVY = "#172554"

@@ -1,4 +1,4 @@
-# Healthcare Knowledge Agent
+# Healthcare Knowledge Multi-Agent
 
 Containerized healthcare knowledge assistant with a FastAPI backend, Streamlit frontend, LangGraph/LangChain agent orchestration, retrieval augmented generation, deterministic Postgres lookup, admin workflows, observability, and AWS deployment templates.
 
@@ -53,7 +53,9 @@ For a deeper system explanation, see [docs/system_summary.md](docs/system_summar
 ## Repository Layout
 
 ```text
-backend/app/       FastAPI API, agent, retrieval, auth, ingestion, storage, observability
+backend/app/       FastAPI API, multi-agent graph, retrieval, auth, ingestion, storage, observability
+backend/app/tooling/
+                   Local tool definitions and registry boundary for future MCP tool execution
 frontend/          Streamlit application
 database/init/     Postgres schema and seed healthcare data
 data/              Local document, Chroma, and local secret persistence
@@ -62,6 +64,8 @@ infra/             ECS, IAM, DynamoDB, and OpenSearch templates
 docs/              Architecture, SDLC, AWS, and system summary documentation
 tests/             Unit and integration-style tests
 ```
+
+The current project slug is `dstrmaysam-healthcare-knowledge-multi-agent`.
 
 ## Quick Start
 
@@ -159,9 +163,9 @@ Do not put API keys, passwords, token signing secrets, or Langfuse credentials i
 Expected AWS secret names:
 
 ```text
-/dstrmaysam-healthcare-knowledge-agent/dev/app
-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+/dstrmaysam-healthcare-knowledge-multi-agent/dev/app
+/dstrmaysam-healthcare-knowledge-multi-agent/dev/azure-openai
+/dstrmaysam-healthcare-knowledge-multi-agent/dev/langfuse
 ```
 
 App secret shape:

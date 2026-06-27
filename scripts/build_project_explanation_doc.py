@@ -290,7 +290,7 @@ def setup_document() -> Document:
 
     header = section.header.paragraphs[0]
     header.text = ""
-    left = header.add_run("Healthcare Knowledge Agent")
+    left = header.add_run("Healthcare Knowledge Multi-Agent")
     set_run_font(left, size=9, color=MUTED, bold=True)
     header.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
@@ -308,7 +308,7 @@ def build() -> Path:
     title = doc.add_paragraph()
     title.paragraph_format.space_after = Pt(4)
     title.paragraph_format.keep_with_next = True
-    run = title.add_run("Healthcare Knowledge Agent")
+    run = title.add_run("Healthcare Knowledge Multi-Agent")
     set_run_font(run, size=24, color=INK, bold=True)
     subtitle = add_para(
         doc,
@@ -465,9 +465,9 @@ def build() -> Path:
         doc,
         ["Secret", "Contains", "Used by"],
         [
-            ["/dstrmaysam-healthcare-knowledge-agent/{stage}/app", "session_secret and auth_users password-hash map.", "FastAPI authentication service."],
-            ["/dstrmaysam-healthcare-knowledge-agent/{stage}/azure-openai", "endpoint, api_key, api_version, chat deployment, embedding deployment.", "LangChain chat model and embedding model."],
-            ["/dstrmaysam-healthcare-knowledge-agent/{stage}/langfuse", "public key, secret key, base URL.", "Langfuse tracing and prompt management."],
+            ["/dstrmaysam-healthcare-knowledge-multi-agent/{stage}/app", "session_secret and auth_users password-hash map.", "FastAPI authentication service."],
+            ["/dstrmaysam-healthcare-knowledge-multi-agent/{stage}/azure-openai", "endpoint, api_key, api_version, chat deployment, embedding deployment.", "LangChain chat model and embedding model."],
+            ["/dstrmaysam-healthcare-knowledge-multi-agent/{stage}/langfuse", "public key, secret key, base URL.", "Langfuse tracing and prompt management."],
         ],
         [2650, 4200, 2510],
     )

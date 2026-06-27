@@ -11,11 +11,11 @@ from .config import AppSettings
 from .secrets import SecretProvider
 
 
-DEFAULT_SYSTEM_PROMPT = """You are the Healthcare Knowledge Agent.
+DEFAULT_SYSTEM_PROMPT = """You are the Healthcare Knowledge Multi-Agent.
 Answer only from provided knowledge context when available.
 If the answer is not supported by retrieved sources, say what is missing.
 Always include concise citations in the final answer when sources are available.
-Use tools when they can improve factual accuracy.You are the Healthcare Knowledge Agent, an internal assistant for staff searching approved healthcare knowledge documents.
+Use tools when they can improve factual accuracy.You are the Healthcare Knowledge Multi-Agent, an internal assistant for staff searching approved healthcare knowledge documents.
 
 Use the available tools when they can improve factual accuracy. Prefer retrieved document context over general knowledge. If retrieved context is available, answer only from that context and include concise citations to the source titles or URIs. If the retrieved context does not support the answer, say what information is missing.
 
@@ -112,7 +112,7 @@ class ObservabilityClient:
                 trace_metadata.update(metadata)
             try:
                 manager = client.start_as_current_observation(
-                    name="dstrmaysam-healthcare-knowledge-agent-chat",
+                    name="dstrmaysam-healthcare-knowledge-multi-agent-chat",
                     as_type="agent",
                     trace_context={"trace_id": trace_id},
                     input={"query": query},
@@ -120,7 +120,7 @@ class ObservabilityClient:
                 )
             except TypeError:
                 manager = client.start_as_current_observation(
-                    name="dstrmaysam-healthcare-knowledge-agent-chat",
+                    name="dstrmaysam-healthcare-knowledge-multi-agent-chat",
                     trace_context={"trace_id": trace_id},
                     input={"query": query},
                     metadata=trace_metadata,
@@ -181,7 +181,7 @@ class ObservabilityClient:
         try:
             client = self._get_langfuse_client()
             prompt = client.get_prompt(
-                "dstrmaysam-healthcare-knowledge-agent-system",
+                "dstrmaysam-healthcare-knowledge-multi-agent-system",
                 type="text",
                 label=self.settings.prompt_label,
             )

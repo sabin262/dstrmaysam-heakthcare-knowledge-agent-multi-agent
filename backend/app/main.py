@@ -168,7 +168,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Healthcare Knowledge Agent",
+    title="Healthcare Knowledge Multi-Agent",
     version="0.1.0",
     lifespan=lifespan,
 )

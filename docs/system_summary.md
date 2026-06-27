@@ -1,10 +1,10 @@
-# Healthcare Knowledge Agent System Summary
+# Healthcare Knowledge Multi-Agent System Summary
 
-Generated for the `dstrmaysam-healthcare-knowledge-agent` project.
+Generated for the `dstrmaysam-healthcare-knowledge-multi-agent` project.
 
 ## 1. Overview
 
-The Healthcare Knowledge Agent is a containerized internal assistant for healthcare document Q&A, operational lookup, policy search, patient-oriented admin dashboards, document administration, observability, and evaluation.
+The Healthcare Knowledge Multi-Agent is a containerized internal assistant for healthcare document Q&A, operational lookup, policy search, patient-oriented admin dashboards, document administration, observability, and evaluation.
 
 It combines:
 
@@ -138,12 +138,12 @@ AWS profile uses:
 Important AWS names used by defaults and docs:
 
 ```env
-S3_BUCKET=dstrmaysam-healthcare-knowledge-agent-dev
-DYNAMODB_CHAT_TABLE=dstrmaysam-healthcare-knowledge-agent-dev
-OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-agent-dev
-APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/app
-AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+S3_BUCKET=dstrmaysam-healthcare-knowledge-multi-agent-dev
+DYNAMODB_CHAT_TABLE=dstrmaysam-healthcare-knowledge-multi-agent-dev
+OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-multi-agent-dev
+APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent/dev/app
+AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent/dev/azure-openai
+LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent/dev/langfuse
 ```
 
 ## 6. Frontend Workflow
@@ -734,9 +734,9 @@ At a high level:
 5. Create Secrets Manager secrets:
 
 ```text
-/dstrmaysam-healthcare-knowledge-agent/dev/app
-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+/dstrmaysam-healthcare-knowledge-multi-agent/dev/app
+/dstrmaysam-healthcare-knowledge-multi-agent/dev/azure-openai
+/dstrmaysam-healthcare-knowledge-multi-agent/dev/langfuse
 ```
 
 6. Deploy ECS services with:
