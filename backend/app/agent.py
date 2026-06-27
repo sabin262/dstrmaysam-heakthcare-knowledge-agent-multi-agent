@@ -27,8 +27,9 @@ from .secrets import SecretProvider
 from .storage import DocumentStore
 from .tooling import (
     AgentTool,
+    LocalToolRegistryContext,
     build_agent_tools,
-    build_healthcare_agent_tools,
+    build_tool_registry,
     catalog_query_terms,
     document_matches_catalog_query,
 )
@@ -1680,17 +1681,20 @@ class KnowledgeAgent:
         with trace_context as trace:
             performance["langfuse_trace_enter_ms"] = _elapsed_ms(trace_enter_started)
             trace_id = trace.trace_id
-            healthcare_tools = build_healthcare_agent_tools(
-                retrieval=self.retrieval,
-                documents=self.documents,
-                user=user_context,
-                access=self.access,
-                safety=self.safety,
-                deterministic_lookup=self.deterministic_lookup,
+            request_tools = build_tool_registry(
+                LocalToolRegistryContext(
+                    settings=self.settings,
+                    retrieval=self.retrieval,
+                    documents=self.documents,
+                    user=user_context,
+                    access=self.access,
+                    safety=self.safety,
+                    deterministic_lookup=self.deterministic_lookup,
+                )
             )
             original_tools = self.tools
             try:
-                self.tools = original_tools + healthcare_tools
+                self.tools = request_tools
                 prompt_started = time.perf_counter()
                 system_prompt, prompt_version = self.observability.system_prompt()
                 system_prompt = _with_response_style_baseline(system_prompt)

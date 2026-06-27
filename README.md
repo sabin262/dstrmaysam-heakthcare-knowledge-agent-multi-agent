@@ -67,6 +67,18 @@ tests/             Unit and integration-style tests
 
 The current project slug is `dstrmaysam-healthcare-knowledge-multi-agent`.
 
+## Tool Execution Backend
+
+Tools run locally by default. The backend can also expose the same tool names to the graph while forwarding execution to an external FastMCP server:
+
+```env
+TOOL_EXECUTION_BACKEND=local
+MCP_TOOL_SERVER_URL=
+MCP_TOOL_TIMEOUT_SECONDS=20
+```
+
+Set `TOOL_EXECUTION_BACKEND=mcp` and `MCP_TOOL_SERVER_URL` to the external FastMCP endpoint when tools are hosted out of process. The supervisor and specialist agents still choose the same backend tool names; only the execution transport changes.
+
 ## Quick Start
 
 1. Copy the environment template:

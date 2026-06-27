@@ -69,6 +69,9 @@ class AppSettings:
     postgres_sslmode: str = "disable"
     deterministic_lookup_enabled: bool = True
     deterministic_lookup_multipart_first_enabled: bool = False
+    tool_execution_backend: str = "local"
+    mcp_tool_server_url: str = ""
+    mcp_tool_timeout_seconds: float = 20.0
     guardian_api_key: str = ""
     guardian_news_refresh_seconds: int = 300
     guardian_news_page_size: int = 10
@@ -150,6 +153,9 @@ class AppSettings:
             deterministic_lookup_multipart_first_enabled=_env_bool(
                 "DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED", False
             ),
+            tool_execution_backend=_env("TOOL_EXECUTION_BACKEND", "local").strip().lower() or "local",
+            mcp_tool_server_url=_env("MCP_TOOL_SERVER_URL", ""),
+            mcp_tool_timeout_seconds=float(_env("MCP_TOOL_TIMEOUT_SECONDS", "20")),
             guardian_api_key=_env("GUARDIAN_API_KEY", ""),
             guardian_news_refresh_seconds=int(_env("GUARDIAN_NEWS_REFRESH_SECONDS", "300")),
             guardian_news_page_size=int(_env("GUARDIAN_NEWS_PAGE_SIZE", "10")),
@@ -202,6 +208,9 @@ class AppSettings:
             "deterministic_lookup_multipart_first_enabled": str(
                 self.deterministic_lookup_multipart_first_enabled
             ),
+            "tool_execution_backend": self.tool_execution_backend,
+            "mcp_tool_server_configured": str(bool(self.mcp_tool_server_url)),
+            "mcp_tool_timeout_seconds": self.mcp_tool_timeout_seconds,
             "guardian_api_configured": str(bool(self.guardian_api_key)),
             "guardian_news_refresh_seconds": self.guardian_news_refresh_seconds,
             "guardian_news_page_size": self.guardian_news_page_size,

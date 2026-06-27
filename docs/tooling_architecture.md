@@ -19,6 +19,8 @@ The graph and specialist agents should continue to work with `AgentTool` objects
 
 When tools move out of process, keep these names and descriptions stable. Replace the `run(query)` implementation with a client call that packages the query, user context, CSV asset metadata, and request-scoped settings for the MCP server.
 
+This switch is controlled by `TOOL_EXECUTION_BACKEND`. See `docs/mcp_tool_migration.md` for the MCP server contract.
+
 ## Contract To Preserve
 
 - Public `/chat` request and response schemas do not change.
