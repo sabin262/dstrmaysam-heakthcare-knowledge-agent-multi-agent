@@ -30,8 +30,12 @@
         {"name": "S3_MANIFEST_KEY", "value": "manifests/documents.json"},
         {"name": "OPENSEARCH_ENDPOINT", "value": "https://<collection-id>.<region>.aoss.amazonaws.com"},
         {"name": "OPENSEARCH_INDEX", "value": "dstrmaysam-healthcare-knowledge-multi-agent-dev"},
-        {"name": "DYNAMODB_CHAT_TABLE", "value": "dstrmaysam-healthcare-knowledge-multi-agent-dev"},
-        {"name": "CHAT_HISTORY_BACKEND", "value": "dynamodb"},
+        {"name": "CHAT_HISTORY_BACKEND", "value": "postgres"},
+        {"name": "POSTGRES_HOST", "value": "<rds-endpoint>"},
+        {"name": "POSTGRES_PORT", "value": "5432"},
+        {"name": "POSTGRES_DB", "value": "healthcare_knowledge"},
+        {"name": "POSTGRES_USER", "value": "app_user"},
+        {"name": "POSTGRES_SSLMODE", "value": "require"},
         {"name": "DOCUMENT_MANIFEST_CACHE_TTL_SECONDS", "value": "300"},
         {"name": "LANGFUSE_PROMPT_CACHE_TTL_SECONDS", "value": "300"},
         {"name": "CHAT_FAST_RAG_ENABLED", "value": "true"},
@@ -47,6 +51,12 @@
         {"name": "MCP_TOOL_SERVER_URL", "value": ""},
         {"name": "MCP_TOOL_TIMEOUT_SECONDS", "value": "20"},
         {"name": "LOCAL_TEST_ADMIN_ENABLED", "value": "false"}
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:<region>:<account-id>:secret:/dstrmaysam-healthcare-knowledge-multi-agent/dev/postgres-<suffix>:password::"
+        }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

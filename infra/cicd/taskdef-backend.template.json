@@ -1,0 +1,57 @@
+{
+  "family": "@@PROJECT_NAME@@-@@ENVIRONMENT_NAME@@-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "@@ECS_EXECUTION_ROLE_ARN@@",
+  "taskRoleArn": "@@BACKEND_TASK_ROLE_ARN@@",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "@@BACKEND_IMAGE@@",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "APP_ENV", "value": "@@ENVIRONMENT_NAME@@"},
+        {"name": "AWS_REGION", "value": "@@AWS_DEFAULT_REGION@@"},
+        {"name": "SECRETS_STAGE", "value": "@@ENVIRONMENT_NAME@@"},
+        {"name": "LOCAL_TEST_ADMIN_ENABLED", "value": "false"},
+        {"name": "APP_SECRET_NAME", "value": "@@APP_SECRET_NAME@@"},
+        {"name": "AZURE_OPENAI_SECRET_NAME", "value": "@@AZURE_OPENAI_SECRET_NAME@@"},
+        {"name": "LANGFUSE_SECRET_NAME", "value": "@@LANGFUSE_SECRET_NAME@@"},
+        {"name": "S3_BUCKET", "value": "@@KNOWLEDGE_BUCKET@@"},
+        {"name": "OPENSEARCH_ENDPOINT", "value": "@@OPENSEARCH_ENDPOINT@@"},
+        {"name": "OPENSEARCH_INDEX", "value": "@@OPENSEARCH_INDEX@@"},
+        {"name": "CHAT_HISTORY_BACKEND", "value": "postgres"},
+        {"name": "POSTGRES_HOST", "value": "@@POSTGRES_HOST@@"},
+        {"name": "POSTGRES_PORT", "value": "@@POSTGRES_PORT@@"},
+        {"name": "POSTGRES_DB", "value": "@@POSTGRES_DB@@"},
+        {"name": "POSTGRES_USER", "value": "@@POSTGRES_USER@@"},
+        {"name": "POSTGRES_SSLMODE", "value": "require"},
+        {"name": "TOOL_EXECUTION_BACKEND", "value": "local"},
+        {"name": "MCP_TOOL_SERVER_URL", "value": ""},
+        {"name": "MCP_TOOL_TIMEOUT_SECONDS", "value": "20"}
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "@@DATABASE_SECRET_ARN@@:password::"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "@@BACKEND_LOG_GROUP@@",
+          "awslogs-region": "@@AWS_DEFAULT_REGION@@",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

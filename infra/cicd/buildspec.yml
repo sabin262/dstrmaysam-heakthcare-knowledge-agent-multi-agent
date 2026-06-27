@@ -1,0 +1,69 @@
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+      - export COMMIT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}"
+      - export IMAGE_TAG="${COMMIT_SHA:0:12}"
+      - export BACKEND_IMAGE="$BACKEND_REPOSITORY_URI:$IMAGE_TAG"
+      - export FRONTEND_IMAGE="$FRONTEND_REPOSITORY_URI:$IMAGE_TAG"
+  build:
+    commands:
+      - docker build -t "$BACKEND_IMAGE" backend
+      - docker build -t "$FRONTEND_IMAGE" frontend
+      - docker push "$BACKEND_IMAGE"
+      - docker push "$FRONTEND_IMAGE"
+  post_build:
+    commands:
+      - |
+        python - <<'PY'
+        import os
+        from pathlib import Path
+
+        replacements = {
+            "PROJECT_NAME": os.environ["PROJECT_NAME"],
+            "ENVIRONMENT_NAME": os.environ["ENVIRONMENT_NAME"],
+            "AWS_DEFAULT_REGION": os.environ["AWS_DEFAULT_REGION"],
+            "BACKEND_IMAGE": os.environ["BACKEND_IMAGE"],
+            "FRONTEND_IMAGE": os.environ["FRONTEND_IMAGE"],
+            "ECS_EXECUTION_ROLE_ARN": os.environ["ECS_EXECUTION_ROLE_ARN"],
+            "BACKEND_TASK_ROLE_ARN": os.environ["BACKEND_TASK_ROLE_ARN"],
+            "FRONTEND_TASK_ROLE_ARN": os.environ["FRONTEND_TASK_ROLE_ARN"],
+            "APP_SECRET_NAME": os.environ["APP_SECRET_NAME"],
+            "AZURE_OPENAI_SECRET_NAME": os.environ["AZURE_OPENAI_SECRET_NAME"],
+            "LANGFUSE_SECRET_NAME": os.environ["LANGFUSE_SECRET_NAME"],
+            "DATABASE_SECRET_ARN": os.environ["DATABASE_SECRET_ARN"],
+            "KNOWLEDGE_BUCKET": os.environ["KNOWLEDGE_BUCKET"],
+            "OPENSEARCH_ENDPOINT": os.environ["OPENSEARCH_ENDPOINT"],
+            "OPENSEARCH_INDEX": os.environ["OPENSEARCH_INDEX"],
+            "POSTGRES_HOST": os.environ["POSTGRES_HOST"],
+            "POSTGRES_PORT": os.environ["POSTGRES_PORT"],
+            "POSTGRES_DB": os.environ["POSTGRES_DB"],
+            "POSTGRES_USER": os.environ["POSTGRES_USER"],
+            "BACKEND_LOG_GROUP": os.environ["BACKEND_LOG_GROUP"],
+            "FRONTEND_LOG_GROUP": os.environ["FRONTEND_LOG_GROUP"],
+            "LOAD_BALANCER_URL": os.environ["LOAD_BALANCER_URL"],
+        }
+
+        for source, target in [
+            ("infra/cicd/taskdef-backend.template.json", "taskdef-backend.json"),
+            ("infra/cicd/taskdef-frontend.template.json", "taskdef-frontend.json"),
+        ]:
+            text = Path(source).read_text(encoding="utf-8")
+            for key, value in replacements.items():
+                text = text.replace(f"@@{key}@@", value)
+            Path(target).write_text(text, encoding="utf-8")
+        PY
+      - cp infra/cicd/appspec-backend.yaml appspec-backend.yaml
+      - cp infra/cicd/appspec-frontend.yaml appspec-frontend.yaml
+
+artifacts:
+  files:
+    - taskdef-backend.json
+    - taskdef-frontend.json
+    - appspec-backend.yaml
+    - appspec-frontend.yaml

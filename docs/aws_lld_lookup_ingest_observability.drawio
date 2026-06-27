@@ -1,0 +1,59 @@
+<mxfile host="app.diagrams.net" modified="2026-06-27T00:00:00.000Z" agent="Codex" version="24.7.17">
+  <diagram id="lookup" name="LLD Deterministic Lookup">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" page="1" pageScale="1" pageWidth="1100" pageHeight="850">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="title" value="LLD - Deterministic Lookup" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;fontSize=22;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="360" y="40" width="380" height="40" as="geometry"/></mxCell>
+        <mxCell id="q" value="Lookup question&lt;br&gt;on call, count, list" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="70" y="190" width="160" height="75" as="geometry"/></mxCell>
+        <mxCell id="a" value="DeterministicLookupAgent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="300" y="190" width="190" height="75" as="geometry"/></mxCell>
+        <mxCell id="p" value="Lookup planner&lt;br&gt;intent, table, filters" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="570" y="190" width="180" height="75" as="geometry"/></mxCell>
+        <mxCell id="db" value="RDS PostgreSQL&lt;br&gt;CSV-uploaded lookup rows" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="830" y="190" width="190" height="75" as="geometry"/></mxCell>
+        <mxCell id="fmt" value="Structured response formatter&lt;br&gt;unique list, 10 row summary, expander" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="570" y="360" width="250" height="85" as="geometry"/></mxCell>
+        <mxCell id="ev" value="Evidence for synthesis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="870" y="365" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="e1" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="q" target="a"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="a" target="p"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="p" target="db"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="db" target="fmt"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="fmt" target="ev"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="ingest" name="LLD Ingest And Retrieval">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" page="1" pageScale="1" pageWidth="1100" pageHeight="850">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="title2" value="LLD - Document Ingest And Retrieval" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;fontSize=22;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="330" y="40" width="500" height="40" as="geometry"/></mxCell>
+        <mxCell id="u" value="Admin upload" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="60" y="220" width="140" height="70" as="geometry"/></mxCell>
+        <mxCell id="api" value="FastAPI admin endpoint" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="270" y="220" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="s3" value="S3 raw docs&lt;br&gt;and manifests" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="520" y="135" width="170" height="75" as="geometry"/></mxCell>
+        <mxCell id="rds" value="Postgres metadata&lt;br&gt;and CSV rows" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="520" y="305" width="170" height="75" as="geometry"/></mxCell>
+        <mxCell id="chunk" value="Chunk and normalize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="760" y="220" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="embed" value="Azure OpenAI embeddings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="760" y="390" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="os" value="OpenSearch Serverless index" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="520" y="500" width="210" height="70" as="geometry"/></mxCell>
+        <mxCell id="i1" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="u" target="api"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i2" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="api" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i3" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="api" target="rds"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i4" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="s3" target="chunk"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i5" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="chunk" target="embed"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i6" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="embed" target="os"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="observability" name="LLD Observability">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" page="1" pageScale="1" pageWidth="1100" pageHeight="850">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="title3" value="LLD - Observability And Evaluation" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;fontSize=22;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="330" y="40" width="500" height="40" as="geometry"/></mxCell>
+        <mxCell id="chat" value="Chat runtime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="90" y="230" width="150" height="70" as="geometry"/></mxCell>
+        <mxCell id="trace" value="Langfuse traces" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="330" y="150" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="pg" value="Postgres chat history&lt;br&gt;and trace outbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="330" y="310" width="190" height="75" as="geometry"/></mxCell>
+        <mxCell id="dash" value="Admin dashboard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="620" y="310" width="170" height="75" as="geometry"/></mxCell>
+        <mxCell id="ragas" value="RAGAS evaluation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="620" y="150" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="o1" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="chat" target="trace"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="o2" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="chat" target="pg"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="o3" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="pg" target="dash"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="o4" style="endArrow=block;html=1;strokeWidth=2;" edge="1" parent="1" source="trace" target="ragas"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

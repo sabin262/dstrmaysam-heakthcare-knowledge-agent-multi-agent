@@ -60,7 +60,7 @@ frontend/          Streamlit application
 database/init/     Postgres schema and seed healthcare data
 data/              Local document, Chroma, and local secret persistence
 evals/             RAGAS golden dataset runner and stress test
-infra/             ECS, IAM, DynamoDB, and OpenSearch templates
+infra/             ECS, IAM, CloudFormation, CodePipeline, RDS, S3, and OpenSearch templates
 docs/              Architecture, SDLC, AWS, and system summary documentation
 tests/             Unit and integration-style tests
 ```
@@ -163,7 +163,7 @@ AWS mode uses:
 - AWS Secrets Manager for app, Azure OpenAI, and Langfuse secrets
 - S3 for raw documents and the document manifest
 - OpenSearch Serverless for vector and keyword retrieval
-- DynamoDB, Postgres, or DynamoDB with Postgres fallback for chat history
+- RDS Postgres for deployed chat history and structured lookup storage
 - ECS task roles for AWS credentials
 
 Do not provide static AWS access keys to ECS tasks. Let the task role provide AWS credentials.
@@ -379,14 +379,13 @@ python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN
 
 High-level steps:
 
-1. Create S3 bucket, DynamoDB table, OpenSearch Serverless collection/index, ECR repositories, Secrets Manager entries, CloudWatch log groups, and ECS Fargate services.
-2. Build and push backend, frontend, and database images to ECR.
-3. Fill in task definition and IAM policy templates in `infra/`.
-4. Attach least-privilege task roles for Secrets Manager, S3, DynamoDB, OpenSearch, and CloudWatch.
-5. Deploy the backend and frontend behind an Application Load Balancer.
-6. Set `LOCAL_TEST_ADMIN_ENABLED=false` in ECS.
+1. Deploy the CloudFormation template in `infra/cloudformation/` with your GitHub CodeStar connection, VPC, and subnet parameters.
+2. CodePipeline pulls from GitHub, CodeBuild builds backend/frontend images, pushes them to ECR, and emits CodeDeploy ECS artifacts.
+3. CodeDeploy performs blue/green ECS Fargate deployments behind the Application Load Balancer.
+4. Runtime storage uses S3, OpenSearch Serverless, Secrets Manager, and RDS Postgres. DynamoDB is not part of the new deployment path.
+5. Set `LOCAL_TEST_ADMIN_ENABLED=false` in ECS.
 
-See [infra/README.md](infra/README.md) and [docs/aws_setup_instructions.md](docs/aws_setup_instructions.md).
+See [infra/README.md](infra/README.md), [docs/aws_cicd_deployment.md](docs/aws_cicd_deployment.md), and [docs/aws_setup_instructions.md](docs/aws_setup_instructions.md).
 
 ## Useful Docs
 

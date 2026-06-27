@@ -1,0 +1,36 @@
+<mxfile host="app.diagrams.net" modified="2026-06-27T00:00:00.000Z" agent="Codex" version="24.7.17">
+  <diagram id="stakeholder-hld" name="Stakeholder HLD">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Stakeholder High Level Design" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;fontSize=24;fontStyle=1;fontColor=#111827;" vertex="1" parent="1">
+          <mxGeometry x="330" y="40" width="440" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="user" value="Clinician or Admin User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="190" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="ui" value="Healthcare Knowledge Chat UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="330" y="190" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="backend" value="Multi-Agent Knowledge Service&#xa;Supervisor routes specialist agents" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="170" width="250" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="knowledge" value="Hospital Knowledge Sources&#xa;Documents + CSV-uploaded rows" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="330" y="390" width="230" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="llm" value="Azure OpenAI&#xa;Reasoning and synthesis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="390" width="200" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="audit" value="Tracing, History, Evaluation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#4B5563;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="550" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="user" target="ui"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="ui" target="backend"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="knowledge"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="llm"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="audit"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

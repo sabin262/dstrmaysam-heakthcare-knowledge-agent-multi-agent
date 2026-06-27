@@ -1,0 +1,815 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: dstrmaysam-healthcare-knowledge-multi-agent CI/CD and AWS runtime stack.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dstrmaysam-healthcare-knowledge-multi-agent
+  ResourceNamePrefix:
+    Type: String
+    Default: dstrmaysam-hk-ma
+    Description: Short AWS physical resource prefix. Keep this under 20 characters for S3, ALB, target group, and OpenSearch limits.
+    AllowedPattern: "^[a-z0-9-]{3,20}$"
+  EnvironmentName:
+    Type: String
+    Default: dev
+  OwnerTag:
+    Type: String
+    Default: sabin
+  GitHubConnectionArn:
+    Type: String
+    Description: CodeStar Connections ARN for GitHub.
+  GitHubRepository:
+    Type: String
+    Description: GitHub repository in owner/repo format.
+  GitHubBranch:
+    Type: String
+    Default: main
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  DatabaseName:
+    Type: String
+    Default: healthcare_multi_agent
+  DatabaseUsername:
+    Type: String
+    Default: healthcare_app
+  AppSecretJson:
+    Type: String
+    NoEcho: true
+    Default: "{}"
+  AzureOpenAISecretJson:
+    Type: String
+    NoEcho: true
+    Default: "{}"
+  LangfuseSecretJson:
+    Type: String
+    NoEcho: true
+    Default: "{}"
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags: &CommonTags
+        - Key: dstrmaysam
+          Value: "true"
+        - Key: project
+          Value: healthcare-knowledge-multi-agent
+        - Key: owner
+          Value: !Ref OwnerTag
+
+  KnowledgeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-knowledge-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags: *CommonTags
+
+  BackendRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${ResourceNamePrefix}-backend"
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags: *CommonTags
+
+  FrontendRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${ResourceNamePrefix}-frontend"
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags: *CommonTags
+
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/${EnvironmentName}/app"
+      SecretString: !Ref AppSecretJson
+      Tags: *CommonTags
+
+  AzureOpenAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/${EnvironmentName}/azure-openai"
+      SecretString: !Ref AzureOpenAISecretJson
+      Tags: *CommonTags
+
+  LangfuseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/${EnvironmentName}/langfuse"
+      SecretString: !Ref LangfuseSecretJson
+      Tags: *CommonTags
+
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/${EnvironmentName}/postgres"
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"${DatabaseUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+      Tags: *CommonTags
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB ingress
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags: *CommonTags
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS service ingress from ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags: *CommonTags
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS Postgres ingress from ECS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ServiceSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags: *CommonTags
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private RDS subnets
+      SubnetIds: !Ref PrivateSubnetIds
+      Tags: *CommonTags
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ResourceNamePrefix}-${EnvironmentName}-postgres"
+      Engine: postgres
+      EngineVersion: "16.3"
+      DBInstanceClass: db.t4g.micro
+      AllocatedStorage: 20
+      StorageEncrypted: true
+      DBName: !Ref DatabaseName
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      Tags: *CommonTags
+
+  OpenSearchEncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-encryption"
+      Type: encryption
+      Policy: !Sub |
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/${ResourceNamePrefix}-${EnvironmentName}"]}],"AWSOwnedKey":true}
+
+  OpenSearchNetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-network"
+      Type: network
+      Policy: !Sub |
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/${ResourceNamePrefix}-${EnvironmentName}"]},{"ResourceType":"dashboard","Resource":["collection/${ResourceNamePrefix}-${EnvironmentName}"]}],"AllowFromPublic":true}]
+
+  OpenSearchCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    DependsOn:
+      - OpenSearchEncryptionPolicy
+      - OpenSearchNetworkPolicy
+    Properties:
+      Name: !Sub "${ResourceNamePrefix}-${EnvironmentName}"
+      Type: VECTORSEARCH
+      Description: Healthcare knowledge vector search
+      Tags: *CommonTags
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ResourceNamePrefix}-${EnvironmentName}"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags: *CommonTags
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ResourceNamePrefix}/${EnvironmentName}/backend"
+      RetentionInDays: 30
+      Tags: *CommonTags
+
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ResourceNamePrefix}/${EnvironmentName}/frontend"
+      RetentionInDays: 30
+      Tags: *CommonTags
+
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-ecs-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags: *CommonTags
+
+  BackendTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-backend-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: runtime-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AppSecret
+                  - !Ref AzureOpenAISecret
+                  - !Ref LangfuseSecret
+                  - !Ref DatabaseSecret
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt KnowledgeBucket.Arn
+                  - !Sub "${KnowledgeBucket.Arn}/*"
+              - Effect: Allow
+                Action: aoss:APIAccessAll
+                Resource: !GetAtt OpenSearchCollection.Arn
+      Tags: *CommonTags
+
+  FrontendTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-frontend-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags: *CommonTags
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-alb"
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets: !Ref PublicSubnetIds
+      Tags: *CommonTags
+
+  BackendTargetGroupBlue:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-be-blue"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8000
+      TargetType: ip
+      HealthCheckPath: /health
+      Tags: *CommonTags
+
+  BackendTargetGroupGreen:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-be-green"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8000
+      TargetType: ip
+      HealthCheckPath: /health
+      Tags: *CommonTags
+
+  FrontendTargetGroupBlue:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-fe-blue"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8501
+      TargetType: ip
+      HealthCheckPath: /
+      Tags: *CommonTags
+
+  FrontendTargetGroupGreen:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-hkm-fe-green"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8501
+      TargetType: ip
+      HealthCheckPath: /
+      Tags: *CommonTags
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroupBlue
+
+  BackendListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/*", "/health", "/chat*", "/documents*", "/admin/*", "/auth/*", "/news"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroupBlue
+
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ResourceNamePrefix}-${EnvironmentName}-backend"
+      Cpu: "1024"
+      Memory: "2048"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt BackendTaskRole.Arn
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ResourceNamePrefix}-backend:bootstrap"
+          PortMappings:
+            - ContainerPort: 8000
+          Environment:
+            - Name: APP_ENV
+              Value: !Ref EnvironmentName
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SECRETS_STAGE
+              Value: !Ref EnvironmentName
+            - Name: LOCAL_TEST_ADMIN_ENABLED
+              Value: "false"
+            - Name: APP_SECRET_NAME
+              Value: !Ref AppSecret
+            - Name: AZURE_OPENAI_SECRET_NAME
+              Value: !Ref AzureOpenAISecret
+            - Name: LANGFUSE_SECRET_NAME
+              Value: !Ref LangfuseSecret
+            - Name: S3_BUCKET
+              Value: !Ref KnowledgeBucket
+            - Name: OPENSEARCH_ENDPOINT
+              Value: !GetAtt OpenSearchCollection.CollectionEndpoint
+            - Name: OPENSEARCH_INDEX
+              Value: !Sub "${ProjectName}-${EnvironmentName}"
+            - Name: CHAT_HISTORY_BACKEND
+              Value: postgres
+            - Name: POSTGRES_HOST
+              Value: !GetAtt Database.Endpoint.Address
+            - Name: POSTGRES_PORT
+              Value: !GetAtt Database.Endpoint.Port
+            - Name: POSTGRES_DB
+              Value: !Ref DatabaseName
+            - Name: POSTGRES_USER
+              Value: !Ref DatabaseUsername
+            - Name: POSTGRES_SSLMODE
+              Value: require
+            - Name: TOOL_EXECUTION_BACKEND
+              Value: local
+          Secrets:
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Sub "${DatabaseSecret}:password::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+      Tags: *CommonTags
+
+  FrontendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ResourceNamePrefix}-${EnvironmentName}-frontend"
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt FrontendTaskRole.Arn
+      ContainerDefinitions:
+        - Name: frontend
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ResourceNamePrefix}-frontend:bootstrap"
+          PortMappings:
+            - ContainerPort: 8501
+          Environment:
+            - Name: BACKEND_URL
+              Value: !Sub "http://${LoadBalancer.DNSName}"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FrontendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+      Tags: *CommonTags
+
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn: BackendListenerRule
+    Properties:
+      ServiceName: backend
+      Cluster: !Ref EcsCluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+      DeploymentController:
+        Type: CODE_DEPLOY
+      TaskDefinition: !Ref BackendTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          Subnets: !Ref PrivateSubnetIds
+      LoadBalancers:
+        - ContainerName: backend
+          ContainerPort: 8000
+          TargetGroupArn: !Ref BackendTargetGroupBlue
+      Tags: *CommonTags
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    DependsOn: HttpListener
+    Properties:
+      ServiceName: frontend
+      Cluster: !Ref EcsCluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+      DeploymentController:
+        Type: CODE_DEPLOY
+      TaskDefinition: !Ref FrontendTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          Subnets: !Ref PrivateSubnetIds
+      LoadBalancers:
+        - ContainerName: frontend
+          ContainerPort: 8501
+          TargetGroupArn: !Ref FrontendTargetGroupBlue
+      Tags: *CommonTags
+
+  CodeDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-codedeploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
+      Tags: *CommonTags
+
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${ResourceNamePrefix}-${EnvironmentName}"
+      ComputePlatform: ECS
+      Tags: *CommonTags
+
+  BackendDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: backend
+      ServiceRoleArn: !GetAtt CodeDeployRole.Arn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+        DeploymentType: BLUE_GREEN
+      ECSServices:
+        - ClusterName: !Ref EcsCluster
+          ServiceName: !GetAtt BackendService.Name
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - ProdTrafficRoute:
+              ListenerArns: [!Ref HttpListener]
+            TargetGroups:
+              - Name: !GetAtt BackendTargetGroupBlue.TargetGroupName
+              - Name: !GetAtt BackendTargetGroupGreen.TargetGroupName
+      Tags: *CommonTags
+
+  FrontendDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: frontend
+      ServiceRoleArn: !GetAtt CodeDeployRole.Arn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+        DeploymentType: BLUE_GREEN
+      ECSServices:
+        - ClusterName: !Ref EcsCluster
+          ServiceName: !GetAtt FrontendService.Name
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - ProdTrafficRoute:
+              ListenerArns: [!Ref HttpListener]
+            TargetGroups:
+              - Name: !GetAtt FrontendTargetGroupBlue.TargetGroupName
+              - Name: !GetAtt FrontendTargetGroupGreen.TargetGroupName
+      Tags: *CommonTags
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-codebuild"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: build-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "ecr:GetAuthorizationToken"]
+                Resource: "*"
+              - Effect: Allow
+                Action: ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:CompleteLayerUpload", "ecr:DescribeRepositories", "ecr:GetDownloadUrlForLayer", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"]
+                Resource: [!GetAtt BackendRepository.Arn, !GetAtt FrontendRepository.Arn]
+              - Effect: Allow
+                Action: ["s3:GetObject", "s3:PutObject", "s3:GetObjectVersion"]
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+      Tags: *CommonTags
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ResourceNamePrefix}-${EnvironmentName}-build"
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: PROJECT_NAME
+            Value: !Ref ResourceNamePrefix
+          - Name: BACKEND_REPOSITORY_URI
+            Value: !GetAtt BackendRepository.RepositoryUri
+          - Name: FRONTEND_REPOSITORY_URI
+            Value: !GetAtt FrontendRepository.RepositoryUri
+          - Name: ENVIRONMENT_NAME
+            Value: !Ref EnvironmentName
+          - Name: ECS_EXECUTION_ROLE_ARN
+            Value: !GetAtt EcsExecutionRole.Arn
+          - Name: BACKEND_TASK_ROLE_ARN
+            Value: !GetAtt BackendTaskRole.Arn
+          - Name: FRONTEND_TASK_ROLE_ARN
+            Value: !GetAtt FrontendTaskRole.Arn
+          - Name: APP_SECRET_NAME
+            Value: !Ref AppSecret
+          - Name: AZURE_OPENAI_SECRET_NAME
+            Value: !Ref AzureOpenAISecret
+          - Name: LANGFUSE_SECRET_NAME
+            Value: !Ref LangfuseSecret
+          - Name: DATABASE_SECRET_ARN
+            Value: !Ref DatabaseSecret
+          - Name: KNOWLEDGE_BUCKET
+            Value: !Ref KnowledgeBucket
+          - Name: OPENSEARCH_ENDPOINT
+            Value: !GetAtt OpenSearchCollection.CollectionEndpoint
+          - Name: OPENSEARCH_INDEX
+            Value: !Sub "${ProjectName}-${EnvironmentName}"
+          - Name: POSTGRES_HOST
+            Value: !GetAtt Database.Endpoint.Address
+          - Name: POSTGRES_PORT
+            Value: !GetAtt Database.Endpoint.Port
+          - Name: POSTGRES_DB
+            Value: !Ref DatabaseName
+          - Name: POSTGRES_USER
+            Value: !Ref DatabaseUsername
+          - Name: BACKEND_LOG_GROUP
+            Value: !Ref BackendLogGroup
+          - Name: FRONTEND_LOG_GROUP
+            Value: !Ref FrontendLogGroup
+          - Name: LOAD_BALANCER_URL
+            Value: !Sub "http://${LoadBalancer.DNSName}"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: infra/cicd/buildspec.yml
+      Tags: *CommonTags
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourceNamePrefix}-${EnvironmentName}-codepipeline"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: pipeline-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action: codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+              - Effect: Allow
+                Action: ["codebuild:BatchGetBuilds", "codebuild:StartBuild"]
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action: ["codedeploy:CreateDeployment", "codedeploy:GetApplication", "codedeploy:GetApplicationRevision", "codedeploy:GetDeployment", "codedeploy:GetDeploymentConfig", "codedeploy:RegisterApplicationRevision"]
+                Resource: "*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: [!GetAtt EcsExecutionRole.Arn, !GetAtt BackendTaskRole.Arn, !GetAtt FrontendTaskRole.Arn]
+      Tags: *CommonTags
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ResourceNamePrefix}-${EnvironmentName}"
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Ref GitHubRepository
+                BranchName: !Ref GitHubBranch
+                DetectChanges: true
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build
+          Actions:
+            - Name: BuildImages
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+        - Name: Deploy
+          Actions:
+            - Name: DeployBackend
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: "1"
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: !Ref BackendDeploymentGroup
+                TaskDefinitionTemplateArtifact: BuildArtifact
+                TaskDefinitionTemplatePath: taskdef-backend.json
+                AppSpecTemplateArtifact: BuildArtifact
+                AppSpecTemplatePath: appspec-backend.yaml
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+            - Name: DeployFrontend
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: "1"
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: !Ref FrontendDeploymentGroup
+                TaskDefinitionTemplateArtifact: BuildArtifact
+                TaskDefinitionTemplatePath: taskdef-frontend.json
+                AppSpecTemplateArtifact: BuildArtifact
+                AppSpecTemplatePath: appspec-frontend.yaml
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 2
+      Tags: *CommonTags
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
+  LoadBalancerUrl:
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+  KnowledgeBucketName:
+    Value: !Ref KnowledgeBucket
+  BackendRepositoryUri:
+    Value: !GetAtt BackendRepository.RepositoryUri
+  FrontendRepositoryUri:
+    Value: !GetAtt FrontendRepository.RepositoryUri
+  RdsEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  OpenSearchCollectionEndpoint:
+    Value: !GetAtt OpenSearchCollection.CollectionEndpoint

@@ -1,0 +1,42 @@
+<mxfile host="app.diagrams.net" modified="2026-06-27T00:00:00.000Z" agent="Codex" version="24.7.17">
+  <diagram id="technical-hld" name="Technical AWS HLD">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Technical High Level Design - AWS Multi-Agent Deployment" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;fontSize=22;fontStyle=1;fontColor=#111827;" vertex="1" parent="1">
+          <mxGeometry x="360" y="30" width="620" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="github" value="GitHub Repository" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#374151;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="50" y="120" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="pipeline" value="CodePipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="270" y="120" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="build" value="CodeBuild&#xa;Docker build" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="490" y="120" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="ecr" value="ECR Repositories" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="710" y="120" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="deploy" value="CodeDeploy&#xa;Blue/Green ECS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="940" y="120" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="alb" value="Application Load Balancer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="120" y="330" width="220" height="80" as="geometry"/></mxCell>
+        <mxCell id="frontend" value="ECS Fargate&#xa;Streamlit Frontend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="430" y="300" width="200" height="80" as="geometry"/></mxCell>
+        <mxCell id="backend" value="ECS Fargate&#xa;FastAPI Multi-Agent Backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="430" y="430" width="240" height="95" as="geometry"/></mxCell>
+        <mxCell id="rds" value="RDS PostgreSQL&#xa;Chat, lookup rows, metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="790" y="270" width="220" height="80" as="geometry"/></mxCell>
+        <mxCell id="s3" value="S3&#xa;Raw docs and manifests" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="790" y="380" width="220" height="80" as="geometry"/></mxCell>
+        <mxCell id="os" value="OpenSearch Serverless&#xa;Vector and keyword indexes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="790" y="490" width="220" height="80" as="geometry"/></mxCell>
+        <mxCell id="secrets" value="Secrets Manager" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="790" y="600" width="220" height="70" as="geometry"/></mxCell>
+        <mxCell id="azure" value="Azure OpenAI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1070" y="380" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="langfuse" value="Langfuse" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1070" y="490" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="logs" value="CloudWatch Logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#374151;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1070" y="600" width="170" height="70" as="geometry"/></mxCell>
+        <mxCell id="e1" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="github" target="pipeline"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="pipeline" target="build"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="build" target="ecr"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="ecr" target="deploy"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="deploy" target="backend"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="alb" target="frontend"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="frontend" target="backend"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="rds"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="os"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="secrets"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="azure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="langfuse"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e14" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#374151;" edge="1" parent="1" source="backend" target="logs"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
