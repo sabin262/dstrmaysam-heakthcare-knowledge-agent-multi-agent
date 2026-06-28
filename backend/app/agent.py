@@ -136,6 +136,9 @@ POLICY_QUERY_MARKERS = {
     "retained",
     "records management",
     "record retention",
+    "research data",
+    "research governance",
+    "research information",
 }
 DETERMINISTIC_QUERY_MARKERS = {
     "bleep",
@@ -541,7 +544,21 @@ def _has_policy_intent(text: str) -> bool:
     lowered = text.lower()
     if _contains_marker(lowered, POLICY_QUERY_MARKERS):
         return True
+    if _has_research_data_policy_intent(lowered):
+        return True
     return _has_retention_policy_intent(lowered)
+
+
+def _has_research_data_policy_intent(text: str) -> bool:
+    lowered = text.lower()
+    research_subject = "research" in lowered and any(
+        marker in lowered for marker in ["data", "information", "record", "records", "dataset", "datasets"]
+    )
+    handling_question = any(
+        marker in lowered
+        for marker in ["handle", "handling", "manage", "store", "stored", "retain", "retention", "use", "share", "sharing"]
+    )
+    return research_subject and handling_question
 
 
 def _has_retention_policy_intent(text: str) -> bool:
@@ -2962,7 +2979,12 @@ class KnowledgeAgent:
             return _planned_tool_names(original_query) == ["postgres_deterministic_lookup"]
 
         def deterministic_specialist_query(query: str) -> str:
-            if not query.strip() or _is_sqlish_tool_query(query):
+            if (
+                not query.strip()
+                or _is_sqlish_tool_query(query)
+                or (_query_parts(query) and len(_query_parts(query)) > 1)
+                or _has_policy_intent(query)
+            ):
                 return first_deterministic_guard_query()
             return query
 
@@ -3284,43 +3306,80 @@ class KnowledgeAgent:
             performance = dict(state.get("performance") or {})
             direct_answer = str(state.get("direct_answer") or "").strip()
 
+            deterministic_queries = [
+                str(step.get("query") or original_query)
+                for step in list(state.get("agent_flow") or [])
+                if isinstance(step, dict) and step.get("agent") == "DeterministicLookupAgent"
+            ]
+            non_deterministic_queries = [
+                str(step.get("query") or original_query)
+                for step in list(state.get("agent_flow") or [])
+                if isinstance(step, dict)
+                and step.get("kind") == "specialist"
+                and step.get("agent") != "DeterministicLookupAgent"
+            ]
+            deterministic_sections: list[str] = []
+            deterministic_no_result_sections: list[str] = []
+            non_deterministic_outputs: list[str] = []
+            deterministic_index = 0
+            for output in tool_outputs:
+                output_text = str(output)
+                if output_text.startswith("postgres_deterministic_lookup results:"):
+                    payload_text = output_text.split("postgres_deterministic_lookup results:", 1)[-1].strip()
+                    try:
+                        payload = json.loads(payload_text)
+                    except json.JSONDecodeError:
+                        payload = {}
+                    section_query = (
+                        deterministic_queries[deterministic_index]
+                        if deterministic_index < len(deterministic_queries)
+                        else original_query
+                    )
+                    deterministic_index += 1
+                    formatted = _format_deterministic_lookup_payload(
+                        section_query,
+                        payload if isinstance(payload, dict) else {},
+                    ).strip()
+                    if formatted:
+                        category = str(payload.get("category") or "") if isinstance(payload, dict) else ""
+                        if not _deterministic_tool_output_has_results(payload_text) and category != "staff_rota":
+                            deterministic_no_result_sections.append(formatted)
+                        else:
+                            deterministic_sections.append(formatted)
+                else:
+                    non_deterministic_outputs.append(output_text)
+
             if direct_answer and not tool_context:
                 answer = direct_answer
                 synthesis_status = "direct_answer"
                 synthesis_ms = 0
             elif tools_used and set(tools_used) == {"postgres_deterministic_lookup"}:
-                deterministic_queries = [
-                    str(step.get("query") or original_query)
-                    for step in list(state.get("agent_flow") or [])
-                    if isinstance(step, dict) and step.get("agent") == "DeterministicLookupAgent"
-                ]
-                formatted_sections: list[str] = []
-                for index, output in enumerate(tool_outputs):
-                    payload_text = str(output).split("postgres_deterministic_lookup results:", 1)[-1].strip()
-                    try:
-                        payload = json.loads(payload_text)
-                    except json.JSONDecodeError:
-                        payload = {}
-                    section_query = deterministic_queries[index] if index < len(deterministic_queries) else original_query
-                    formatted_sections.append(
-                        _format_deterministic_lookup_payload(
-                            section_query,
-                            payload if isinstance(payload, dict) else {},
-                        )
-                    )
-                answer = "\n\n".join(section for section in formatted_sections if section.strip()) or self._offline_answer(
+                answer = "\n\n".join([*deterministic_sections, *deterministic_no_result_sections]) or self._offline_answer(
                     query=original_query,
                     tool_context=tool_context,
                 )
                 synthesis_status = "deterministic_structured_answer"
                 synthesis_ms = _elapsed_ms(started)
             else:
+                policy_context = "\n\n".join(non_deterministic_outputs)
+                fixed_deterministic_answer = "\n\n".join(deterministic_sections).strip()
+                remaining_question = "; ".join(
+                    query for query in non_deterministic_queries if query and query != original_query
+                ) or original_query
                 answer_prompt = (
-                    f"{user_prompt}\n\n"
-                    "Specialist evidence:\n"
-                    f"{self._bounded_context(tool_context or 'No specialist evidence was returned.')}\n\n"
+                    f"Question to answer:\n{remaining_question}\n\n"
+                    + (
+                        "Fixed deterministic answer section, already verified against Postgres tables. "
+                        "Do not contradict, reclassify, or replace these facts:\n"
+                        f"{fixed_deterministic_answer}\n\n"
+                        if fixed_deterministic_answer
+                        else ""
+                    )
+                    + "Specialist evidence:\n"
+                    f"{self._bounded_context(policy_context or 'No non-deterministic specialist evidence was returned.')}\n\n"
                     "Produce the final answer using only the specialist evidence above. "
-                    "Preserve exact deterministic values. Include citations when document sources are present. "
+                    "If a fixed deterministic answer section was provided, answer only the remaining non-deterministic parts here. "
+                    "Include citations when document sources are present. "
                     "Use a consistent structure: start with the direct answer, then concise bullet details when there are multiple facts, "
                     "then a short source/evidence note if relevant. If the evidence is insufficient, say what is missing."
                 )
@@ -3338,6 +3397,8 @@ class KnowledgeAgent:
                     answer = self._offline_answer(query=original_query, tool_context=tool_context)
                     synthesis_status = "fallback_offline_answer"
                 else:
+                    if fixed_deterministic_answer:
+                        answer = fixed_deterministic_answer + "\n\n" + answer
                     synthesis_status = "answered"
 
             agent_flow = list(state.get("agent_flow") or [])

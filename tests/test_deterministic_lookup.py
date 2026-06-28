@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 from backend.app.deterministic_lookup import (
     DeterministicLookupService,
@@ -803,8 +803,25 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(service.category_calls, [])
         self.assertEqual(result.lookup_plan["resolved_today"], today)
         self.assertEqual(result.lookup_plan["requested_rota_dates"], [today])
-        self.assertIn(f"No matching staff_rota.csv rows found for requested date(s): {today}", result.message)
-        self.assertIn("Do not use rows from other dates as today's rota.", result.message)
+        self.assertIn(f"No matching on-call staff rows found for requested date(s): {today}", result.message)
+        self.assertIn("Do not use rows from other dates as the requested rota.", result.message)
+
+    def test_anybody_on_call_query_is_staff_rota_intent(self):
+        self.assertTrue(_is_staff_rota_query("is anybody from radiology on call tomorrow?"))
+        self.assertTrue(_is_staff_rota_query("is anyone from paediatrics on-call next week?"))
+        self.assertTrue(_is_staff_rota_query("on call tomorrow"))
+
+    def test_relative_rota_dates_use_supplied_system_date(self):
+        base = date(2026, 6, 28)
+        self.assertEqual(_requested_rota_dates("who is on call tomorrow?", today=base), ["2026-06-29"])
+
+        next_week_start = base + timedelta(days=1)
+        next_week = [(next_week_start + timedelta(days=offset)).isoformat() for offset in range(7)]
+        self.assertEqual(_requested_rota_dates("is any doctor on call next week?", today=base), next_week)
+
+        this_month = _requested_rota_dates("show rota this month", today=base)
+        self.assertEqual(this_month[0], "2026-06-01")
+        self.assertEqual(this_month[-1], "2026-06-30")
 
 
 if __name__ == "__main__":

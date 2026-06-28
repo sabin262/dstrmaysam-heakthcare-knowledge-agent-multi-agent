@@ -1478,7 +1478,23 @@ CRM_SECTION_LABELS = {
     "schedule": "Schedule",
     "appointments": "Appointments",
     "finance": "Finance",
+    "wards": "Wards",
+    "contacts": "Contacts",
+    "formulary": "Formulary",
+    "clinic_sessions": "Clinic Sessions",
+    "equipment": "Equipment",
+    "compliance_audits": "Compliance Audits",
+    "training": "Training",
 }
+
+CRM_PRIMARY_SECTIONS = (
+    "patients",
+    "doctors",
+    "departments",
+    "schedule",
+    "appointments",
+    "finance",
+)
 
 
 CRM_FIELD_LABELS = {
@@ -1492,20 +1508,37 @@ CRM_FIELD_LABELS = {
     "balance": "Balance",
     "bleep": "Bleep",
     "care_status": "Care status",
+    "clinic_date": "Clinic date",
     "clinic_name": "Clinic",
+    "clinic_id": "Clinic ID",
     "clinician_name": "Clinician",
+    "clinical_engineering_contact": "Clinical engineering contact",
+    "completion_date": "Completion date",
     "contact": "Contact",
+    "contact_id": "Contact ID",
+    "contact_name": "Contact name",
+    "contact_type": "Contact type",
     "date_of_birth": "Date of birth",
     "department_id": "Department ID",
     "department_name": "Department",
     "doctor_id": "Doctor ID",
     "email": "Email",
+    "equipment_type": "Equipment type",
+    "escalation_level": "Escalation level",
     "finance_id": "Finance ID",
     "full_name": "Name",
     "grade": "Grade",
     "invoice_status": "Invoice status",
+    "last_score_percent": "Last score",
+    "last_service_date": "Last service date",
+    "lead": "Lead",
     "last_invoice_date": "Last invoice date",
     "main_phone": "Main phone",
+    "max_adult_dose": "Max adult dose",
+    "medicine_id": "Medicine ID",
+    "medicine_name": "Medicine",
+    "training_module": "Training module",
+    "next_service_due": "Next service due",
     "mrn": "MRN",
     "named_consultant": "Named consultant",
     "nhs_number": "NHS number",
@@ -1517,18 +1550,25 @@ CRM_FIELD_LABELS = {
     "payer_type": "Payer type",
     "phone": "Phone",
     "referral_priority": "Referral priority",
+    "restricted": "Restricted",
     "risk_flags": "Risk flags",
     "role": "Role",
     "schedule_id": "Schedule ID",
     "service_lead": "Service lead",
+    "expiry_date": "Expiry date",
     "shift_date": "Shift date",
     "shift_end": "Shift end",
     "shift_start": "Shift start",
+    "slots_available": "Slots available",
+    "slots_total": "Slots total",
     "specialty": "Specialty",
     "specialty_group": "Specialty group",
     "staff_name": "Staff name",
     "status": "Status",
+    "topic": "Topic",
+    "training_id": "Training ID",
     "ward_code": "Ward",
+    "ward_name": "Ward name",
 }
 
 
@@ -2194,14 +2234,33 @@ def render_patient_details_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
         st.divider()
+        primary_labels = [CRM_SECTION_LABELS[key] for key in CRM_PRIMARY_SECTIONS]
         crm_section_label = st.radio(
             "CRM sections",
-            list(CRM_SECTION_LABELS.values()),
+            primary_labels,
             index=0,
         )
-    section = next(
-        key for key, value in CRM_SECTION_LABELS.items() if value == crm_section_label
-    )
+        radio_section = next(
+            key for key, value in CRM_SECTION_LABELS.items() if value == crm_section_label
+        )
+        try:
+            available_sections = get_json("/admin/crm/sections")
+        except Exception:
+            available_sections = {}
+        table_keys = [key for key in CRM_SECTION_LABELS if key in available_sections]
+        if not table_keys:
+            st.error("Unable to load CRM tables.")
+            return
+        if radio_section in table_keys:
+            default_table_index = table_keys.index(radio_section)
+        else:
+            default_table_index = 0
+        table_label = st.selectbox(
+            "All tables",
+            [CRM_SECTION_LABELS[key] for key in table_keys],
+            index=default_table_index,
+        )
+    section = next(key for key in table_keys if CRM_SECTION_LABELS[key] == table_label)
     render_hospital_crm_dashboard(section)
 
 

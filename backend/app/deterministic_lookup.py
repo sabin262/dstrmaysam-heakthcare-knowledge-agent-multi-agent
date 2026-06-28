@@ -39,6 +39,9 @@ NURSE_ROLE_MARKERS = {"nurse", "nurses", "nursing"}
 STAFF_ROTA_QUERY_MARKERS = {
     "available",
     "availability",
+    "last",
+    "month",
+    "next",
     "rota",
     "schedule",
     "scheduled",
@@ -50,6 +53,7 @@ STAFF_ROTA_QUERY_MARKERS = {
     "on-call",
     "today",
     "tomorrow",
+    "week",
 }
 
 AGGREGATE_QUERY_MARKERS = {
@@ -156,6 +160,7 @@ AUTHORITATIVE_LOOKUP_CATEGORIES = {
     "wards",
     "formulary",
     "equipment",
+    "staff_rota",
 }
 
 CRM_TABLES: dict[str, dict[str, Any]] = {
@@ -201,6 +206,55 @@ CRM_TABLES: dict[str, dict[str, Any]] = {
         "search": ["finance_id", "patient_mrn", "patient_name", "department_name", "account_type", "payer_type", "invoice_status"],
         "filters": ["department_name", "payer_type", "invoice_status", "access_level"],
     },
+    "wards": {
+        "table": "wards",
+        "pk": "ward_code",
+        "columns": ["ward_code", "ward_name", "department_id", "department_name", "floor", "bed_capacity", "beds_available", "nurse_in_charge", "phone", "access_level"],
+        "search": ["ward_code", "ward_name", "department_name", "floor", "nurse_in_charge", "phone"],
+        "filters": ["department_name", "floor", "access_level"],
+    },
+    "contacts": {
+        "table": "organization_contacts",
+        "pk": "contact_id",
+        "columns": ["contact_id", "contact_type", "department_id", "department_name", "contact_name", "role", "phone", "email", "available_hours", "escalation_level", "access_level"],
+        "search": ["contact_id", "contact_type", "department_name", "contact_name", "role", "phone", "email", "available_hours"],
+        "filters": ["department_name", "contact_type", "role", "escalation_level", "access_level"],
+    },
+    "formulary": {
+        "table": "formulary",
+        "pk": "medicine_id",
+        "columns": ["medicine_id", "medicine_name", "category", "restricted", "approval_required", "max_adult_dose", "monitoring_required", "access_level"],
+        "search": ["medicine_id", "medicine_name", "category", "approval_required", "max_adult_dose", "monitoring_required"],
+        "filters": ["category", "restricted", "access_level"],
+    },
+    "clinic_sessions": {
+        "table": "clinic_sessions",
+        "pk": "clinic_id",
+        "columns": ["clinic_id", "clinic_name", "clinic_date", "start_time", "consultant", "slots_total", "slots_available", "referral_priority", "access_level"],
+        "search": ["clinic_id", "clinic_name", "consultant", "referral_priority"],
+        "filters": ["clinic_date", "referral_priority", "access_level"],
+    },
+    "equipment": {
+        "table": "equipment_assets",
+        "pk": "asset_id",
+        "columns": ["asset_id", "equipment_type", "location", "status", "last_service_date", "next_service_due", "clinical_engineering_contact", "access_level"],
+        "search": ["asset_id", "equipment_type", "location", "status", "clinical_engineering_contact"],
+        "filters": ["equipment_type", "location", "status", "access_level"],
+    },
+    "compliance_audits": {
+        "table": "compliance_audits",
+        "pk": "audit_id",
+        "columns": ["audit_id", "department_id", "department_name", "topic", "lead", "due_date", "status", "last_score_percent", "access_level"],
+        "search": ["audit_id", "department_name", "topic", "lead", "status"],
+        "filters": ["department_name", "topic", "status", "access_level"],
+    },
+    "training": {
+        "table": "training_records",
+        "pk": "training_id",
+        "columns": ["training_id", "staff_name", "role", "department_id", "department_name", "training_module", "completion_date", "expiry_date", "status", "access_level"],
+        "search": ["training_id", "staff_name", "role", "department_name", "training_module", "status"],
+        "filters": ["department_name", "training_module", "status", "access_level"],
+    },
 }
 
 CSV_SEMANTIC_SAMPLE_ROWS = 200
@@ -230,9 +284,19 @@ BASE_STOPWORDS = {
     "of",
     "a",
     "an",
+    "all",
+    "anybody",
+    "anyone",
+    "every",
+    "last",
+    "month",
+    "next",
+    "somebody",
+    "someone",
     "what",
     "which",
     "who",
+    "week",
     "does",
     "do",
     "did",
@@ -270,6 +334,10 @@ def _term_variants(term: str) -> set[str]:
     if len(cleaned) < 2:
         return set()
     variants = {cleaned}
+    if cleaned.startswith("pediatric"):
+        variants.add(cleaned.replace("pediatric", "paediatric", 1))
+    if cleaned.startswith("paediatric"):
+        variants.add(cleaned.replace("paediatric", "pediatric", 1))
     if cleaned.endswith("ies") and len(cleaned) > 3:
         variants.add(cleaned[:-3] + "y")
     elif cleaned.endswith("s") and len(cleaned) > 3:
@@ -347,7 +415,7 @@ def _best_search_term(terms: list[str], stopwords: set[str] | None = None) -> st
             return term
     non_value_terms = STOPWORDS | QUERY_INTENT_MARKERS | (stopwords or set())
     useful = [term for term in terms if term.lower() not in non_value_terms]
-    return useful[-1] if useful else (terms[-1] if terms else "")
+    return useful[-1] if useful else ""
 
 
 def _has_person_name_hint(terms: list[str]) -> bool:
@@ -598,6 +666,33 @@ def _requested_rota_dates(query: str, today: date | None = None) -> list[str]:
         requested.append(base_date)
     if "tomorrow" in q:
         requested.append(base_date + timedelta(days=1))
+    week_start = base_date - timedelta(days=base_date.weekday())
+    if "next week" in q:
+        requested.extend(week_start + timedelta(days=offset) for offset in range(7, 14))
+    elif "last week" in q or "previous week" in q:
+        requested.extend(week_start + timedelta(days=offset) for offset in range(-7, 0))
+    elif "this week" in q:
+        requested.extend(week_start + timedelta(days=offset) for offset in range(7))
+
+    def month_range(year: int, month: int) -> list[date]:
+        if month == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month + 1, 1)
+        first_day = date(year, month, 1)
+        days = (next_month - first_day).days
+        return [first_day + timedelta(days=offset) for offset in range(days)]
+
+    if "next month" in q:
+        year = base_date.year + (1 if base_date.month == 12 else 0)
+        month = 1 if base_date.month == 12 else base_date.month + 1
+        requested.extend(month_range(year, month))
+    elif "last month" in q or "previous month" in q:
+        year = base_date.year - (1 if base_date.month == 1 else 0)
+        month = 12 if base_date.month == 1 else base_date.month - 1
+        requested.extend(month_range(year, month))
+    elif "this month" in q or re.search(r"\bmonth\b", q):
+        requested.extend(month_range(base_date.year, base_date.month))
     for match in re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", query):
         try:
             requested.append(date.fromisoformat(match))
@@ -633,9 +728,15 @@ def _is_staff_rota_query(query: str) -> bool:
     terms = set(_terms(query))
     role_requested = bool(terms & (DOCTOR_ROLE_MARKERS | NURSE_ROLE_MARKERS))
     rota_requested = any(marker in q for marker in STAFF_ROTA_QUERY_MARKERS)
-    generic_on_call_requested = "who" in terms and any(marker in q for marker in ["on call", "on-call", "oncall"])
+    generic_on_call_requested = bool(terms & {"anybody", "anyone", "who"}) and any(
+        marker in q for marker in ["on call", "on-call", "oncall"]
+    )
+    dated_on_call_requested = any(marker in q for marker in ["on call", "on-call", "oncall"]) and any(
+        marker in q
+        for marker in ["today", "tomorrow", "this week", "next week", "last week", "this month", "next month", "last month"]
+    )
     mentions_staff_rota = "staff_rota" in q or "staff rota" in q
-    return mentions_staff_rota or generic_on_call_requested or (role_requested and rota_requested)
+    return mentions_staff_rota or generic_on_call_requested or dated_on_call_requested or (role_requested and rota_requested)
 
 
 def _requires_on_call(query: str) -> bool:
@@ -764,6 +865,7 @@ class DeterministicLookupService:
             and aggregate_intent != "count"
             and not _has_row_value_intent(query)
         )
+        authoritative_list_query = category in AUTHORITATIVE_LOOKUP_CATEGORIES and _has_list_intent(query)
         try:
             handled_distinct_lookup = False
             if category == "equipment" and _is_equipment_asset_list_query(query):
@@ -847,29 +949,34 @@ class DeterministicLookupService:
                         handled_distinct_lookup = True
             elif _is_medicine_list_query(query):
                 distinct_field = "medicine"
-                row_value_search_used = True
+                try:
+                    rows = self._query_formulary_distinct_values(scopes, limit)
+                except Exception:
+                    rows = []
+                row_value_search_used = not bool(rows)
                 distinct_filenames = _csv_filenames_with_fields(
                     csv_assets or [],
                     ("medicine", "medicine_name", "medication", "drug", "drug_name"),
                     ("medication", "medicine", "formulary", "drug"),
                 )
-                rows = self._query_uploaded_distinct_field_values(
-                    scopes,
-                    ("medicine", "medicine_name", "medication", "drug", "drug_name"),
-                    source_filenames=distinct_filenames or None,
-                    limit=limit,
-                    output_field="medicine",
-                    fallback_markers=("medication", "medicine", "formulary", "drug"),
-                )
+                if not rows:
+                    rows = self._query_uploaded_distinct_field_values(
+                        scopes,
+                        ("medicine", "medicine_name", "medication", "drug", "drug_name"),
+                        source_filenames=distinct_filenames or None,
+                        limit=limit,
+                        output_field="medicine",
+                        fallback_markers=("medication", "medicine", "formulary", "drug"),
+                    )
                 if rows:
                     handled_distinct_lookup = True
                     matched_csv_sources = sorted(
                         {
-                            str(row.get("source_filename"))
+                            str(row.get("source_filename") or "formulary")
                             for row in rows
                             if row.get("source_filename")
                         }
-                    )
+                    ) or ["formulary"]
 
             if handled_distinct_lookup:
                 pass
@@ -969,7 +1076,7 @@ class DeterministicLookupService:
                     rows = uploaded_rows
                 if not rows:
                     rows = self._lookup_category(category, query, scopes, limit, stopwords=lookup_stopwords)
-                    if not (rows and category_first):
+                    if not authoritative_list_query and not (rows and category_first):
                         uploaded_rows = self._query_uploaded_lookup_rows(
                             query,
                             scopes,
@@ -1080,11 +1187,11 @@ class DeterministicLookupService:
         if not rows:
             if requested_dates:
                 return (
-                    "No matching staff_rota.csv rows found for requested date(s): "
+                    "No matching on-call staff rows found for requested date(s): "
                     + ", ".join(requested_dates)
-                    + ". Do not use rows from other dates as today's rota."
+                    + ". Do not use rows from other dates as the requested rota."
                 )
-            return "No matching staff_rota.csv rows found."
+            return "No matching on-call staff rows found."
 
         uses_staff_rota_rows = any(
             isinstance(row, dict) and str(row.get("source_filename") or "").lower() == "staff_rota.csv"
@@ -2072,7 +2179,10 @@ class DeterministicLookupService:
 
         department_terms = [
             term
-            for term in self._search_terms(query, STOPWORDS | STAFF_ROTA_QUERY_MARKERS | DOCTOR_ROLE_MARKERS | NURSE_ROLE_MARKERS)
+            for term in _expanded_search_terms(
+                query,
+                STOPWORDS | STAFF_ROTA_QUERY_MARKERS | DOCTOR_ROLE_MARKERS | NURSE_ROLE_MARKERS,
+            )
             if term not in {"list", "me", "available", "availability", "today", "tomorrow", "csv", "file"}
         ]
         if department_terms:
@@ -2175,10 +2285,17 @@ class DeterministicLookupService:
             for pattern in role_filters:
                 params.extend([pattern, pattern])
 
-        for term in list(department_terms or [])[:4]:
-            pattern = _like(term)
-            where_parts.append("(lower(department_name) LIKE %s OR lower(staff_name) LIKE %s OR lower(role) LIKE %s)")
-            params.extend([pattern, pattern, pattern])
+        department_patterns = [_like(term) for term in list(department_terms or [])[:8]]
+        if department_patterns:
+            where_parts.append(
+                "("
+                + " OR ".join(
+                    ["lower(department_name) LIKE %s OR lower(staff_name) LIKE %s OR lower(role) LIKE %s" for _ in department_patterns]
+                )
+                + ")"
+            )
+            for pattern in department_patterns:
+                params.extend([pattern, pattern, pattern])
 
         params.append(limit)
         with self._connect() as conn:
@@ -2803,6 +2920,30 @@ class DeterministicLookupService:
             (list(scopes), pattern, pattern, pattern, limit),
         )
         return list(cur.fetchall())
+
+    def _query_formulary_distinct_values(self, scopes: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT medicine_name, category
+                    FROM formulary
+                    WHERE {self._access_sql()}
+                    ORDER BY medicine_name
+                    LIMIT %s
+                    """,
+                    (list(scopes), limit),
+                )
+                return [
+                    {
+                        "source_table": "formulary",
+                        "source_filename": "formulary",
+                        "row_number": index,
+                        "row": {"medicine": row["medicine_name"], "category": row.get("category")},
+                        "access_level": "clinical",
+                    }
+                    for index, row in enumerate(cur.fetchall(), start=1)
+                ]
 
     def _query_equipment(self, cur, terms: list[str], scopes: tuple[str, ...], limit: int, stopwords: set[str] | None = None):
         search_terms = _expanded_search_terms(" ".join(terms), stopwords or set())
