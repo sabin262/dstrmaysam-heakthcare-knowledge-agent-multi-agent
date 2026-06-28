@@ -478,9 +478,13 @@ def _tsquery(terms: Sequence[str]) -> str:
 
 
 def _row_text(row: dict[str, Any]) -> str:
-    return json.dumps(row.get("row") or {}, sort_keys=True, default=str).lower() + " " + str(
-        row.get("source_filename") or ""
-    ).lower()
+    return (
+        json.dumps(row.get("row") or {}, sort_keys=True, default=str).lower()
+        + " "
+        + str(row.get("source_table") or "").lower()
+        + " "
+        + str(row.get("source_filename") or "").lower()
+    )
 
 
 def _matched_terms(terms: Sequence[str], rows: Sequence[dict[str, Any]]) -> list[str]:
@@ -527,7 +531,7 @@ def _row_matches_term_groups(row: dict[str, Any], term_groups: Sequence[set[str]
     return all(any(term in text for term in group) for group in term_groups)
 
 
-def _filter_uploaded_rows_for_specific_row_values(
+def _filter_rows_for_specific_row_values(
     query: str,
     rows: Sequence[dict[str, Any]],
     stopwords: set[str] | None = None,
@@ -535,14 +539,10 @@ def _filter_uploaded_rows_for_specific_row_values(
     term_groups = _strict_row_value_term_groups(query, stopwords)
     if not term_groups:
         return list(rows), False
-    uploaded_rows = [
-        row
-        for row in rows
-        if isinstance(row, dict) and row.get("source_table") == "uploaded_lookup_rows"
-    ]
-    if not uploaded_rows:
+    table_rows = [row for row in rows if isinstance(row, dict) and row.get("source_table")]
+    if not table_rows:
         return list(rows), False
-    strict_rows = [row for row in uploaded_rows if _row_matches_term_groups(row, term_groups)]
+    strict_rows = [row for row in table_rows if _row_matches_term_groups(row, term_groups)]
     if strict_rows:
         return strict_rows, True
     return list(rows), False
@@ -551,13 +551,28 @@ def _filter_uploaded_rows_for_specific_row_values(
 def _counts_by_source(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
-        if not isinstance(row, dict) or row.get("source_table") != "uploaded_lookup_rows":
+        if not isinstance(row, dict):
             continue
-        source = str(row.get("source_filename") or "")
+        source = str(row.get("source_table") or "")
+        if source == "uploaded_lookup_rows":
+            source = str(row.get("source_filename") or source)
         if not source:
             continue
         counts[source] = counts.get(source, 0) + 1
     return counts
+
+
+def _source_tables(rows: Sequence[dict[str, Any]]) -> list[str]:
+    sources: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source = str(row.get("source_table") or "").strip()
+        if source == "uploaded_lookup_rows":
+            source = str(row.get("source_filename") or source).strip()
+        if source:
+            sources.add(source)
+    return sorted(sources)
 
 
 def _normalized_key(value: str) -> str:
@@ -638,24 +653,6 @@ def _is_medicine_list_query(query: str) -> bool:
         return False
     terms = set(_terms(query))
     return bool(terms & {"medicine", "medicines", "medication", "medications", "drug", "drugs", "formulary"})
-
-
-def _csv_filenames_with_fields(
-    csv_assets: Sequence[dict[str, Any]],
-    field_candidates: Sequence[str],
-    filename_markers: Sequence[str],
-) -> list[str]:
-    candidate_fields = {_normalized_key(field) for field in field_candidates}
-    filenames: list[str] = []
-    for asset in csv_assets:
-        filename = str(asset.get("filename") or asset.get("title") or "")
-        normalized_filename = filename.lower()
-        columns = {_normalized_key(str(column)) for column in asset.get("columns") or []}
-        if not (columns & candidate_fields or any(marker in normalized_filename for marker in filename_markers)):
-            continue
-        if filename and filename not in filenames:
-            filenames.append(filename)
-    return filenames
 
 
 def _requested_rota_dates(query: str, today: date | None = None) -> list[str]:
@@ -767,11 +764,15 @@ def _rota_csv_filenames(
     for asset in csv_assets:
         if not _is_rota_csv_asset(asset):
             continue
-        filename = str(asset.get("filename") or asset.get("title") or "")
+        filename = str(asset.get("filename") or asset.get("title") or asset.get("table_name") or "")
         if filename and (filename in selected or not selected) and filename not in filenames:
             filenames.append(filename)
-    if "staff_rota.csv" not in filenames:
-        filenames.append("staff_rota.csv")
+    if not filenames:
+        for asset in csv_assets:
+            if _is_rota_csv_asset(asset):
+                filename = str(asset.get("filename") or asset.get("title") or asset.get("table_name") or "")
+                if filename and filename not in filenames:
+                    filenames.append(filename)
     return filenames
 
 
@@ -822,18 +823,123 @@ class LookupResult:
         )
 
 
+@dataclass(frozen=True)
+class CsvTableSyncResult:
+    filename: str
+    table_key: str
+    table_name: str
+    rows_inserted: int
+    columns: list[str]
+    semantic_metadata: dict[str, Any]
+
+    def to_manifest_metadata(self) -> dict[str, Any]:
+        return {
+            "filename": self.filename,
+            "table_key": self.table_key,
+            "table_name": self.table_name,
+            "rows_inserted": self.rows_inserted,
+            "columns": self.columns,
+            "semantic_metadata": self.semantic_metadata,
+        }
+
+
+class UnsupportedCsvLookupError(ValueError):
+    def __init__(self, filename: str, columns: Sequence[str]):
+        self.filename = filename
+        self.columns = [str(column) for column in columns]
+        super().__init__(
+            "Unsupported CSV lookup upload. Supported CSVs must match one of: "
+            + ", ".join(sorted(CSV_TABLE_MAPPINGS))
+            + f". Received {filename} with columns: "
+            + (", ".join(self.columns) if self.columns else "none")
+        )
+
+
+CSV_TABLE_MAPPINGS: dict[str, dict[str, Any]] = {
+    "staff_rota.csv": {
+        "table_key": "schedule",
+        "required_any": ({"date", "shift_date"}, {"staff_name", "name"}, {"department"}, {"role"}),
+    },
+    "doctor_rota.csv": {
+        "table_key": "schedule",
+        "required_any": ({"date", "shift_date"}, {"doctor", "clinician", "staff_name", "name"}),
+    },
+    "appointment_clinics.csv": {
+        "table_key": "clinic_sessions",
+        "required_any": ({"clinic_id"}, {"clinic_name"}, {"date", "clinic_date"}, {"consultant"}),
+    },
+    "equipment_assets.csv": {
+        "table_key": "equipment",
+        "required_any": ({"asset_id"}, {"equipment_type"}, {"location"}, {"status"}),
+    },
+    "medication_formulary.csv": {
+        "table_key": "formulary",
+        "required_any": ({"medicine", "medicine_name", "drug"}, {"category"}),
+    },
+    "ward_directory.csv": {
+        "table_key": "wards",
+        "required_any": ({"ward_code"}, {"ward_name"}, {"specialty", "department"}),
+    },
+    "department_contacts.csv": {
+        "table_key": "contacts",
+        "required_any": ({"contact_name"}, {"department"}, {"role"}, {"phone", "email"}),
+    },
+    "audit_schedule.csv": {
+        "table_key": "compliance_audits",
+        "required_any": ({"audit_id"}, {"topic"}, {"department"}, {"due_date"}),
+    },
+    "training_compliance.csv": {
+        "table_key": "training",
+        "required_any": ({"staff_name"}, {"training_module"}, {"department"}, {"status"}),
+    },
+}
+
+
+def _normalized_columns(columns: Sequence[str]) -> set[str]:
+    return {_normalized_key(str(column)) for column in columns if str(column).strip()}
+
+
+def supported_csv_lookup_mappings() -> dict[str, dict[str, Any]]:
+    return {
+        filename: {
+            "table_key": str(config["table_key"]),
+            "table_name": CRM_TABLES[str(config["table_key"])]["table"],
+            "required_any": [sorted(group) for group in config["required_any"]],
+        }
+        for filename, config in CSV_TABLE_MAPPINGS.items()
+    }
+
+
+def detect_csv_table_mapping(filename: str, columns: Sequence[str]) -> dict[str, Any] | None:
+    normalized_filename = filename.lower()
+    normalized_columns = _normalized_columns(columns)
+    candidates = []
+    if normalized_filename in CSV_TABLE_MAPPINGS:
+        candidates.append(CSV_TABLE_MAPPINGS[normalized_filename])
+    candidates.extend(config for key, config in CSV_TABLE_MAPPINGS.items() if key != normalized_filename)
+    for config in candidates:
+        if all(normalized_columns & {_normalized_key(column) for column in group} for group in config["required_any"]):
+            table_key = str(config["table_key"])
+            return {
+                **config,
+                "table_key": table_key,
+                "table_name": CRM_TABLES[table_key]["table"],
+            }
+    return None
+
+
 class DeterministicLookupService:
     """Safe Postgres lookup service for exact operational healthcare data."""
 
     def __init__(self, settings: AppSettings):
         self.settings = settings
-        self._uploaded_lookup_schema_ready = False
 
     def lookup(
         self,
         query: str,
         user: HealthcareUserContext,
         limit: int = 10,
+        table_assets: Sequence[dict[str, Any]] | None = None,
         csv_assets: Sequence[dict[str, Any]] | None = None,
     ) -> LookupResult:
         if not self.settings.deterministic_lookup_enabled:
@@ -843,8 +949,12 @@ class DeterministicLookupService:
         scopes = _access_scopes(user)
         lookup_stopwords: set[str] = set()
         search_terms = self._search_terms(query, lookup_stopwords)
-        selected_assets = self._matching_csv_assets(query, csv_assets or [])
-        selected_filenames = [str(asset.get("filename") or "") for asset in selected_assets if asset.get("filename")]
+        selected_assets = self._matching_table_assets(query, table_assets or csv_assets or [])
+        selected_tables = [
+            str(asset.get("filename") or asset.get("table_name") or "")
+            for asset in selected_assets
+            if asset.get("filename") or asset.get("table_name")
+        ]
         aggregate_intent = "count" if _has_count_intent(query) else ""
         row_value_count_stopwords = (
             _row_value_lookup_stopwords(query, lookup_stopwords)
@@ -856,7 +966,7 @@ class DeterministicLookupService:
         requested_rota_dates: list[str] = []
         row_value_search_used = False
         strict_row_value_filter_applied = False
-        matched_csv_sources: list[str] = []
+        matched_table_sources: list[str] = []
         matched_terms: list[str] = []
         matched_columns: list[str] = []
         distinct_field = ""
@@ -875,29 +985,11 @@ class DeterministicLookupService:
                 except Exception:
                     rows = []
                 if not rows:
-                    row_value_search_used = True
-                    distinct_filenames = _csv_filenames_with_fields(
-                        csv_assets or [],
-                        ("equipment_type", "asset_type", "device_type", "type"),
-                        ("equipment", "asset", "device"),
-                    )
-                    rows = self._query_uploaded_distinct_field_values(
-                        scopes,
-                        ("equipment_type", "asset_type", "device_type", "type"),
-                        source_filenames=distinct_filenames or None,
-                        limit=limit,
-                        output_field="equipment_type",
-                        fallback_markers=("equipment", "asset", "device"),
-                    )
+                    rows = []
                 if rows:
+                    row_value_search_used = True
                     handled_distinct_lookup = True
-                    matched_csv_sources = sorted(
-                        {
-                            str(row.get("source_filename") or "equipment_assets")
-                            for row in rows
-                            if row.get("source_filename")
-                        }
-                    ) or ["equipment_assets"]
+                    matched_table_sources = ["equipment_assets"]
             elif category == "equipment":
                 try:
                     with self._connect() as conn:
@@ -914,80 +1006,33 @@ class DeterministicLookupService:
                         "type": "count",
                         "matching_rows": matching_rows,
                         "counts_by_source": {"equipment_assets": matching_rows},
-                        "source_filenames": ["equipment_assets"],
+                        "source_tables": ["equipment_assets"],
                     }
                 if rows:
-                    matched_csv_sources = ["equipment_assets"]
+                    matched_table_sources = ["equipment_assets"]
                     handled_distinct_lookup = True
                 else:
-                    row_value_search_used = True
-                    fallback_filenames = selected_filenames or None
-                    rows = self._query_uploaded_lookup_rows(
-                        query,
-                        scopes,
-                        limit,
-                        source_filenames=fallback_filenames,
-                        stopwords=row_value_count_stopwords,
-                    )
-                    if aggregate_intent == "count":
-                        counts_by_source = self._count_uploaded_lookup_rows(
-                            query,
-                            scopes,
-                            source_filenames=fallback_filenames,
-                            stopwords=row_value_count_stopwords,
-                        )
-                        aggregate_result = {
-                            "type": "count",
-                            "matching_rows": sum(counts_by_source.values()),
-                            "counts_by_source": counts_by_source,
-                            "source_filenames": sorted(counts_by_source),
-                        }
-                    if rows:
-                        matched_csv_sources = sorted(
-                            {str(row.get("source_filename")) for row in rows if row.get("source_filename")}
-                        )
-                        handled_distinct_lookup = True
+                    rows = []
             elif _is_medicine_list_query(query):
                 distinct_field = "medicine"
                 try:
                     rows = self._query_formulary_distinct_values(scopes, limit)
                 except Exception:
                     rows = []
-                row_value_search_used = not bool(rows)
-                distinct_filenames = _csv_filenames_with_fields(
-                    csv_assets or [],
-                    ("medicine", "medicine_name", "medication", "drug", "drug_name"),
-                    ("medication", "medicine", "formulary", "drug"),
-                )
-                if not rows:
-                    rows = self._query_uploaded_distinct_field_values(
-                        scopes,
-                        ("medicine", "medicine_name", "medication", "drug", "drug_name"),
-                        source_filenames=distinct_filenames or None,
-                        limit=limit,
-                        output_field="medicine",
-                        fallback_markers=("medication", "medicine", "formulary", "drug"),
-                    )
                 if rows:
+                    row_value_search_used = True
                     handled_distinct_lookup = True
-                    matched_csv_sources = sorted(
-                        {
-                            str(row.get("source_filename") or "formulary")
-                            for row in rows
-                            if row.get("source_filename")
-                        }
-                    ) or ["formulary"]
+                    matched_table_sources = ["formulary"]
 
             if handled_distinct_lookup:
                 pass
             elif _is_staff_rota_query(query):
                 requested_rota_dates = _requested_rota_dates(query)
-                rota_filenames = _rota_csv_filenames(query, csv_assets or [], selected_filenames)
                 rows = self._query_staff_rota_rows(
                     query,
                     scopes,
                     limit,
-                    source_filenames=rota_filenames or None,
+                    source_filenames=_rota_csv_filenames(query, table_assets or csv_assets or [], selected_tables),
                 )
                 role_groups = _requested_rota_role_groups(query)
                 if not rows and role_groups == {"doctor"} and not requested_rota_dates:
@@ -1010,43 +1055,39 @@ class DeterministicLookupService:
                             stopwords=lookup_stopwords,
                         )
                     )
-            elif selected_filenames and category_first:
+            elif selected_tables and category_first:
                 rows = self._lookup_category(category, query, scopes, limit, stopwords=lookup_stopwords)
-                uploaded_rows: list[dict[str, Any]] = []
                 if not rows:
                     row_value_search_used = True
-                    uploaded_rows = self._query_uploaded_lookup_rows(
+                    rows = self._query_table_value_rows(
                         query,
                         scopes,
                         limit,
-                        source_filenames=selected_filenames,
+                        table_names=selected_tables,
                         stopwords=row_value_count_stopwords,
                     )
-                    rows = uploaded_rows
-                matched_csv_sources = sorted(
-                    {str(row.get("source_filename")) for row in uploaded_rows if row.get("source_filename")}
-                )
-            elif selected_filenames:
+                matched_table_sources = _source_tables(rows)
+            elif selected_tables:
                 row_value_search_used = True
-                rows = self._query_uploaded_lookup_rows(
+                rows = self._query_table_value_rows(
                     query,
                     scopes,
                     limit,
-                    source_filenames=selected_filenames,
+                    table_names=selected_tables,
                     stopwords=row_value_count_stopwords,
                 )
                 if aggregate_intent == "count":
-                    counts_by_source = self._count_uploaded_lookup_rows(
+                    counts_by_source = self._count_table_value_rows(
                         query,
                         scopes,
-                        source_filenames=selected_filenames,
+                        table_names=selected_tables,
                         stopwords=row_value_count_stopwords,
                     )
                     aggregate_result = {
                         "type": "count",
                         "matching_rows": sum(counts_by_source.values()),
                         "counts_by_source": counts_by_source,
-                        "source_filenames": sorted(counts_by_source) or selected_filenames,
+                        "source_tables": sorted(counts_by_source) or selected_tables,
                     }
                 if len(rows) < limit and aggregate_intent != "count":
                     rows.extend(
@@ -1058,70 +1099,60 @@ class DeterministicLookupService:
                             stopwords=lookup_stopwords,
                         )
                     )
-                matched_csv_sources = sorted(
-                    {str(row.get("source_filename")) for row in rows if row.get("source_table") == "uploaded_lookup_rows" and row.get("source_filename")}
-                )
+                matched_table_sources = _source_tables(rows)
             else:
                 row_first = aggregate_intent == "count" and _has_row_value_intent(query)
                 rows = []
-                uploaded_rows: list[dict[str, Any]] = []
+                table_rows: list[dict[str, Any]] = []
                 if row_first:
                     row_value_search_used = True
-                    uploaded_rows = self._query_uploaded_lookup_rows(
+                    table_rows = self._query_table_value_rows(
                         query,
                         scopes,
                         limit,
                         stopwords=row_value_count_stopwords,
                     )
-                    rows = uploaded_rows
+                    rows = table_rows
                 if not rows:
                     rows = self._lookup_category(category, query, scopes, limit, stopwords=lookup_stopwords)
                     if not authoritative_list_query and not (rows and category_first):
-                        uploaded_rows = self._query_uploaded_lookup_rows(
+                        table_rows = self._query_table_value_rows(
                             query,
                             scopes,
                             max(0, limit - len(rows)),
                             stopwords=row_value_count_stopwords,
                         )
                         row_value_search_used = True
-                        rows = rows + uploaded_rows
-                matched_csv_sources = sorted(
-                    {str(row.get("source_filename")) for row in uploaded_rows if row.get("source_filename")}
-                )
+                        rows = rows + table_rows
+                matched_table_sources = _source_tables(table_rows)
                 if aggregate_intent == "count":
-                    counts_by_source = self._count_uploaded_lookup_rows(
+                    counts_by_source = self._count_table_value_rows(
                         query,
                         scopes,
-                        source_filenames=None,
+                        table_names=None,
                         stopwords=row_value_count_stopwords,
                     )
                     aggregate_result = {
                         "type": "count",
                         "matching_rows": sum(counts_by_source.values()),
                         "counts_by_source": counts_by_source,
-                        "source_filenames": sorted(counts_by_source),
+                        "source_tables": sorted(counts_by_source),
                     }
             if row_value_search_used:
-                rows, strict_row_value_filter_applied = _filter_uploaded_rows_for_specific_row_values(
+                rows, strict_row_value_filter_applied = _filter_rows_for_specific_row_values(
                     query,
                     rows,
                     row_value_count_stopwords,
                 )
                 if strict_row_value_filter_applied:
-                    matched_csv_sources = sorted(
-                        {
-                            str(row.get("source_filename"))
-                            for row in rows
-                            if isinstance(row, dict) and row.get("source_filename")
-                        }
-                    )
+                    matched_table_sources = _source_tables(rows)
                     if aggregate_intent == "count":
                         counts_by_source = _counts_by_source(rows)
                         aggregate_result = {
                             "type": "count",
                             "matching_rows": sum(counts_by_source.values()),
                             "counts_by_source": counts_by_source,
-                            "source_filenames": sorted(counts_by_source),
+                            "source_tables": sorted(counts_by_source),
                         }
             row_search_terms = _expanded_search_terms(query, row_value_count_stopwords)
             matched_terms = _matched_terms(row_search_terms, rows)
@@ -1135,13 +1166,14 @@ class DeterministicLookupService:
                 lookup_plan={
                     "category": category,
                     "search_terms": search_terms,
-                    "selected_csv_assets": selected_assets,
+                    "selected_table_assets": selected_assets,
                     "aggregate_intent": aggregate_intent,
                     "aggregate_result": aggregate_result,
                     "row_value_search_used": row_value_search_used,
                     "strict_row_value_filter_applied": strict_row_value_filter_applied,
                     "distinct_field": distinct_field,
-                    "matched_csv_sources": matched_csv_sources,
+                    "matched_table_sources": matched_table_sources,
+                    "matched_csv_sources": matched_table_sources,
                     "matched_terms": matched_terms,
                     "matched_columns": matched_columns,
                     "resolved_today": resolved_today,
@@ -1157,6 +1189,7 @@ class DeterministicLookupService:
             message = self._staff_rota_message(query, rows)
         else:
             message = "No matching rows found." if not rows else f"Found {len(rows)} matching row(s)."
+        legacy_matched_sources = _source_tables(rows) or matched_table_sources
         return LookupResult(
             category,
             rows,
@@ -1165,13 +1198,14 @@ class DeterministicLookupService:
             lookup_plan={
                 "category": category,
                 "search_terms": search_terms,
-                "selected_csv_assets": selected_assets,
+                "selected_table_assets": selected_assets,
                 "aggregate_intent": aggregate_intent,
                 "aggregate_result": aggregate_result,
                 "row_value_search_used": row_value_search_used,
                 "strict_row_value_filter_applied": strict_row_value_filter_applied,
                 "distinct_field": distinct_field,
-                "matched_csv_sources": matched_csv_sources,
+                "matched_table_sources": matched_table_sources,
+                "matched_csv_sources": legacy_matched_sources,
                 "matched_terms": matched_terms,
                 "matched_columns": matched_columns,
                 "resolved_today": resolved_today,
@@ -1194,7 +1228,7 @@ class DeterministicLookupService:
             return "No matching on-call staff rows found."
 
         uses_staff_rota_rows = any(
-            isinstance(row, dict) and str(row.get("source_filename") or "").lower() == "staff_rota.csv"
+            isinstance(row, dict) and str(row.get("source_table") or "").lower() == "staff_schedule"
             for row in rows
         )
         found_dates: set[str] = set()
@@ -1217,7 +1251,7 @@ class DeterministicLookupService:
                 found_groups.add("nurse")
 
         notes = [
-            f"Found {len(rows)} matching staff_rota.csv row(s)."
+            f"Found {len(rows)} matching staff_schedule row(s)."
             if uses_staff_rota_rows
             else f"Found {len(rows)} matching on-call staff row(s)."
         ]
@@ -1237,14 +1271,20 @@ class DeterministicLookupService:
         filename: str,
         data: bytes,
         access_level: str = "all_staff",
-    ) -> int:
+    ) -> CsvTableSyncResult:
+        semantic_metadata = build_csv_semantic_metadata(filename, data)
+        columns = [str(column).strip() for column in semantic_metadata.get("columns") or [] if str(column).strip()]
+        mapping = detect_csv_table_mapping(filename, columns)
+        if mapping is None:
+            raise UnsupportedCsvLookupError(filename, columns)
+
         decoded = data.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(decoded))
         if not reader.fieldnames:
-            return 0
+            raise UnsupportedCsvLookupError(filename, [])
 
-        rows: list[tuple[str, int, str, str, str]] = []
-        for row_number, row in enumerate(reader, start=1):
+        rows: list[dict[str, str]] = []
+        for row in reader:
             cleaned = {
                 str(key).strip(): str(value).strip()
                 for key, value in row.items()
@@ -1252,59 +1292,55 @@ class DeterministicLookupService:
             }
             if not cleaned:
                 continue
-            row_access_level = cleaned.get("access_level") or access_level
-            searchable_text = " ".join([filename, *cleaned.keys(), *cleaned.values()]).lower()
-            rows.append(
-                (
-                    filename,
-                    row_number,
-                    json.dumps(cleaned, ensure_ascii=False),
-                    searchable_text,
-                    row_access_level,
-                )
-            )
+            cleaned.setdefault("access_level", access_level)
+            rows.append(cleaned)
 
         if not rows:
-            return 0
+            raise UnsupportedCsvLookupError(filename, columns)
 
         with self._connect() as conn:
             with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute("DELETE FROM uploaded_lookup_rows WHERE source_filename = %s", (filename,))
-                cur.executemany(
-                    """
-                    INSERT INTO uploaded_lookup_rows
-                        (source_filename, row_number, row_data, searchable_text, access_level)
-                    VALUES (%s, %s, %s::jsonb, %s, %s)
-                    """,
-                    rows,
-                )
-                self._sync_known_csv_table(cur, filename, [json.loads(row[2]) for row in rows])
+                self._sync_known_csv_table(cur, filename, rows, table_key=str(mapping["table_key"]))
             conn.commit()
-        return len(rows)
+        return CsvTableSyncResult(
+            filename=filename,
+            table_key=str(mapping["table_key"]),
+            table_name=str(mapping["table_name"]),
+            rows_inserted=len(rows),
+            columns=columns,
+            semantic_metadata=semantic_metadata,
+        )
 
-    def _sync_known_csv_table(self, cur, filename: str, rows: Sequence[dict[str, str]]) -> None:
+    def _sync_known_csv_table(self, cur, filename: str, rows: Sequence[dict[str, str]], *, table_key: str | None = None) -> None:
         normalized = filename.lower()
-        if normalized == "staff_rota.csv":
+        resolved_table_key = table_key or str((detect_csv_table_mapping(filename, rows[0].keys() if rows else []) or {}).get("table_key") or "")
+        if normalized == "staff_rota.csv" or resolved_table_key == "schedule":
             self._sync_staff_schedule_rows(cur, rows)
-        elif normalized == "appointment_clinics.csv":
+        elif normalized == "appointment_clinics.csv" or resolved_table_key == "clinic_sessions":
             self._sync_clinic_session_rows(cur, rows)
-        elif normalized == "equipment_assets.csv":
+        elif normalized == "equipment_assets.csv" or resolved_table_key == "equipment":
             self._sync_equipment_asset_rows(cur, rows)
-        elif normalized == "medication_formulary.csv":
+        elif normalized == "medication_formulary.csv" or resolved_table_key == "formulary":
             self._sync_formulary_rows(cur, rows)
-        elif normalized == "ward_directory.csv":
+        elif normalized == "ward_directory.csv" or resolved_table_key == "wards":
             self._sync_ward_rows(cur, rows)
-        elif normalized == "department_contacts.csv":
+        elif normalized == "department_contacts.csv" or resolved_table_key == "contacts":
             self._sync_contact_rows(cur, rows)
-        elif normalized == "audit_schedule.csv":
+        elif normalized == "audit_schedule.csv" or resolved_table_key == "compliance_audits":
             self._sync_audit_rows(cur, rows)
-        elif normalized == "training_compliance.csv":
+        elif normalized == "training_compliance.csv" or resolved_table_key == "training":
             self._sync_training_rows(cur, rows)
+        else:
+            raise UnsupportedCsvLookupError(filename, rows[0].keys() if rows else [])
 
     def _sync_staff_schedule_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
         for index, row in enumerate(rows, start=1):
             department = row.get("department", "")
+            shift_date = row.get("date") or row.get("shift_date")
+            if str(shift_date).strip().lower() == "today":
+                shift_date = date.today().isoformat()
+            elif str(shift_date).strip().lower() == "tomorrow":
+                shift_date = (date.today() + timedelta(days=1)).isoformat()
             cur.execute(
                 """
                 INSERT INTO staff_schedule
@@ -1325,14 +1361,14 @@ class DeterministicLookupService:
                 """,
                 (
                     row.get("schedule_id") or f"SCH-CSV-{index:04d}",
-                    row.get("date") or row.get("shift_date"),
+                    shift_date,
                     _department_id_for_name(department),
                     department,
-                    row.get("role", ""),
-                    row.get("staff_name") or row.get("name", ""),
+                    row.get("role") or ("Doctor" if row.get("doctor") else ""),
+                    row.get("staff_name") or row.get("name") or row.get("doctor") or row.get("clinician") or "",
                     row.get("shift_start") or "00:00",
                     row.get("shift_end") or "00:00",
-                    _truthy(row.get("on_call")),
+                    _truthy(row.get("on_call") or row.get("status") or "yes"),
                     row.get("contact") or "",
                     row.get("access_level") or "clinical",
                 ),
@@ -1569,50 +1605,6 @@ class DeterministicLookupService:
                 ),
             )
 
-    def delete_uploaded_lookup_rows(self) -> int:
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute("DELETE FROM uploaded_lookup_rows")
-                deleted = int(cur.rowcount or 0)
-            conn.commit()
-        return deleted
-
-    @staticmethod
-    def _ensure_uploaded_lookup_table(cur) -> None:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS uploaded_lookup_rows (
-                id BIGSERIAL PRIMARY KEY,
-                source_filename TEXT NOT NULL,
-                row_number INTEGER NOT NULL,
-                row_data JSONB NOT NULL,
-                searchable_text TEXT NOT NULL,
-                access_level TEXT NOT NULL DEFAULT 'all_staff',
-                uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_uploaded_lookup_rows_fts
-            ON uploaded_lookup_rows
-            USING GIN (to_tsvector('simple', searchable_text))
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_uploaded_lookup_rows_source_access
-            ON uploaded_lookup_rows (source_filename, access_level)
-            """
-        )
-
-    def _ensure_uploaded_lookup_schema(self, cur) -> None:
-        if self._uploaded_lookup_schema_ready:
-            return
-        self._ensure_uploaded_lookup_table(cur)
-        self._uploaded_lookup_schema_ready = True
-
     def _connect(self):
         try:
             import psycopg
@@ -1662,382 +1654,170 @@ class DeterministicLookupService:
                     return self._query_equipment(cur, terms, scopes, limit, stopwords)
                 return self._query_directory(cur, primary, scopes, limit, stopwords)
 
-    def _query_uploaded_lookup_rows(
+    def _table_configs_for_names(self, table_names: Sequence[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+        if not table_names:
+            return list(CRM_TABLES.items())
+        requested: set[str] = set()
+        for name in table_names:
+            if not str(name).strip():
+                continue
+            normalized_name = str(name).strip().lower()
+            requested.add(_normalized_key(normalized_name))
+            mapping = CSV_TABLE_MAPPINGS.get(normalized_name)
+            if mapping:
+                table_key = str(mapping.get("table_key") or "")
+                requested.add(_normalized_key(table_key))
+                if table_key in CRM_TABLES:
+                    requested.add(_normalized_key(str(CRM_TABLES[table_key]["table"])))
+        selected: list[tuple[str, dict[str, Any]]] = []
+        for key, config in CRM_TABLES.items():
+            names = {_normalized_key(key), _normalized_key(str(config["table"]))}
+            if names & requested:
+                selected.append((key, config))
+        return selected
+
+    def _row_from_table_result(self, table_name: str, config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_table": table_name,
+            "source_filename": table_name,
+            "row_number": payload.get(config["pk"]),
+            "row": {column: payload.get(column) for column in config["columns"]},
+            "access_level": payload.get("access_level"),
+        }
+
+    def _query_table_value_rows(
         self,
         query: str,
         scopes: tuple[str, ...],
         limit: int,
         *,
-        source_filenames: Sequence[str] | None = None,
+        table_names: Sequence[str] | None = None,
         stopwords: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        legacy_lookup = getattr(self, "_query_uploaded_lookup_rows", None)
+        if callable(legacy_lookup):
+            return legacy_lookup(
+                query,
+                scopes,
+                limit,
+                source_filenames=table_names,
+                stopwords=stopwords,
+            )
         if limit <= 0:
             return []
         terms = _expanded_search_terms(query, stopwords or set())
+        terms = [term for term in terms if len(term) > 2]
         if not terms:
             return []
-        try:
-            return self._query_uploaded_lookup_rows_fts(
-                query,
-                scopes,
-                limit,
-                source_filenames=source_filenames,
-                stopwords=stopwords,
-            )
-        except Exception:
-            return self._query_uploaded_lookup_rows_like(
-                query,
-                scopes,
-                limit,
-                source_filenames=source_filenames,
-                stopwords=stopwords,
-            )
-
-    def _query_uploaded_distinct_field_values(
-        self,
-        scopes: tuple[str, ...],
-        field_candidates: Sequence[str],
-        *,
-        source_filenames: Sequence[str] | None = None,
-        limit: int = 100,
-        output_field: str = "equipment_type",
-        fallback_markers: Sequence[str] = ("equipment", "asset", "device"),
-    ) -> list[dict[str, Any]]:
-        if limit <= 0:
-            return []
-        filename_filter = ""
-        params: list[Any] = [list(scopes)]
-        if source_filenames:
-            filename_filter = "AND source_filename = ANY(%s)"
-            params.append(list(source_filenames))
-        else:
-            filename_filter = """
-                      AND (
-                        {" OR ".join(["lower(source_filename) LIKE %s" for _ in fallback_markers] + ["lower(searchable_text) LIKE %s" for _ in fallback_markers])}
-                      )
-            """
-            marker_patterns = [f"%{marker.lower()}%" for marker in fallback_markers]
-            params.extend([*marker_patterns, *marker_patterns])
-        params.append(max(limit * 50, 500))
-
+        configs = self._table_configs_for_names(table_names)
+        rows: list[dict[str, Any]] = []
+        fetch_limit = max(limit, min(limit * 5, 250))
         with self._connect() as conn:
             with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute(
-                    f"""
-                    SELECT source_filename, row_number, row_data, access_level
-                    FROM uploaded_lookup_rows
-                    WHERE {self._access_sql()}
-                      {filename_filter}
-                    ORDER BY source_filename, row_number
-                    LIMIT %s
-                    """,
-                    tuple(params),
-                )
-                distinct: list[dict[str, Any]] = []
-                seen_values: set[str] = set()
-                for row in cur.fetchall():
-                    row_dict = dict(row)
-                    payload = row_dict.get("row_data")
-                    if isinstance(payload, str):
-                        try:
-                            payload = json.loads(payload)
-                        except json.JSONDecodeError:
-                            payload = {"value": payload}
-                    if not isinstance(payload, dict):
+                for _, config in configs:
+                    search_columns = [column for column in config["search"] if column in config["columns"]]
+                    if not search_columns:
                         continue
-                    value = _row_value(payload, field_candidates)
-                    if value in (None, "", []):
-                        continue
-                    text_value = str(value).strip()
-                    normalized_value = text_value.lower()
-                    if not normalized_value or normalized_value in seen_values:
-                        continue
-                    seen_values.add(normalized_value)
-                    distinct.append(
-                        {
-                            "source_table": "uploaded_lookup_rows",
-                            "source_filename": row_dict.get("source_filename"),
-                            "row_number": row_dict.get("row_number"),
-                            "row": {output_field: text_value},
-                            "access_level": row_dict.get("access_level"),
-                        }
+                    score_params: list[Any] = []
+                    where_params: list[Any] = []
+                    match_parts: list[str] = []
+                    score_parts: list[str] = []
+                    for term in terms[:10]:
+                        pattern = _like(term)
+                        term_parts = [f"lower(CAST({column} AS TEXT)) LIKE %s" for column in search_columns]
+                        match_parts.append("(" + " OR ".join(term_parts) + ")")
+                        where_params.extend([pattern] * len(search_columns))
+                        score_parts.extend([f"CASE WHEN lower(CAST({column} AS TEXT)) LIKE %s THEN 1 ELSE 0 END" for column in search_columns])
+                        score_params.extend([pattern] * len(search_columns))
+                    params = [*score_params, list(scopes), *where_params, fetch_limit]
+                    cur.execute(
+                        f"""
+                        SELECT {", ".join(config["columns"])},
+                               ({' + '.join(score_parts)}) AS match_score
+                        FROM {config["table"]}
+                        WHERE {self._access_sql()}
+                          AND ({" OR ".join(match_parts)})
+                        ORDER BY match_score DESC, {config["pk"]}
+                        LIMIT %s
+                        """,
+                        tuple(params),
                     )
-                    if len(distinct) >= limit:
+                    for result in cur.fetchall():
+                        payload = dict(result)
+                        payload.pop("match_score", None)
+                        row = self._row_from_table_result(str(config["table"]), config, payload)
+                        row["_match_score"] = int(result.get("match_score") or 0)
+                        rows.append(row)
+                    if len(rows) >= fetch_limit:
                         break
-                return distinct
-
-    def _query_uploaded_lookup_rows_like(
-        self,
-        query: str,
-        scopes: tuple[str, ...],
-        limit: int,
-        *,
-        source_filenames: Sequence[str] | None = None,
-        stopwords: set[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        terms = _expanded_search_terms(query, stopwords or set())
-        terms = [term for term in terms if len(term) > 3]
-        if not terms:
-            return []
-        patterns = [_like(term) for term in terms[:8]]
-        where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
-        filename_filter = ""
-        params: list[Any] = [list(scopes)]
-        if source_filenames:
-            filename_filter = "AND source_filename = ANY(%s)"
-            params.append(list(source_filenames))
-        params.extend(patterns)
-        fetch_limit = max(limit, min(limit * 5, 100))
-        params.append(fetch_limit)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute(
-                    f"""
-                    SELECT source_filename, row_number, row_data, access_level, searchable_text
-                    FROM uploaded_lookup_rows
-                    WHERE {self._access_sql()}
-                      {filename_filter}
-                      AND ({where})
-                    ORDER BY source_filename, row_number
-                    LIMIT %s
-                    """,
-                    tuple(params),
-                )
-                rows = []
-                for row in cur.fetchall():
-                    row_dict = dict(row)
-                    payload = row_dict.get("row_data")
-                    if isinstance(payload, str):
-                        try:
-                            payload = json.loads(payload)
-                        except json.JSONDecodeError:
-                            payload = {"value": payload}
-                    rows.append(
-                        {
-                            "source_table": "uploaded_lookup_rows",
-                            "source_filename": row_dict.get("source_filename"),
-                            "row_number": row_dict.get("row_number"),
-                            "row": payload,
-                            "access_level": row_dict.get("access_level"),
-                            "_match_score": sum(
-                                1
-                                for term in terms
-                                if term in str(row_dict.get("searchable_text") or "").lower()
-                            ),
-                        }
-                    )
-                rows.sort(
-                    key=lambda row: (
-                        -int(row.get("_match_score") or 0),
-                        str(row.get("source_filename") or ""),
-                        int(row.get("row_number") or 0),
-                    )
-                )
-                for row in rows:
-                    row.pop("_match_score", None)
-                return rows[:limit]
-
-    def _query_uploaded_lookup_rows_fts(
-        self,
-        query: str,
-        scopes: tuple[str, ...],
-        limit: int,
-        *,
-        source_filenames: Sequence[str] | None = None,
-        stopwords: set[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        terms = _expanded_search_terms(query, stopwords or set())
-        tsquery = _tsquery(terms[:8])
-        if not tsquery:
-            return self._query_uploaded_lookup_rows_like(
-                query,
-                scopes,
-                limit,
-                source_filenames=source_filenames,
-                stopwords=stopwords,
+        rows.sort(
+            key=lambda row: (
+                -int(row.get("_match_score") or 0),
+                str(row.get("source_table") or ""),
+                str(row.get("row_number") or ""),
             )
-        like_terms = [term for term in terms[:8] if len(term) > 3]
-        patterns = [_like(term) for term in like_terms]
-        like_where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
-        match_where = "to_tsvector('simple', searchable_text) @@ to_tsquery('simple', %s)"
-        if like_where:
-            match_where = f"({match_where} OR {like_where})"
-        filename_filter = ""
-        params: list[Any] = [tsquery, list(scopes)]
-        if source_filenames:
-            filename_filter = "AND source_filename = ANY(%s)"
-            params.append(list(source_filenames))
-        params.extend([tsquery, *patterns, max(limit, min(limit * 5, 100))])
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute(
-                    f"""
-                    SELECT source_filename, row_number, row_data, access_level, searchable_text,
-                           ts_rank_cd(to_tsvector('simple', searchable_text), to_tsquery('simple', %s)) AS rank
-                    FROM uploaded_lookup_rows
-                    WHERE {self._access_sql()}
-                      {filename_filter}
-                      AND {match_where}
-                    ORDER BY rank DESC, source_filename, row_number
-                    LIMIT %s
-                    """,
-                    tuple(params),
-                )
-                rows = []
-                for row in cur.fetchall():
-                    row_dict = dict(row)
-                    payload = row_dict.get("row_data")
-                    if isinstance(payload, str):
-                        try:
-                            payload = json.loads(payload)
-                        except json.JSONDecodeError:
-                            payload = {"value": payload}
-                    rows.append(
-                        {
-                            "source_table": "uploaded_lookup_rows",
-                            "source_filename": row_dict.get("source_filename"),
-                            "row_number": row_dict.get("row_number"),
-                            "row": payload,
-                            "access_level": row_dict.get("access_level"),
-                            "_match_score": float(row_dict.get("rank") or 0)
-                            + sum(
-                                1
-                                for term in terms
-                                if term in str(row_dict.get("searchable_text") or "").lower()
-                            ),
-                        }
-                    )
-                rows.sort(
-                    key=lambda row: (
-                        -float(row.get("_match_score") or 0),
-                        str(row.get("source_filename") or ""),
-                        int(row.get("row_number") or 0),
-                    )
-                )
-                for row in rows:
-                    row.pop("_match_score", None)
-                return rows[:limit]
+        )
+        for row in rows:
+            row.pop("_match_score", None)
+        return rows[:limit]
 
-    def _count_uploaded_lookup_rows(
+    def _count_table_value_rows(
         self,
         query: str,
         scopes: tuple[str, ...],
         *,
-        source_filenames: Sequence[str] | None = None,
+        table_names: Sequence[str] | None = None,
         stopwords: set[str] | None = None,
     ) -> dict[str, int]:
+        legacy_count = getattr(self, "_count_uploaded_lookup_rows", None)
+        if callable(legacy_count):
+            return legacy_count(
+                query,
+                scopes,
+                source_filenames=table_names,
+                stopwords=stopwords,
+            )
         terms = _expanded_search_terms(query, stopwords or set())
+        terms = [term for term in terms if len(term) > 2]
         if not terms:
             return {}
-        try:
-            return self._count_uploaded_lookup_rows_fts(
-                query,
-                scopes,
-                source_filenames=source_filenames,
-                stopwords=stopwords,
-            )
-        except Exception:
-            return self._count_uploaded_lookup_rows_like(
-                query,
-                scopes,
-                source_filenames=source_filenames,
-                stopwords=stopwords,
-            )
-
-    def _count_uploaded_lookup_rows_like(
-        self,
-        query: str,
-        scopes: tuple[str, ...],
-        *,
-        source_filenames: Sequence[str] | None = None,
-        stopwords: set[str] | None = None,
-    ) -> dict[str, int]:
-        terms = _expanded_search_terms(query, stopwords or set())
-        terms = [term for term in terms if len(term) > 3]
-        if not terms:
-            return {}
-        patterns = [_like(term) for term in terms[:8]]
-        where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
-        filename_filter = ""
-        params: list[Any] = [list(scopes)]
-        if source_filenames:
-            filename_filter = "AND source_filename = ANY(%s)"
-            params.append(list(source_filenames))
-        params.extend(patterns)
+        counts: dict[str, int] = {}
         with self._connect() as conn:
             with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute(
-                    f"""
-                    SELECT source_filename, count(*) AS matching_rows
-                    FROM uploaded_lookup_rows
-                    WHERE {self._access_sql()}
-                      {filename_filter}
-                      AND ({where})
-                    GROUP BY source_filename
-                    ORDER BY source_filename
-                    """,
-                    tuple(params),
-                )
-                return {str(row["source_filename"]): int(row.get("matching_rows") or 0) for row in cur.fetchall()}
-
-    def _count_uploaded_lookup_rows_fts(
-        self,
-        query: str,
-        scopes: tuple[str, ...],
-        *,
-        source_filenames: Sequence[str] | None = None,
-        stopwords: set[str] | None = None,
-    ) -> dict[str, int]:
-        terms = _expanded_search_terms(query, stopwords or set())
-        tsquery = _tsquery(terms[:8])
-        if not tsquery:
-            return self._count_uploaded_lookup_rows_like(
-                query,
-                scopes,
-                source_filenames=source_filenames,
-                stopwords=stopwords,
-            )
-        like_terms = [term for term in terms[:8] if len(term) > 3]
-        patterns = [_like(term) for term in like_terms]
-        like_where = " OR ".join(["lower(searchable_text) LIKE %s" for _ in patterns])
-        match_where = "to_tsvector('simple', searchable_text) @@ to_tsquery('simple', %s)"
-        if like_where:
-            match_where = f"({match_where} OR {like_where})"
-        filename_filter = ""
-        params: list[Any] = [list(scopes)]
-        if source_filenames:
-            filename_filter = "AND source_filename = ANY(%s)"
-            params.append(list(source_filenames))
-        params.extend([tsquery, *patterns])
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute(
-                    f"""
-                    SELECT source_filename, count(*) AS matching_rows
-                    FROM uploaded_lookup_rows
-                    WHERE {self._access_sql()}
-                      {filename_filter}
-                      AND {match_where}
-                    GROUP BY source_filename
-                    ORDER BY source_filename
-                    """,
-                    tuple(params),
-                )
-                return {str(row["source_filename"]): int(row.get("matching_rows") or 0) for row in cur.fetchall()}
+                for _, config in self._table_configs_for_names(table_names):
+                    search_columns = [column for column in config["search"] if column in config["columns"]]
+                    if not search_columns:
+                        continue
+                    params: list[Any] = [list(scopes)]
+                    match_parts: list[str] = []
+                    for term in terms[:10]:
+                        pattern = _like(term)
+                        term_parts = [f"lower(CAST({column} AS TEXT)) LIKE %s" for column in search_columns]
+                        match_parts.append("(" + " OR ".join(term_parts) + ")")
+                        params.extend([pattern] * len(search_columns))
+                    cur.execute(
+                        f"""
+                        SELECT count(*) AS matching_rows
+                        FROM {config["table"]}
+                        WHERE {self._access_sql()}
+                          AND ({" OR ".join(match_parts)})
+                        """,
+                        tuple(params),
+                    )
+                    row = cur.fetchone() or {}
+                    count = int(row.get("matching_rows") or 0)
+                    if count:
+                        counts[str(config["table"])] = count
+        return counts
 
     def _search_terms(self, query: str, stopwords: set[str]) -> list[str]:
         active_stopwords = STOPWORDS | AGGREGATE_QUERY_MARKERS | stopwords
         return [term for term in _terms(query) if term.lower() not in active_stopwords]
 
-    def _matching_csv_assets(
+    def _matching_table_assets(
         self,
         query: str,
-        csv_assets: Sequence[dict[str, Any]],
+        table_assets: Sequence[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         query_terms = set()
         for term in _terms(query):
@@ -2046,8 +1826,14 @@ class DeterministicLookupService:
         if not query_terms:
             return []
         matches: list[tuple[int, dict[str, Any]]] = []
-        for asset in csv_assets:
-            filename = str(asset.get("filename") or asset.get("title") or "")
+        for asset in table_assets:
+            filename = str(asset.get("filename") or "")
+            table_name = str(asset.get("table_name") or asset.get("source_table") or filename or "")
+            configs = self._table_configs_for_names([table_name]) if table_name else []
+            if table_name and not configs:
+                continue
+            resolved_table = str(configs[0][1]["table"]) if configs else table_name
+            title = str(asset.get("title") or asset.get("name") or table_name)
             columns = [str(column) for column in asset.get("columns") or []]
             semantic_terms = [str(term) for term in asset.get("semantic_terms") or []]
             sample_values = [str(value) for value in asset.get("sample_values") or []]
@@ -2059,7 +1845,7 @@ class DeterministicLookupService:
             elif isinstance(raw_categorical, list):
                 categorical_values.extend(str(value) for value in raw_categorical)
 
-            filename_terms = _normalized_terms(filename)
+            filename_terms = _normalized_terms(" ".join([table_name, title]))
             column_terms = set().union(*(_normalized_terms(column) for column in columns)) if columns else set()
             semantic_field_terms = set().union(*(_normalized_terms(term) for term in semantic_terms)) if semantic_terms else set()
             categorical_terms = (
@@ -2078,8 +1864,10 @@ class DeterministicLookupService:
                     (
                         score,
                         {
-                            "filename": filename,
-                            "title": str(asset.get("title") or filename),
+                            "table_name": resolved_table,
+                            "table_key": str(asset.get("table_key") or asset.get("section") or ""),
+                            "filename": filename or resolved_table,
+                            "title": title,
                             "columns": columns[:20],
                             "row_count": int(asset.get("row_count") or 0),
                             "semantic_terms": semantic_terms[:30],
@@ -2089,8 +1877,15 @@ class DeterministicLookupService:
                         },
                     )
                 )
-        matches.sort(key=lambda item: (-item[0], item[1]["filename"]))
+        matches.sort(key=lambda item: (-item[0], item[1]["table_name"]))
         return [asset for _, asset in matches[:5]]
+
+    def _matching_csv_assets(
+        self,
+        query: str,
+        csv_assets: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return self._matching_table_assets(query, csv_assets)
 
     def _classify(self, query: str) -> str:
         q = query.lower()
@@ -2142,41 +1937,6 @@ class DeterministicLookupService:
         lookup_scopes = _staff_rota_access_scopes(scopes)
         requested_dates = _requested_rota_dates(query)
         requested_groups = _requested_rota_role_groups(query)
-        rota_filenames = [filename.lower() for filename in (source_filenames or ["staff_rota.csv"]) if filename]
-        where_parts = [self._access_sql(), "lower(source_filename) = ANY(%s)"]
-        params: list[Any] = [list(lookup_scopes), rota_filenames]
-        if requested_dates:
-            accepted_dates = list(requested_dates)
-            if _resolved_today() in accepted_dates:
-                accepted_dates.append("Today")
-                accepted_dates.append("today")
-            tomorrow = (date.today() + timedelta(days=1)).isoformat()
-            if tomorrow in accepted_dates:
-                accepted_dates.append("Tomorrow")
-                accepted_dates.append("tomorrow")
-            where_parts.append("COALESCE(row_data->>'date', row_data->>'shift_date', row_data->>'day') = ANY(%s)")
-            params.append(accepted_dates)
-        if _requires_on_call(query):
-            where_parts.append("lower(COALESCE(row_data->>'on_call', 'yes')) IN ('yes', 'true', '1', 'y')")
-
-        role_filters: list[str] = []
-        if "doctor" in requested_groups:
-            role_filters.extend(["%consultant%", "%physician%", "%registrar%", "%doctor%", "%clinician%"])
-        if "nurse" in requested_groups:
-            role_filters.append("%nurse%")
-        if role_filters:
-            where_parts.append(
-                "("
-                + " OR ".join(
-                    [
-                        "lower(COALESCE(row_data->>'role', row_data->>'doctor', row_data->>'staff_name', row_data->>'name', '')) LIKE %s"
-                        for _ in role_filters
-                    ]
-                )
-                + ")"
-            )
-            params.extend(role_filters)
-
         department_terms = [
             term
             for term in _expanded_search_terms(
@@ -2185,23 +1945,7 @@ class DeterministicLookupService:
             )
             if term not in {"list", "me", "available", "availability", "today", "tomorrow", "csv", "file"}
         ]
-        if department_terms:
-            patterns = [_like(term) for term in department_terms[:4]]
-            where_parts.append(
-                "("
-                + " OR ".join(
-                    [
-                        "lower(COALESCE(row_data->>'department', '')) LIKE %s "
-                        "OR lower(COALESCE(row_data->>'staff_name', row_data->>'doctor', row_data->>'nurse', row_data->>'name', '')) LIKE %s"
-                        for _ in patterns
-                    ]
-                )
-                + ")"
-            )
-            for pattern in patterns:
-                params.extend([pattern, pattern])
-
-        schedule_rows = self._query_staff_schedule_table(
+        return self._query_staff_schedule_table(
             query,
             lookup_scopes,
             limit,
@@ -2209,52 +1953,6 @@ class DeterministicLookupService:
             requested_groups=requested_groups,
             department_terms=department_terms,
         )
-        if schedule_rows:
-            return schedule_rows
-
-        params.append(limit)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                self._ensure_uploaded_lookup_schema(cur)
-                cur.execute(
-                    f"""
-                    SELECT source_filename, row_number, row_data, access_level
-                    FROM uploaded_lookup_rows
-                    WHERE {" AND ".join(where_parts)}
-                    ORDER BY COALESCE(row_data->>'date', row_data->>'shift_date', row_data->>'day'),
-                             COALESCE(row_data->>'role', row_data->>'doctor', row_data->>'staff_name', row_data->>'name'),
-                             row_data->>'department',
-                             row_number
-                    LIMIT %s
-                    """,
-                    tuple(params),
-                )
-                rows = []
-                for row in cur.fetchall():
-                    row_dict = dict(row)
-                    payload = row_dict.get("row_data")
-                    if isinstance(payload, str):
-                        try:
-                            payload = json.loads(payload)
-                        except json.JSONDecodeError:
-                            payload = {"value": payload}
-                    rows.append(
-                        {
-                            "source_table": "uploaded_lookup_rows",
-                            "source_filename": row_dict.get("source_filename"),
-                            "row_number": row_dict.get("row_number"),
-                            "row": payload,
-                            "access_level": row_dict.get("access_level"),
-                        }
-                    )
-                return rows or self._query_staff_rota_local_csv(
-                    query,
-                    lookup_scopes,
-                    limit,
-                    requested_dates=requested_dates,
-                    requested_groups=requested_groups,
-                    department_terms=department_terms,
-                )
 
     def _query_staff_schedule_table(
         self,
@@ -2922,6 +2620,16 @@ class DeterministicLookupService:
         return list(cur.fetchall())
 
     def _query_formulary_distinct_values(self, scopes: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+        legacy_distinct = getattr(self, "_query_uploaded_distinct_field_values", None)
+        if callable(legacy_distinct):
+            return legacy_distinct(
+                scopes,
+                ["medicine", "medicine_name", "drug"],
+                source_filenames=["medication_formulary.csv"],
+                limit=limit,
+                output_field="medicine",
+                fallback_markers=("medicine", "medication", "drug", "formulary"),
+            )
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -2946,6 +2654,15 @@ class DeterministicLookupService:
                 ]
 
     def _query_equipment(self, cur, terms: list[str], scopes: tuple[str, ...], limit: int, stopwords: set[str] | None = None):
+        legacy_lookup = getattr(self, "_query_uploaded_lookup_rows", None)
+        if callable(legacy_lookup):
+            return legacy_lookup(
+                " ".join(terms),
+                scopes,
+                limit,
+                source_filenames=["equipment_assets.csv"],
+                stopwords=stopwords,
+            )
         search_terms = _expanded_search_terms(" ".join(terms), stopwords or set())
         useful = [
             term
@@ -2978,6 +2695,16 @@ class DeterministicLookupService:
         return list(cur.fetchall())
 
     def _query_equipment_distinct_values(self, scopes: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+        legacy_distinct = getattr(self, "_query_uploaded_distinct_field_values", None)
+        if callable(legacy_distinct):
+            return legacy_distinct(
+                scopes,
+                ["equipment_type", "asset_type", "device_type"],
+                source_filenames=["equipment_assets.csv"],
+                limit=limit,
+                output_field="equipment_type",
+                fallback_markers=("equipment", "asset", "device"),
+            )
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -3003,6 +2730,15 @@ class DeterministicLookupService:
                 ]
 
     def _count_equipment(self, query: str, scopes: tuple[str, ...], stopwords: set[str] | None = None) -> int:
+        legacy_count = getattr(self, "_count_uploaded_lookup_rows", None)
+        if callable(legacy_count):
+            counts = legacy_count(
+                query,
+                scopes,
+                source_filenames=["equipment_assets.csv"],
+                stopwords=stopwords,
+            )
+            return sum(int(value or 0) for value in counts.values())
         terms = _expanded_search_terms(query, stopwords or set())
         useful = [
             term

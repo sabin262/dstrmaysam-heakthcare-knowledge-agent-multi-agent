@@ -217,3 +217,172 @@ INSERT INTO formulary VALUES
 ('MED-013','Fentanyl patch','Analgesic',false,'No special approval','Per protocol','Respiratory rate','clinical'),
 ('MED-014','Chemotherapy agent A','Oncology',true,'Oncology consultant approval','Dose by body surface area','FBC and renal function','clinical')
 ON CONFLICT (medicine_id) DO NOTHING;
+
+INSERT INTO departments VALUES
+('DEP-DERM','Dermatology','Medicine','Level 3, East Wing','020-5555-1017','dermatology@example.nhs','Dr Isla Moore','Dermatology Advice 020-5555-1717','clinical'),
+('DEP-ENDO','Endocrinology','Medicine','Level 4, West Wing','020-5555-1018','endocrinology@example.nhs','Dr Ethan Clarke','Diabetes Registrar Bleep 2718','clinical'),
+('DEP-GASTRO','Gastroenterology','Medicine','Level 4, South Wing','020-5555-1019','gastro@example.nhs','Dr Olivia Hayes','GI Bleed Bleep 2719','clinical'),
+('DEP-NEURO','Neurology','Neurosciences','Level 5, East Wing','020-5555-1020','neurology@example.nhs','Dr Samuel King','Stroke Registrar Bleep 2720','clinical'),
+('DEP-ORTH','Orthopaedics','Surgical Services','Level 2, West Wing','020-5555-1021','orthopaedics@example.nhs','Dr Mia Foster','Trauma Coordinator 020-5555-1721','clinical'),
+('DEP-URO','Urology','Surgical Services','Level 2, North Wing','020-5555-1022','urology@example.nhs','Dr Jacob Ellis','Urology Registrar Bleep 2722','clinical'),
+('DEP-RHEUM','Rheumatology','Medicine','Level 3, South Wing','020-5555-1023','rheumatology@example.nhs','Dr Amara Khan','Rheumatology Advice 020-5555-1723','clinical'),
+('DEP-HAEM','Haematology','Cancer Services','Level 6, East Wing','020-5555-1024','haematology@example.nhs','Dr Lucas Brown','Haematology Registrar Bleep 2724','clinical'),
+('DEP-DIAB','Diabetes Service','Medicine','Level 4, West Wing','020-5555-1025','diabetes@example.nhs','Nurse Zoe Turner','Diabetes Specialist Nurse 020-5555-1725','clinical'),
+('DEP-THER','Therapies','Rehabilitation','Level 1, West Wing','020-5555-1026','therapies@example.nhs','Amelia Scott','Therapies Coordinator 020-5555-1726','all_staff')
+ON CONFLICT (department_id) DO NOTHING;
+
+INSERT INTO doctors VALUES
+('DOC-021','Dr Isla Moore','Consultant Dermatologist','Dermatology','DEP-DERM','Dermatology','020-5555-2121','isla.moore@example.nhs','2721',true,'clinical'),
+('DOC-022','Dr Ethan Clarke','Consultant Endocrinologist','Endocrinology','DEP-ENDO','Endocrinology','020-5555-2122','ethan.clarke@example.nhs','2722',true,'clinical'),
+('DOC-023','Dr Olivia Hayes','Consultant Gastroenterologist','Gastroenterology','DEP-GASTRO','Gastroenterology','020-5555-2123','olivia.hayes@example.nhs','2723',false,'clinical'),
+('DOC-024','Dr Samuel King','Consultant Neurologist','Neurology','DEP-NEURO','Neurology','020-5555-2124','samuel.king@example.nhs','2724',true,'clinical'),
+('DOC-025','Dr Mia Foster','Consultant Orthopaedic Surgeon','Orthopaedics','DEP-ORTH','Orthopaedics','020-5555-2125','mia.foster@example.nhs','2725',true,'clinical'),
+('DOC-026','Dr Jacob Ellis','Consultant Urologist','Urology','DEP-URO','Urology','020-5555-2126','jacob.ellis@example.nhs','2726',false,'clinical'),
+('DOC-027','Dr Amara Khan','Consultant Rheumatologist','Rheumatology','DEP-RHEUM','Rheumatology','020-5555-2127','amara.khan@example.nhs','2727',false,'clinical'),
+('DOC-028','Dr Lucas Brown','Consultant Haematologist','Haematology','DEP-HAEM','Haematology','020-5555-2128','lucas.brown@example.nhs','2728',true,'clinical'),
+('DOC-029','Dr Zoe Turner','Diabetes Consultant','Diabetes','DEP-DIAB','Diabetes Service','020-5555-2129','zoe.turner@example.nhs','2729',true,'clinical'),
+('DOC-030','Dr Amelia Scott','Rehabilitation Consultant','Therapies','DEP-THER','Therapies','020-5555-2130','amelia.scott@example.nhs','2730',false,'clinical')
+ON CONFLICT (doctor_id) DO NOTHING;
+
+INSERT INTO wards VALUES
+('W17','Dermatology Treatment Unit','DEP-DERM','Dermatology','3',14,5,'Isla Moore','020-6666-2217','all_staff'),
+('W18','Endocrine Assessment Bay','DEP-ENDO','Endocrinology','4',16,4,'Zoe Turner','020-6666-2218','all_staff'),
+('W19','Gastroenterology Ward','DEP-GASTRO','Gastroenterology','4',24,6,'Olivia Hayes','020-6666-2219','clinical'),
+('W20','Neurology Stroke Unit','DEP-NEURO','Neurology','5',22,3,'Samuel King','020-6666-2220','clinical'),
+('W21','Orthopaedic Trauma Ward','DEP-ORTH','Orthopaedics','2',30,7,'Mia Foster','020-6666-2221','all_staff'),
+('W22','Urology Day Unit','DEP-URO','Urology','2',18,5,'Jacob Ellis','020-6666-2222','all_staff'),
+('W23','Rheumatology Infusion Suite','DEP-RHEUM','Rheumatology','3',12,3,'Amara Khan','020-6666-2223','clinical'),
+('W24','Haematology Day Unit','DEP-HAEM','Haematology','6',20,4,'Lucas Brown','020-6666-2224','clinical'),
+('W25','Diabetes Education Room','DEP-DIAB','Diabetes Service','4',10,2,'Zoe Turner','020-6666-2225','all_staff'),
+('W26','Therapy Gym','DEP-THER','Therapies','1',15,8,'Amelia Scott','020-6666-2226','all_staff')
+ON CONFLICT (ward_code) DO NOTHING;
+
+INSERT INTO patients VALUES
+('PAT-023','MRN10023','9000000023','Isabella Turner','1990-01-11','W17','DEP-DERM','Dermatology','Dr Isla Moore','Outpatient','Biologic therapy review','clinical'),
+('PAT-024','MRN10024','9000000024','Henry Adams','1968-05-03','W18','DEP-ENDO','Endocrinology','Dr Ethan Clarke','Assessment','Insulin titration','clinical'),
+('PAT-025','MRN10025','9000000025','Olivia Carter','1976-08-19','W19','DEP-GASTRO','Gastroenterology','Dr Olivia Hayes','Inpatient','Endoscopy planned','clinical'),
+('PAT-026','MRN10026','9000000026','Samuel Wright','1959-12-07','W20','DEP-NEURO','Neurology','Dr Samuel King','Stroke unit','Swallow assessment','clinical'),
+('PAT-027','MRN10027','9000000027','Mia Phillips','1982-02-14','W21','DEP-ORTH','Orthopaedics','Dr Mia Foster','Post-op','Mobility plan','clinical'),
+('PAT-028','MRN10028','9000000028','Jacob Hill','1947-09-27','W22','DEP-URO','Urology','Dr Jacob Ellis','Day case','Catheter review','clinical'),
+('PAT-029','MRN10029','9000000029','Amara Bell','1995-11-08','W23','DEP-RHEUM','Rheumatology','Dr Amara Khan','Day case','Infusion monitoring','clinical'),
+('PAT-030','MRN10030','9000000030','Lucas Wood','1970-04-30','W24','DEP-HAEM','Haematology','Dr Lucas Brown','Day case','Transfusion observation','clinical'),
+('PAT-031','MRN10031','9000000031','Zoe Martin','1988-06-21','W25','DEP-DIAB','Diabetes Service','Dr Zoe Turner','Education','Pump training','clinical'),
+('PAT-032','MRN10032','9000000032','Amelia Cook','1962-10-16','W26','DEP-THER','Therapies','Dr Amelia Scott','Rehabilitation','Falls prevention','clinical')
+ON CONFLICT (patient_id) DO NOTHING;
+
+INSERT INTO organization_contacts VALUES
+('CON-019','Dermatology advice','DEP-DERM','Dermatology','Dermatology Nurse Advice','Specialist Nurse','020-5555-1919','derm.advice@example.nhs','09:00-17:00','routine','clinical'),
+('CON-020','Diabetes escalation','DEP-DIAB','Diabetes Service','Diabetes Specialist Nurse','Specialist Nurse','020-5555-1920','diabetes.nurse@example.nhs','08:00-20:00','urgent','clinical'),
+('CON-021','GI bleed escalation','DEP-GASTRO','Gastroenterology','GI Registrar','Gastroenterology On-call','020-5555-1921','gi.oncall@example.nhs','24/7','urgent','clinical'),
+('CON-022','Stroke thrombolysis','DEP-NEURO','Neurology','Stroke Registrar','Stroke Team','020-5555-1922','stroke.team@example.nhs','24/7','urgent','clinical'),
+('CON-023','Trauma coordinator','DEP-ORTH','Orthopaedics','Trauma Coordinator','Orthopaedic Team','020-5555-1923','trauma.coord@example.nhs','07:00-19:00','urgent','clinical'),
+('CON-024','Urology advice','DEP-URO','Urology','Urology Registrar','Urology On-call','020-5555-1924','urology.oncall@example.nhs','24/7','urgent','clinical'),
+('CON-025','Rheumatology biologics','DEP-RHEUM','Rheumatology','Biologics Nurse','Specialist Nurse','020-5555-1925','biologics@example.nhs','09:00-17:00','routine','clinical'),
+('CON-026','Haematology transfusion','DEP-HAEM','Haematology','Transfusion Practitioner','Haematology Team','020-5555-1926','transfusion@example.nhs','08:00-20:00','urgent','clinical'),
+('CON-027','Therapies discharge','DEP-THER','Therapies','Therapy Coordinator','Therapies Team','020-5555-1927','therapies@example.nhs','08:00-18:00','routine','all_staff'),
+('CON-028','Endocrine advice','DEP-ENDO','Endocrinology','Endocrine Registrar','Endocrinology On-call','020-5555-1928','endo.oncall@example.nhs','24/7','urgent','clinical')
+ON CONFLICT (contact_id) DO NOTHING;
+
+INSERT INTO appointments VALUES
+('APT-019','MRN10023','Isabella Turner','Dermatology Biologics Review','DEP-DERM','Dermatology','2026-07-02','10:00','Dr Isla Moore','Booked','Routine','clinical'),
+('APT-020','MRN10024','Henry Adams','Endocrine Diabetes Review','DEP-ENDO','Endocrinology','2026-07-02','11:00','Dr Ethan Clarke','Booked','Urgent','clinical'),
+('APT-021','MRN10025','Olivia Carter','Gastro Endoscopy Planning','DEP-GASTRO','Gastroenterology','2026-07-03','09:20','Dr Olivia Hayes','Booked','Routine','clinical'),
+('APT-022','MRN10026','Samuel Wright','Stroke Follow-up Clinic','DEP-NEURO','Neurology','2026-07-03','13:40','Dr Samuel King','Booked','Urgent','clinical'),
+('APT-023','MRN10027','Mia Phillips','Orthopaedic Trauma Review','DEP-ORTH','Orthopaedics','2026-07-04','08:45','Dr Mia Foster','Booked','Post-discharge','clinical'),
+('APT-024','MRN10028','Jacob Hill','Urology Catheter Review','DEP-URO','Urology','2026-07-04','12:10','Dr Jacob Ellis','Booked','Routine','clinical'),
+('APT-025','MRN10029','Amara Bell','Rheumatology Infusion Review','DEP-RHEUM','Rheumatology','2026-07-05','09:00','Dr Amara Khan','Booked','Routine','clinical'),
+('APT-026','MRN10030','Lucas Wood','Haematology Day Unit Review','DEP-HAEM','Haematology','2026-07-05','14:15','Dr Lucas Brown','Booked','Urgent','clinical'),
+('APT-027','MRN10031','Zoe Martin','Diabetes Pump Training','DEP-DIAB','Diabetes Service','2026-07-06','10:30','Dr Zoe Turner','Booked','Routine','clinical'),
+('APT-028','MRN10032','Amelia Cook','Therapies Falls Review','DEP-THER','Therapies','2026-07-06','15:00','Dr Amelia Scott','Booked','Routine','clinical')
+ON CONFLICT (appointment_id) DO NOTHING;
+
+INSERT INTO formulary VALUES
+('MED-015','Apixaban','Anticoagulant',false,'Renal function check required','Dose by indication and renal function','Renal function and bleeding risk','clinical'),
+('MED-016','Dapagliflozin','Endocrine',false,'Diabetes or heart failure indication','10 mg once daily where appropriate','Renal function and ketones if unwell','clinical'),
+('MED-017','Prednisolone','Steroid',false,'No special approval','Dose by indication','Glucose and infection risk','all_staff'),
+('MED-018','Methotrexate','Rheumatology',true,'Specialist initiation and shared-care agreement','Weekly dose only','FBC, LFT and renal function','clinical'),
+('MED-019','Adalimumab','Biologic',true,'Specialist biologics approval','Per specialist protocol','TB screen and infection monitoring','clinical'),
+('MED-020','Levetiracetam','Neurology',false,'No special approval','Dose by renal function','Seizure frequency and renal function','clinical'),
+('MED-021','Omeprazole','Gastroenterology',false,'No special approval','20-40 mg once daily','Review long-term need','all_staff'),
+('MED-022','Tranexamic acid','Haematology',false,'No special approval','Dose by indication','Thrombosis risk','clinical'),
+('MED-023','Tamsulosin','Urology',false,'No special approval','400 micrograms once daily','Postural hypotension','all_staff'),
+('MED-024','Diclofenac gel','Analgesic',false,'No special approval','Apply as directed','Skin reaction','all_staff')
+ON CONFLICT (medicine_id) DO NOTHING;
+
+INSERT INTO staff_schedule VALUES
+('SCH-013','2026-06-29','DEP-RAD','Radiology','Consultant Radiologist','Dr James Wilson','08:00','20:00',true,'radiology.oncall@example.nhs','clinical'),
+('SCH-014','2026-06-29','DEP-ED','Emergency Department','Consultant Physician','Dr Marcus Reed','07:00','19:00',true,'emergency_department.oncall@example.nhs','clinical'),
+('SCH-015','2026-06-29','DEP-DERM','Dermatology','Specialist Nurse','Isla Moore','09:00','17:00',false,'derm.advice@example.nhs','clinical'),
+('SCH-016','2026-06-30','DEP-ENDO','Endocrinology','Consultant Endocrinologist','Dr Ethan Clarke','08:00','18:00',true,'endo.oncall@example.nhs','clinical'),
+('SCH-017','2026-06-30','DEP-GASTRO','Gastroenterology','Registrar','Dr Olivia Hayes','19:00','07:00',true,'gi.oncall@example.nhs','clinical'),
+('SCH-018','2026-07-01','DEP-NEURO','Neurology','Stroke Registrar','Dr Samuel King','07:00','19:00',true,'stroke.team@example.nhs','clinical'),
+('SCH-019','2026-07-01','DEP-ORTH','Orthopaedics','Trauma Coordinator','Mia Foster','08:00','20:00',true,'trauma.coord@example.nhs','clinical'),
+('SCH-020','2026-07-02','DEP-URO','Urology','Registrar','Dr Jacob Ellis','19:00','07:00',true,'urology.oncall@example.nhs','clinical'),
+('SCH-021','2026-07-02','DEP-HAEM','Haematology','Consultant Haematologist','Dr Lucas Brown','08:00','20:00',true,'haematology@example.nhs','clinical'),
+('SCH-022','2026-07-03','DEP-THER','Therapies','Senior Physiotherapist','Amelia Scott','08:00','16:00',false,'therapies@example.nhs','all_staff')
+ON CONFLICT (schedule_id) DO NOTHING;
+
+INSERT INTO clinic_sessions VALUES
+('CLN-011','Dermatology Biologics Clinic','2026-07-01','10:00','Dr Isla Moore',14,6,'Routine','clinical'),
+('CLN-012','Endocrine Diabetes Clinic','2026-07-01','13:00','Dr Ethan Clarke',16,4,'Urgent','clinical'),
+('CLN-013','Gastroenterology Endoscopy Clinic','2026-07-02','08:30','Dr Olivia Hayes',12,2,'Routine','clinical'),
+('CLN-014','Neurology Stroke Clinic','2026-07-02','14:00','Dr Samuel King',10,1,'Urgent','clinical'),
+('CLN-015','Orthopaedic Trauma Clinic','2026-07-03','09:00','Dr Mia Foster',18,7,'Post-discharge','clinical'),
+('CLN-016','Urology Review Clinic','2026-07-03','11:30','Dr Jacob Ellis',15,5,'Routine','clinical'),
+('CLN-017','Rheumatology Infusion Clinic','2026-07-04','09:30','Dr Amara Khan',10,3,'Routine','clinical'),
+('CLN-018','Haematology Day Unit Clinic','2026-07-04','13:30','Dr Lucas Brown',12,4,'Urgent','clinical'),
+('CLN-019','Diabetes Education Clinic','2026-07-05','10:00','Dr Zoe Turner',20,10,'Routine','clinical'),
+('CLN-020','Therapies Rehabilitation Clinic','2026-07-05','15:00','Dr Amelia Scott',18,8,'Routine','all_staff')
+ON CONFLICT (clinic_id) DO NOTHING;
+
+INSERT INTO equipment_assets VALUES
+('EQ-0013','Defibrillator','Emergency Department Resus','Available','2026-06-01','2026-09-01','clinical.engineering@example.nhs','all_staff'),
+('EQ-0014','Ventilator','ICU Bay 3','Available','2026-06-02','2026-09-02','clinical.engineering@example.nhs','all_staff'),
+('EQ-0015','Infusion pump','Oncology Day Unit','In use','2026-06-03','2026-09-03','clinical.engineering@example.nhs','all_staff'),
+('EQ-0016','Portable ultrasound','Maternity Triage','Available','2026-06-04','2026-09-04','clinical.engineering@example.nhs','all_staff'),
+('EQ-0017','ECG machine','Cardiology Ward A','Available','2026-06-05','2026-09-05','clinical.engineering@example.nhs','all_staff'),
+('EQ-0018','Dialysis machine','Renal Ward C','Maintenance due','2026-06-06','2026-09-06','clinical.engineering@example.nhs','all_staff'),
+('EQ-0019','Patient monitor','Neurology Stroke Unit','In use','2026-06-07','2026-09-07','clinical.engineering@example.nhs','all_staff'),
+('EQ-0020','Syringe driver','Paediatric Assessment Unit','Available','2026-06-08','2026-09-08','clinical.engineering@example.nhs','all_staff'),
+('EQ-0021','Patient hoist','Therapy Gym','Available','2026-06-09','2026-09-09','clinical.engineering@example.nhs','all_staff'),
+('EQ-0022','Blood pressure monitor','Dermatology Treatment Unit','Available','2026-06-10','2026-09-10','clinical.engineering@example.nhs','all_staff')
+ON CONFLICT (asset_id) DO NOTHING;
+
+INSERT INTO finance_records VALUES
+('FIN-009','MRN10023','Isabella Turner','DEP-DERM','Dermatology','Biologics review','NHS internal',360.00,360.00,0.00,'Paid','2026-06-28','manager'),
+('FIN-010','MRN10024','Henry Adams','DEP-ENDO','Endocrinology','Diabetes review','NHS internal',240.00,0.00,240.00,'Pending','2026-06-29','manager'),
+('FIN-011','MRN10025','Olivia Carter','DEP-GASTRO','Gastroenterology','Endoscopy planning','Private insurer',890.00,400.00,490.00,'Part paid','2026-06-30','manager'),
+('FIN-012','MRN10026','Samuel Wright','DEP-NEURO','Neurology','Stroke follow-up','NHS internal',520.00,520.00,0.00,'Paid','2026-07-01','manager'),
+('FIN-013','MRN10027','Mia Phillips','DEP-ORTH','Orthopaedics','Trauma review','Private insurer',1150.00,0.00,1150.00,'Pending','2026-07-02','manager'),
+('FIN-014','MRN10028','Jacob Hill','DEP-URO','Urology','Catheter review','Self-pay',260.00,260.00,0.00,'Paid','2026-07-03','manager'),
+('FIN-015','MRN10029','Amara Bell','DEP-RHEUM','Rheumatology','Infusion review','NHS internal',440.00,0.00,440.00,'Pending','2026-07-04','manager'),
+('FIN-016','MRN10030','Lucas Wood','DEP-HAEM','Haematology','Transfusion day case','Private insurer',1320.00,800.00,520.00,'Part paid','2026-07-05','manager'),
+('FIN-017','MRN10031','Zoe Martin','DEP-DIAB','Diabetes Service','Pump education','NHS internal',300.00,300.00,0.00,'Paid','2026-07-06','manager'),
+('FIN-018','MRN10032','Amelia Cook','DEP-THER','Therapies','Falls rehabilitation','NHS internal',380.00,0.00,380.00,'Pending','2026-07-07','manager')
+ON CONFLICT (finance_id) DO NOTHING;
+
+INSERT INTO compliance_audits VALUES
+('AUD-001','Data retention evidence audit','DEP-ED','Emergency Department','Information Governance Helpdesk','2026-07-15','Scheduled',88,'manager'),
+('AUD-002','Medicines fridge temperature audit','DEP-PHAR','Pharmacy','Pharmacy Lead','2026-07-16','In progress',91,'manager'),
+('AUD-003','Safeguarding referral audit','DEP-PAED','Paediatrics','Safeguarding Lead','2026-07-17','Scheduled',84,'manager'),
+('AUD-004','Radiology report turnaround audit','DEP-RAD','Radiology','Urgent Radiology Desk','2026-07-18','Scheduled',79,'manager'),
+('AUD-005','ICU central line bundle audit','DEP-ICU','Intensive Care Unit','ICU Outreach','2026-07-19','Complete',94,'manager'),
+('AUD-006','Maternity escalation audit','DEP-MAT','Maternity','Obstetric Emergency Team','2026-07-20','In progress',87,'manager'),
+('AUD-007','Finance billing accuracy audit','DEP-FIN','Finance','Patient Accounts','2026-07-21','Scheduled',90,'manager'),
+('AUD-008','Therapies discharge documentation audit','DEP-THER','Therapies','Therapy Coordinator','2026-07-22','Scheduled',82,'manager'),
+('AUD-009','Haematology transfusion consent audit','DEP-HAEM','Haematology','Transfusion Practitioner','2026-07-23','In progress',89,'manager'),
+('AUD-010','Emergency equipment availability audit','DEP-ED','Emergency Department','Duty Manager','2026-07-24','Scheduled',93,'manager')
+ON CONFLICT (audit_id) DO NOTHING;
+
+INSERT INTO training_records VALUES
+('TRN-001','Ravi Singh','Consultant Physician','DEP-CARD','Cardiology','Information Governance Annual Update','2026-05-01','2027-05-01','Compliant','manager'),
+('TRN-002','Aisha Malik','Clinical Site Manager','DEP-PAED','Paediatrics','Safeguarding Level 3','2026-05-02','2027-05-02','Compliant','manager'),
+('TRN-003','Ella Cooper','Registrar','DEP-RESP','Respiratory','Fire Safety','2026-05-03','2027-05-03','Compliant','manager'),
+('TRN-004','Marcus Reed','Staff Nurse','DEP-ED','Emergency Department','Manual Handling','2026-05-04','2027-05-04','Compliant','manager'),
+('TRN-005','Helen Carter','Consultant Intensivist','DEP-ICU','Intensive Care Unit','Sepsis Pathway Training','2026-05-05','2027-05-05','Compliant','manager'),
+('TRN-006','Chloe Ward','Pharmacist','DEP-PHAR','Pharmacy','Medicines Safety','2026-05-06','2027-05-06','Compliant','manager'),
+('TRN-007','Nadia Ali','Therapist','DEP-RENAL','Renal','Infection Prevention','2026-05-07','2027-05-07','Compliant','manager'),
+('TRN-008','Adam White','Pharmacist','DEP-SURG','Surgery','Controlled Drugs Awareness','2026-05-08','2027-05-08','Compliant','manager'),
+('TRN-009','Ben Morris','Staff Nurse','DEP-ONC','Oncology','Chemotherapy Safety','2026-05-09','2027-05-09','Compliant','manager'),
+('TRN-010','Mina Patel','Ward Manager','DEP-PATH','Pathology','Incident Reporting','2026-05-10','2027-05-10','Compliant','manager')
+ON CONFLICT (training_id) DO NOTHING;

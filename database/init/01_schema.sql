@@ -170,16 +170,6 @@ CREATE TABLE IF NOT EXISTS training_records (
     access_level TEXT NOT NULL DEFAULT 'manager'
 );
 
-CREATE TABLE IF NOT EXISTS uploaded_lookup_rows (
-    id BIGSERIAL PRIMARY KEY,
-    source_filename TEXT NOT NULL,
-    row_number INTEGER NOT NULL,
-    row_data JSONB NOT NULL,
-    searchable_text TEXT NOT NULL,
-    access_level TEXT NOT NULL DEFAULT 'all_staff',
-    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE INDEX IF NOT EXISTS idx_patients_name ON patients (lower(full_name));
 CREATE INDEX IF NOT EXISTS idx_patients_mrn ON patients (lower(mrn));
 CREATE INDEX IF NOT EXISTS idx_doctors_name ON doctors (lower(full_name));
@@ -193,5 +183,3 @@ CREATE INDEX IF NOT EXISTS idx_formulary_name ON formulary (lower(medicine_name)
 CREATE INDEX IF NOT EXISTS idx_equipment_assets_type ON equipment_assets (lower(equipment_type));
 CREATE INDEX IF NOT EXISTS idx_equipment_assets_status ON equipment_assets (lower(status));
 CREATE INDEX IF NOT EXISTS idx_finance_records_patient ON finance_records (lower(patient_name), lower(patient_mrn));
-CREATE INDEX IF NOT EXISTS idx_uploaded_lookup_source ON uploaded_lookup_rows (lower(source_filename));
-CREATE INDEX IF NOT EXISTS idx_uploaded_lookup_search ON uploaded_lookup_rows USING gin (to_tsvector('simple', searchable_text));

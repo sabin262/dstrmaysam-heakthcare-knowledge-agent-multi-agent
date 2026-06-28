@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import csv
-import io
 from typing import Any
 
 from .healthcare import (
@@ -11,7 +9,7 @@ from .healthcare import (
     HealthcareUserContext,
     SourceGovernance,
 )
-from .deterministic_lookup import DeterministicLookupService, _is_staff_rota_query
+from .deterministic_lookup import DeterministicLookupService, detect_csv_table_mapping
 from .retrieval import RetrievalService
 from .storage import DocumentRecord, DocumentStore
 from .tools import AgentTool, format_retrieval_hits
@@ -52,7 +50,7 @@ def _document_payload(record: DocumentRecord) -> dict[str, Any]:
     }
 
 
-def _deterministic_csv_assets(
+def _deterministic_table_assets(
     *,
     documents: DocumentStore,
     user: HealthcareUserContext,
@@ -65,15 +63,25 @@ def _deterministic_csv_assets(
         return assets
     for record in records:
         metadata = record.metadata
-        if str(metadata.get("asset_source") or "") != "postgres_uploaded_lookup":
+        asset_source = str(metadata.get("asset_source") or "")
+        if asset_source not in {"postgres_table_lookup", "postgres_uploaded_lookup"}:
             continue
         columns = [str(column) for column in metadata.get("columns") or [] if str(column).strip()]
         semantic_terms = [str(term) for term in metadata.get("semantic_terms") or [] if str(term).strip()]
         sample_values = [str(value) for value in metadata.get("sample_values") or [] if str(value).strip()]
         categorical_values = metadata.get("categorical_values") or {}
+        source_filename = str(metadata.get("source_filename") or record.title or record.key.rsplit("/", 1)[-1])
+        table_name = str(metadata.get("source_table") or "")
+        table_key = str(metadata.get("source_table_key") or "")
+        if table_name == "uploaded_lookup_rows" or not table_name:
+            mapping = detect_csv_table_mapping(source_filename, columns) or {}
+            table_name = str(mapping.get("table_name") or table_name)
+            table_key = str(mapping.get("table_key") or table_key)
         assets.append(
             {
-                "filename": record.title or record.key.rsplit("/", 1)[-1],
+                "table_name": table_name,
+                "table_key": table_key,
+                "filename": source_filename if asset_source == "postgres_uploaded_lookup" else table_name,
                 "title": record.title,
                 "columns": columns,
                 "semantic_terms": semantic_terms,
@@ -85,26 +93,50 @@ def _deterministic_csv_assets(
     return assets[:20]
 
 
-def _deterministic_tool_description(csv_assets: list[dict[str, Any]]) -> str:
+def _deterministic_tool_description(table_assets: list[dict[str, Any]]) -> str:
     base = (
         "Exact Postgres lookup for patient details, contact information, doctor information, "
         "department directory data, appointments, wards, formulary facts, staff rota availability, "
-        "and uploaded CSV lookup rows including all csv. files "
+        "equipment assets, finance, compliance, training, and table-backed uploaded CSV data. "
         "Use this when the user asks for exact structured values, multiple known values to look up, "
         "counts/totals, inventory or equipment availability, short entity facts such as medicine names, "
         "or table-like data that can answer the question without document interpretation."
     )
-    if not csv_assets:
+    if not table_assets:
         return base
     asset_lines = []
-    for asset in csv_assets[:8]:
+    for asset in table_assets[:8]:
         columns = ", ".join(asset.get("columns") or [])
         semantic_terms = ", ".join((asset.get("semantic_terms") or [])[:12])
         asset_lines.append(
-            f"{asset.get('filename')} ({asset.get('row_count', 0)} rows; "
+            f"{asset.get('table_name')} ({asset.get('row_count', 0)} rows; "
             f"columns: {columns or 'unknown'}; terms: {semantic_terms or 'unknown'})"
         )
-    return base + " Available uploaded CSV lookup assets: " + " | ".join(asset_lines)
+    return base + " Available table lookup assets: " + " | ".join(asset_lines)
+
+
+def _run_deterministic_lookup(
+    deterministic_lookup: DeterministicLookupService,
+    query: str,
+    user: HealthcareUserContext,
+    *,
+    limit: int,
+    table_assets: list[dict[str, Any]],
+) -> str:
+    try:
+        return deterministic_lookup.lookup(
+            query,
+            user,
+            limit=limit,
+            table_assets=table_assets,
+        ).to_json()
+    except TypeError:
+        return deterministic_lookup.lookup(
+            query,
+            user,
+            limit=limit,
+            csv_assets=table_assets,
+        ).to_json()
 
 
 def build_healthcare_agent_tools(
@@ -116,7 +148,7 @@ def build_healthcare_agent_tools(
     safety: HealthcareSafetyGuard,
     deterministic_lookup: DeterministicLookupService | None = None,
 ) -> list[AgentTool]:
-    deterministic_csv_assets = _deterministic_csv_assets(
+    deterministic_table_assets = _deterministic_table_assets(
         documents=documents,
         user=user,
         access=access,
@@ -155,45 +187,28 @@ def build_healthcare_agent_tools(
         return json.dumps(matches[:20], indent=2)
 
     def calendar_rota_lookup(query: str) -> str:
-        """Lookup calendar, clinic, training, on-call, and rota data from approved CSV sources."""
-        if deterministic_lookup is not None and _is_staff_rota_query(query):
-            return deterministic_lookup.lookup(query, user, csv_assets=deterministic_csv_assets).to_json()
-        terms = _terms(query)
-        matches: list[dict[str, Any]] = []
-        records = [
-            record
-            for record in access.filter_documents(user, documents.list_documents())
-            if str(record.metadata.get("domain", "")).lower() in {"calendar", "rota"}
-            or any(marker in record.key.lower() for marker in ["calendar", "rota", "on-call", "oncall"])
-        ]
-        for record in records:
-            if (
-                record.key.startswith("postgres://")
-                or str(record.metadata.get("asset_source")) == "postgres_uploaded_lookup"
-            ):
-                continue
-            if not record.key.lower().endswith(".csv"):
-                continue
-            try:
-                reader = csv.DictReader(io.StringIO(documents.read_text(record.key)))
-                for raw_row in reader:
-                    row = {"source": record.uri, "title": record.title, "row": raw_row}
-                    row_text = json.dumps(raw_row, sort_keys=True).lower()
-                    if not terms or any(term in row_text for term in terms):
-                        matches.append(row)
-            except Exception as exc:
-                matches.append({"source": record.uri, "error": str(exc)})
-        return json.dumps(matches[:10], indent=2)
+        """Lookup calendar, clinic, training, on-call, and rota data from controlled Postgres tables."""
+        if deterministic_lookup is not None:
+            return _run_deterministic_lookup(
+                deterministic_lookup,
+                query,
+                user,
+                limit=_lookup_limit(query),
+                table_assets=deterministic_table_assets,
+            )
+        return json.dumps([], indent=2)
 
     def formulary_table_lookup(query: str) -> str:
         """Exact lookup over formulary, restricted medicines, codes, approvals, and structured facts."""
-        rows = documents.lookup_table(query)
-        filtered = []
-        for row in rows:
-            row_text = json.dumps(row, sort_keys=True).lower()
-            if any(marker in row_text for marker in ["medicine", "formulary", "restricted", "drug", "approval"]):
-                filtered.append(row)
-        return json.dumps((filtered or rows)[:10], indent=2)
+        if deterministic_lookup is not None:
+            return _run_deterministic_lookup(
+                deterministic_lookup,
+                query,
+                user,
+                limit=_lookup_limit(query),
+                table_assets=deterministic_table_assets,
+            )
+        return json.dumps([], indent=2)
 
     def safety_guard(query: str) -> str:
         """Detect clinical risk, missing sources, PHI exposure, or escalation needs."""
@@ -211,12 +226,13 @@ def build_healthcare_agent_tools(
                 },
                 indent=2,
             )
-        return deterministic_lookup.lookup(
+        return _run_deterministic_lookup(
+            deterministic_lookup,
             query,
             user,
             limit=_lookup_limit(query),
-            csv_assets=deterministic_csv_assets,
-        ).to_json()
+            table_assets=deterministic_table_assets,
+        )
 
     return [
         AgentTool(
@@ -238,7 +254,7 @@ def build_healthcare_agent_tools(
             name="calendar_rota_lookup",
             description=(
                 "Lookup clinics, training, and general rota schedules from approved structured sources. "
-                "For staff availability, doctors, nurses, or staff_rota.csv questions, prefer postgres_deterministic_lookup."
+                "For staff availability, doctors, nurses, or on-call questions, prefer postgres_deterministic_lookup."
             ),
             run=calendar_rota_lookup,
         ),
@@ -249,7 +265,7 @@ def build_healthcare_agent_tools(
         ),
         AgentTool(
             name="postgres_deterministic_lookup",
-            description=_deterministic_tool_description(deterministic_csv_assets),
+            description=_deterministic_tool_description(deterministic_table_assets),
             run=postgres_deterministic_lookup,
         ),
         AgentTool(

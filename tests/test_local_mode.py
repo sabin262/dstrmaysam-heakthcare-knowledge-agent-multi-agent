@@ -271,7 +271,9 @@ class LocalModeTests(unittest.TestCase):
             self.assertEqual(result["documents"][0]["key"], "raw/doctor_rota.csv")
             self.assertEqual(result["documents"][0]["uri"], "local://raw/doctor_rota.csv")
             self.assertEqual(result["documents"][0]["ingestion_status"], "lookup_indexed")
-            self.assertEqual(result["documents"][0]["metadata"]["lookup_uri"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
+            self.assertEqual(result["documents"][0]["metadata"]["asset_source"], "postgres_table_lookup")
+            self.assertEqual(result["documents"][0]["metadata"]["source_table"], "staff_schedule")
+            self.assertEqual(result["documents"][0]["metadata"]["lookup_uri"], "postgres://table/staff_schedule")
             self.assertEqual(lookup.uploads[0]["filename"], "doctor_rota.csv")
 
     def test_local_chroma_retrieval_returns_hits_and_neighbors(self):

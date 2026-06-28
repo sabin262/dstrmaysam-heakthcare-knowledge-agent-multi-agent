@@ -1142,7 +1142,7 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
     aggregate_result = lookup_plan.get("aggregate_result") if isinstance(lookup_plan, dict) else None
     if isinstance(aggregate_result, dict) and aggregate_result.get("type") == "count":
         matching_rows = aggregate_result.get("matching_rows")
-        sources = aggregate_result.get("source_filenames") or []
+        sources = aggregate_result.get("source_tables") or aggregate_result.get("source_filenames") or []
         source_text = ", ".join(str(source) for source in sources) if isinstance(sources, list) else ""
         rows = payload.get("rows")
         if isinstance(rows, list) and rows:

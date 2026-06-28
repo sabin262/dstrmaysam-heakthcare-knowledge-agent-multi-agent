@@ -10,9 +10,9 @@ from .ingest import (
     SUPPORTED_RAW_EXTENSIONS,
     checksum_bytes,
     chunk_text,
-    csv_lookup_manifest_record,
     is_metadata_only_manifest_record,
     parse_document,
+    table_lookup_manifest_record,
 )
 from .retrieval import RetrievalHit, RetrievalService
 from .secrets import SecretProvider
@@ -130,12 +130,12 @@ class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMi
             seen_keys.add(key)
             checksum = checksum_bytes(body)
             if key.lower().endswith(".csv"):
-                rows_inserted = self._ingest_lookup_csv(key, body)
+                sync_result = self._ingest_lookup_csv(key, body)
                 manifest_documents.append(
-                    csv_lookup_manifest_record(
+                    table_lookup_manifest_record(
                         key,
                         body,
-                        rows_inserted,
+                        sync_result,
                         "text/csv",
                         uri=_local_uri(key),
                     )
@@ -257,11 +257,11 @@ class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMi
             documents.append({"key": key, "body": path.read_bytes()})
         return documents
 
-    def _ingest_lookup_csv(self, key: str, data: bytes) -> int:
+    def _ingest_lookup_csv(self, key: str, data: bytes) -> Any:
         if self.deterministic_lookup is None or not hasattr(self.deterministic_lookup, "ingest_uploaded_csv"):
-            return 0
+            raise RuntimeError("Deterministic table lookup service is not configured for CSV sync.")
         filename = key.rsplit("/", 1)[-1]
-        return int(self.deterministic_lookup.ingest_uploaded_csv(filename, data))
+        return self.deterministic_lookup.ingest_uploaded_csv(filename, data)
 
     def _load_manifest(self) -> dict[str, Any]:
         path = self._path_for_key(self.settings.s3_manifest_key)

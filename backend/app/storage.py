@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-import io
 import json
 import time
 from dataclasses import dataclass
@@ -59,28 +57,7 @@ class DocumentStore:
         return output
 
     def lookup_table(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        query_terms = [term.lower() for term in query.split() if len(term) >= 3]
-        rows: list[dict[str, Any]] = []
-        for document in self.list_documents():
-            if not document.key.lower().endswith(".csv"):
-                continue
-            if document.key.startswith("postgres://") or str(document.metadata.get("asset_source")) == "postgres_uploaded_lookup":
-                continue
-            text = self.read_text(document.key)
-            reader = csv.DictReader(io.StringIO(text))
-            for row in reader:
-                row_text = " ".join(str(value) for value in row.values()).lower()
-                if any(term in row_text for term in query_terms):
-                    rows.append(
-                        {
-                            "source": document.uri,
-                            "title": document.title,
-                            "row": row,
-                        }
-                    )
-                    if len(rows) >= limit:
-                        return rows
-        return rows
+        return []
 
     @retry_transient
     def read_text(self, key: str) -> str:

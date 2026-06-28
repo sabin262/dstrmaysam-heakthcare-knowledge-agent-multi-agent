@@ -14,8 +14,9 @@ from .retries import retry_transient
 from .secrets import SecretProvider
 
 
-LOOKUP_CSV_ASSET_SOURCE = "postgres_uploaded_lookup"
-LOOKUP_CSV_TABLE = "uploaded_lookup_rows"
+LOOKUP_TABLE_ASSET_SOURCE = "postgres_table_lookup"
+LOOKUP_TABLE_URI_PREFIX = "postgres://table"
+LEGACY_LOOKUP_CSV_ASSET_SOURCE = "postgres_uploaded_lookup"
 SUPPORTED_RAW_EXTENSIONS = (".pdf", ".docx", ".txt", ".md", ".csv")
 
 
@@ -205,26 +206,36 @@ def is_metadata_only_manifest_record(record: dict[str, Any]) -> bool:
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     return (
         str(record.get("ingestion_status") or "") == "metadata_only"
-        or str(metadata.get("asset_source") or "") == LOOKUP_CSV_ASSET_SOURCE
+        or str(metadata.get("asset_source") or "") in {LOOKUP_TABLE_ASSET_SOURCE, LEGACY_LOOKUP_CSV_ASSET_SOURCE}
         or str(record.get("uri") or "").startswith("postgres://")
         or str(record.get("key") or "").startswith("postgres://")
     )
 
 
-def csv_lookup_manifest_record(
+def table_lookup_manifest_record(
     key: str,
     data: bytes,
-    rows_inserted: int,
+    sync_result: Any,
     content_type: str = "text/csv",
     *,
     uri: str | None = None,
 ) -> dict[str, object]:
-    from .deterministic_lookup import build_csv_semantic_metadata
+    from .deterministic_lookup import build_csv_semantic_metadata, detect_csv_table_mapping
 
     filename = key.rsplit("/", 1)[-1]
-    semantic_metadata = build_csv_semantic_metadata(filename, data)
+    if isinstance(sync_result, int):
+        semantic_metadata = build_csv_semantic_metadata(filename, data)
+        mapping = detect_csv_table_mapping(filename, semantic_metadata.get("columns") or []) or {}
+        table_name = str(mapping.get("table_name") or "")
+        table_key = str(mapping.get("table_key") or "")
+        rows_inserted = int(sync_result)
+    else:
+        semantic_metadata = dict(getattr(sync_result, "semantic_metadata", {}) or {})
+        table_name = str(getattr(sync_result, "table_name", "") or "")
+        table_key = str(getattr(sync_result, "table_key", "") or "")
+        rows_inserted = int(getattr(sync_result, "rows_inserted", 0) or 0)
     columns = [str(column).strip() for column in semantic_metadata.get("columns") or [] if str(column).strip()]
-    lookup_uri = f"postgres://{LOOKUP_CSV_TABLE}/{filename}"
+    lookup_uri = f"{LOOKUP_TABLE_URI_PREFIX}/{table_name}"
     checksum = checksum_bytes(data)
     return {
         "key": key,
@@ -242,10 +253,11 @@ def csv_lookup_manifest_record(
             "approval_status": "uploaded",
             "sensitivity": "internal",
             "domain": "deterministic_lookup",
-            "document_type": "csv_table",
+            "document_type": "postgres_table",
             "allowed_roles": ["staff", "admin", "manager", "doctor", "nurse", "pharmacy", "clinical_governance"],
-            "asset_source": LOOKUP_CSV_ASSET_SOURCE,
-            "source_table": LOOKUP_CSV_TABLE,
+            "asset_source": LOOKUP_TABLE_ASSET_SOURCE,
+            "source_table": table_name,
+            "source_table_key": table_key,
             "source_filename": filename,
             "lookup_uri": lookup_uri,
             "row_count": rows_inserted,
@@ -259,6 +271,38 @@ def csv_lookup_manifest_record(
         "chunk_count": 0,
         "ingestion_status": "lookup_indexed",
     }
+
+
+def csv_lookup_manifest_record(
+    key: str,
+    data: bytes,
+    rows_inserted: int,
+    content_type: str = "text/csv",
+    *,
+    uri: str | None = None,
+) -> dict[str, object]:
+    from .deterministic_lookup import build_csv_semantic_metadata, detect_csv_table_mapping
+
+    filename = key.rsplit("/", 1)[-1]
+    semantic_metadata = build_csv_semantic_metadata(filename, data)
+    mapping = detect_csv_table_mapping(filename, semantic_metadata.get("columns") or [])
+    if mapping is None:
+        table_name = "unknown"
+        table_key = ""
+    else:
+        table_name = str(mapping["table_name"])
+        table_key = str(mapping["table_key"])
+
+    class _SyncResult:
+        pass
+
+    sync_result = _SyncResult()
+    sync_result.filename = filename
+    sync_result.table_name = table_name
+    sync_result.table_key = table_key
+    sync_result.rows_inserted = rows_inserted
+    sync_result.semantic_metadata = semantic_metadata
+    return table_lookup_manifest_record(key, data, sync_result, content_type, uri=uri)
 
 
 class IngestionJob:
@@ -300,12 +344,12 @@ class IngestionJob:
             seen_keys.add(key)
             checksum = checksum_bytes(raw_document["body"])
             if key.lower().endswith(".csv"):
-                rows_inserted = self._ingest_lookup_csv(key, raw_document["body"])
+                sync_result = self._ingest_lookup_csv(key, raw_document["body"])
                 manifest_documents.append(
-                    csv_lookup_manifest_record(
+                    table_lookup_manifest_record(
                         key,
                         raw_document["body"],
-                        rows_inserted,
+                        sync_result,
                         "text/csv",
                         uri=f"s3://{self.settings.s3_bucket}/{key}",
                     )
@@ -399,11 +443,11 @@ class IngestionJob:
                 documents.append({"key": key, "body": body})
         return documents
 
-    def _ingest_lookup_csv(self, key: str, data: bytes) -> int:
+    def _ingest_lookup_csv(self, key: str, data: bytes) -> Any:
         if self.deterministic_lookup is None or not hasattr(self.deterministic_lookup, "ingest_uploaded_csv"):
-            return 0
+            raise RuntimeError("Deterministic table lookup service is not configured for CSV sync.")
         filename = key.rsplit("/", 1)[-1]
-        return int(self.deterministic_lookup.ingest_uploaded_csv(filename, data))
+        return self.deterministic_lookup.ingest_uploaded_csv(filename, data)
 
     def _load_documents(self) -> list[ParsedDocument]:
         return [parse_document(document["key"], document["body"]) for document in self._load_raw_documents()]

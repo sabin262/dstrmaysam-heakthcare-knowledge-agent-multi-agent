@@ -21,10 +21,10 @@ from .auth import (
     UserManagementError,
 )
 from .config import AppSettings
-from .deterministic_lookup import DeterministicLookupService
+from .deterministic_lookup import DeterministicLookupService, UnsupportedCsvLookupError, supported_csv_lookup_mappings
 from .healthcare import HealthcareUserContext
 from .history import PostgresChatHistoryRepository, create_chat_history_repository
-from .ingest import IngestionJob, csv_lookup_manifest_record
+from .ingest import IngestionJob, table_lookup_manifest_record
 from .local_chroma import LocalChromaIngestionJob, LocalChromaRetrievalService
 from .models import (
     AdminDocumentUploadResponse,
@@ -734,23 +734,29 @@ async def upload_admin_document(
         key = _raw_document_key(filename)
         content_type = file.content_type or "text/csv"
         try:
+            sync_result = get_deterministic_lookup_service().ingest_uploaded_csv(filename, data)
+        except UnsupportedCsvLookupError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": str(exc),
+                    "supported_mappings": supported_csv_lookup_mappings(),
+                },
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        try:
             get_document_store().upload_document(key, data, content_type)
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         try:
-            rows_inserted = get_deterministic_lookup_service().ingest_uploaded_csv(filename, data)
-        except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-        if rows_inserted == 0:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No CSV lookup rows found")
-        try:
             document_store = get_document_store()
             if hasattr(document_store, "upsert_manifest_record"):
                 document_store.upsert_manifest_record(
-                    csv_lookup_manifest_record(
+                    table_lookup_manifest_record(
                         key,
                         data,
-                        rows_inserted,
+                        sync_result,
                         content_type,
                         uri=f"s3://{get_settings().s3_bucket}/{key}",
                     )
@@ -845,10 +851,6 @@ def delete_admin_document_indexes(
         elif hasattr(retrieval_service, "invalidate_cache"):
             retrieval_service.invalidate_cache()
 
-        deterministic_lookup = get_deterministic_lookup_service()
-        if hasattr(deterministic_lookup, "delete_uploaded_lookup_rows"):
-            deleted_lookup_rows = int(deterministic_lookup.delete_uploaded_lookup_rows())
-
         document_store = get_document_store()
         if hasattr(document_store, "replace_manifest"):
             document_store.replace_manifest(_empty_index_manifest())
@@ -867,7 +869,7 @@ def delete_admin_document_indexes(
         manifest_cleared=True,
         backend="chroma" if get_settings().use_local_resources() else "opensearch",
         raw_documents_preserved=True,
-        deterministic_lookup_preserved=False,
+        deterministic_lookup_preserved=True,
     )
 
 
