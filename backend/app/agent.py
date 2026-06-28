@@ -124,11 +124,15 @@ POLICY_QUERY_MARKERS = {
     "record retention",
 }
 DETERMINISTIC_QUERY_MARKERS = {
+    "bleep",
     "doctor",
+    "clinician",
+    "clinicians",
     "physician",
     "consultant",
     "on call",
     "on-call",
+    "oncall",
     "contact",
     "phone",
     "email",
@@ -147,9 +151,16 @@ DETERMINISTIC_QUERY_MARKERS = {
     "drug",
     "formulary",
     "restricted",
+    "role",
+    "roles",
     "rota",
     "shift",
+    "shifts",
+    "staff",
+    "nurse",
+    "nurses",
     "schedule",
+    "scheduled",
     "today",
     "tomorrow",
 }
@@ -532,6 +543,7 @@ def _has_deterministic_intent(text: str) -> bool:
         or _has_patient_location_lookup_intent(text)
         or _has_patient_appointment_lookup_intent(text)
         or _has_identifier_lookup_intent(text)
+        or _has_staff_rota_lookup_intent(text)
     )
 
 
@@ -565,6 +577,52 @@ def _has_patient_appointment_lookup_intent(text: str) -> bool:
 def _has_identifier_lookup_intent(text: str) -> bool:
     lowered = text.lower()
     return bool(re.search(r"\b(?:mrn|nhs)?\d{4,}\b", lowered)) or bool(re.search(r"\bw\d+\b", lowered))
+
+
+def _has_staff_rota_lookup_intent(text: str) -> bool:
+    lowered = text.lower()
+    if _has_policy_intent(text):
+        return False
+    terms = set(re.findall(r"[A-Za-z0-9@._+-]+", lowered))
+    role_requested = bool(
+        terms
+        & {
+            "clinician",
+            "clinicians",
+            "consultant",
+            "consultants",
+            "doctor",
+            "doctors",
+            "nurse",
+            "nurses",
+            "physician",
+            "physicians",
+            "registrar",
+            "registrars",
+            "staff",
+        }
+    )
+    rota_requested = any(
+        marker in lowered
+        for marker in (
+            "available",
+            "availability",
+            "on call",
+            "on-call",
+            "oncall",
+            "rota",
+            "schedule",
+            "scheduled",
+            "shift",
+            "shifts",
+            "today",
+            "tomorrow",
+        )
+    )
+    generic_on_call = bool(terms & {"who", "which"}) and any(
+        marker in lowered for marker in ("on call", "on-call", "oncall")
+    )
+    return generic_on_call or (role_requested and rota_requested) or "staff rota" in lowered
 
 
 def _has_structured_row_value_intent(text: str) -> bool:
@@ -692,6 +750,7 @@ DETERMINISTIC_NAME_FIELDS = (
     "medicine",
     "drug_name",
     "drug",
+    "patient_name",
     "staff_name",
     "name",
     "full_name",
@@ -706,6 +765,7 @@ DETERMINISTIC_LIST_NAME_FIELDS = (
     "medicine",
     "drug_name",
     "drug",
+    "patient_name",
     "staff_name",
     "name",
     "full_name",
@@ -2798,6 +2858,16 @@ class KnowledgeAgent:
         def first_deterministic_guard_query() -> str:
             return deterministic_guard_queries[0] if deterministic_guard_queries else original_query
 
+        def deterministic_guard_routes() -> list[dict[str, str]]:
+            return [
+                {
+                    "tool": "postgres_deterministic_lookup",
+                    "query": query,
+                    "reason": "supervisor_deterministic_guard",
+                }
+                for query in deterministic_guard_queries
+            ]
+
         def planned_requires_only_deterministic() -> bool:
             return _planned_tool_names(original_query) == ["postgres_deterministic_lookup"]
 
@@ -2817,14 +2887,24 @@ class KnowledgeAgent:
                     normalized_routes.append(route)
             if any(route.get("tool") == "postgres_deterministic_lookup" for route in normalized_routes):
                 return normalized_routes
-            guard_route = {
-                "tool": "postgres_deterministic_lookup",
-                "query": first_deterministic_guard_query(),
-                "reason": "supervisor_deterministic_guard",
-            }
+            guard_routes = deterministic_guard_routes()
             if planned_requires_only_deterministic():
-                return [guard_route]
-            return [*normalized_routes, guard_route]
+                return guard_routes
+            return [*normalized_routes, *guard_routes]
+
+        def route_next_deterministic_guard(state: dict[str, Any], reason: str) -> dict[str, Any]:
+            guard_routes = [
+                {**route, "reason": reason}
+                for route in deterministic_guard_routes()
+            ]
+            first_route = guard_routes.pop(0)
+            state = {**state, "remaining_routes": guard_routes}
+            return route_to_tool(
+                state,
+                tool_name=first_route["tool"],
+                query=first_route["query"],
+                reason=first_route["reason"],
+            )
 
         def deterministic_no_result_seen(state: dict[str, Any]) -> bool:
             for output in list(state.get("tool_outputs") or []):
@@ -2867,12 +2947,7 @@ class KnowledgeAgent:
                         reason="deterministic_no_evidence_rag_fallback",
                     )
                 if deterministic_guard_needed(state):
-                    return route_to_tool(
-                        state,
-                        tool_name="postgres_deterministic_lookup",
-                        query=first_deterministic_guard_query(),
-                        reason="supervisor_deterministic_guard_after_tool",
-                    )
+                    return route_next_deterministic_guard(state, "supervisor_deterministic_guard_after_tool")
                 return append_synthesis_decision(state, "llm_supervisor_routes_complete")
 
             routing_prompt = (
@@ -2923,11 +2998,9 @@ class KnowledgeAgent:
 
             _add_timing(performance, "llm_direct_answer_ms", llm_ms)
             if deterministic_guard_needed(state):
-                return route_to_tool(
+                return route_next_deterministic_guard(
                     {**state, "performance": performance},
-                    tool_name="postgres_deterministic_lookup",
-                    query=first_deterministic_guard_query(),
-                    reason="supervisor_deterministic_guard_direct_answer",
+                    "supervisor_deterministic_guard_direct_answer",
                 )
             return append_synthesis_decision(
                 {
@@ -2993,7 +3066,8 @@ class KnowledgeAgent:
         def synthesize(state: dict[str, Any]) -> dict[str, Any]:
             state = dict(state)
             started = time.perf_counter()
-            tool_context = "\n\n".join(state.get("tool_outputs") or [])
+            tool_outputs = list(state.get("tool_outputs") or [])
+            tool_context = "\n\n".join(tool_outputs)
             tools_used = list(state.get("tools_used") or [])
             performance = dict(state.get("performance") or {})
             direct_answer = str(state.get("direct_answer") or "").strip()
@@ -3003,7 +3077,29 @@ class KnowledgeAgent:
                 synthesis_status = "direct_answer"
                 synthesis_ms = 0
             elif tools_used and set(tools_used) == {"postgres_deterministic_lookup"}:
-                answer = self._offline_answer(query=original_query, tool_context=tool_context)
+                deterministic_queries = [
+                    str(step.get("query") or original_query)
+                    for step in list(state.get("agent_flow") or [])
+                    if isinstance(step, dict) and step.get("agent") == "DeterministicLookupAgent"
+                ]
+                formatted_sections: list[str] = []
+                for index, output in enumerate(tool_outputs):
+                    payload_text = str(output).split("postgres_deterministic_lookup results:", 1)[-1].strip()
+                    try:
+                        payload = json.loads(payload_text)
+                    except json.JSONDecodeError:
+                        payload = {}
+                    section_query = deterministic_queries[index] if index < len(deterministic_queries) else original_query
+                    formatted_sections.append(
+                        _format_deterministic_lookup_payload(
+                            section_query,
+                            payload if isinstance(payload, dict) else {},
+                        )
+                    )
+                answer = "\n\n".join(section for section in formatted_sections if section.strip()) or self._offline_answer(
+                    query=original_query,
+                    tool_context=tool_context,
+                )
                 synthesis_status = "deterministic_structured_answer"
                 synthesis_ms = _elapsed_ms(started)
             else:

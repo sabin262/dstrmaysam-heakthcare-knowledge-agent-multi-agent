@@ -636,6 +636,113 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(lookup.calls[0]["query"], "which doctor is on call")
         self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "llm_supervisor_tool_call")
 
+    def test_compact_oncall_direct_answer_is_forced_to_deterministic_specialist(self):
+        fake_llm = FakeLLM([fake_ai_message("Someone is probably on call.")])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "staff_rota",
+                    "message": "Found 2 matching staff_rota.csv row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "staff_rota.csv",
+                            "row": {
+                                "staff_name": "Aisha Malik",
+                                "role": "Consultant Physician",
+                                "department": "Emergency Department",
+                                "on_call": "Yes",
+                            },
+                        },
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "staff_rota.csv",
+                            "row": {
+                                "staff_name": "Marcus Reed",
+                                "role": "Staff Nurse",
+                                "department": "ICU",
+                                "on_call": "Yes",
+                            },
+                        },
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "who is oncall", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(lookup.calls[0]["query"], "who is oncall")
+        self.assertIn("On-call staff returned by deterministic lookup:", result.answer)
+        self.assertIn("Aisha Malik (Emergency Department, Consultant Physician)", result.answer)
+        self.assertIn("Marcus Reed (ICU, Staff Nurse)", result.answer)
+        self.assertEqual(
+            result.metadata["performance"]["agent_flow"][0]["reason"],
+            "supervisor_deterministic_guard_direct_answer",
+        )
+
+    def test_direct_answer_for_multiple_structured_parts_routes_each_deterministic_specialist(self):
+        class SequencedLookup:
+            def __init__(self):
+                self.calls = []
+                self.results = [
+                    FakeLookupResult(
+                        {
+                            "category": "patients",
+                            "message": "Found 1 matching row(s).",
+                            "rows": [
+                                {
+                                    "source_table": "uploaded_lookup_rows",
+                                    "source_filename": "patients.csv",
+                                    "row": {"patient_name": "Leo Bennett", "ward": "IPD Ward 4", "bed": "B12"},
+                                }
+                            ],
+                        }
+                    ),
+                    FakeLookupResult(
+                        {
+                            "category": "staff_rota",
+                            "message": "Found 1 matching staff_rota.csv row(s).",
+                            "rows": [
+                                {
+                                    "source_table": "uploaded_lookup_rows",
+                                    "source_filename": "staff_rota.csv",
+                                    "row": {
+                                        "staff_name": "Aisha Malik",
+                                        "role": "Consultant Physician",
+                                        "department": "Emergency Department",
+                                        "on_call": "Yes",
+                                    },
+                                }
+                            ],
+                        }
+                    ),
+                ]
+
+            def lookup(self, query, user, limit=10, csv_assets=None):
+                self.calls.append({"query": query, "user": user.user_id, "limit": limit, "csv_assets": list(csv_assets or [])})
+                return self.results.pop(0)
+
+        fake_llm = FakeLLM([fake_ai_message("Leo is somewhere and someone is on call.")])
+        lookup = SequencedLookup()
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer(
+            "user",
+            "where in IPD is Leo Bennett and who is oncall",
+            session_id="session",
+        )
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup", "postgres_deterministic_lookup"])
+        self.assertEqual([call["query"] for call in lookup.calls], ["where in IPD is Leo Bennett", "who is oncall"])
+        self.assertIn("Leo Bennett details are as follows:", result.answer)
+        self.assertIn("- Ward: IPD Ward 4", result.answer)
+        self.assertIn("Aisha Malik details are as follows:", result.answer)
+        self.assertIn("- On call: Yes", result.answer)
+
     def test_sqlish_supervisor_query_uses_original_text_for_deterministic_lookup(self):
         fake_llm = FakeLLM(
             [
