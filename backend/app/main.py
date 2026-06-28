@@ -24,7 +24,7 @@ from .config import AppSettings
 from .deterministic_lookup import DeterministicLookupService, UnsupportedCsvLookupError, supported_csv_lookup_mappings
 from .healthcare import HealthcareUserContext
 from .history import PostgresChatHistoryRepository, create_chat_history_repository
-from .ingest import IngestionJob, table_lookup_manifest_record
+from .ingest import IngestionJob, postgres_table_manifest_records, table_lookup_manifest_record
 from .local_chroma import LocalChromaIngestionJob, LocalChromaRetrievalService
 from .models import (
     AdminDocumentUploadResponse,
@@ -73,6 +73,13 @@ DASHBOARD_RANGE_LABELS = {
     "7d": "7 days",
     "all": "all time",
 }
+MANIFEST_SYNC_STATUS: dict[str, object] = {
+    "checked": False,
+    "up_to_date": False,
+    "requires_attention": False,
+    "message": "Manifest metadata has not been checked yet.",
+}
+MANIFEST_SYNC_LOCK = threading.Lock()
 
 
 @lru_cache
@@ -151,6 +158,94 @@ def get_agent() -> KnowledgeAgent:
     )
 
 
+def _sync_table_metadata_manifest() -> dict[str, object]:
+    with MANIFEST_SYNC_LOCK:
+        checked_at = datetime.now(timezone.utc).isoformat()
+        try:
+            document_store = get_document_store()
+            existing_documents = document_store.list_documents()
+            existing_by_key = {document.key: document for document in existing_documents}
+            expected_records = postgres_table_manifest_records(get_deterministic_lookup_service())
+            expected_by_key = {str(record.get("key")): record for record in expected_records}
+            missing_tables = [
+                str(record.get("metadata", {}).get("source_table") or record.get("key"))
+                for key, record in expected_by_key.items()
+                if key not in existing_by_key
+            ]
+            stale_tables = []
+            for key, record in expected_by_key.items():
+                current = existing_by_key.get(key)
+                if current is None:
+                    continue
+                expected_checksum = str(record.get("checksum") or record.get("metadata", {}).get("checksum") or "")
+                current_checksum = str(current.metadata.get("checksum") or "")
+                if expected_checksum and current_checksum and current_checksum != expected_checksum:
+                    stale_tables.append(str(record.get("metadata", {}).get("source_table") or key))
+
+            manifest_keys = set(existing_by_key)
+            raw_keys = []
+            if hasattr(document_store, "list_raw_document_keys"):
+                raw_keys = list(document_store.list_raw_document_keys())
+            missing_file_keys = sorted(str(key) for key in raw_keys if str(key) not in manifest_keys)
+
+            upsert_result = {"updated": 0, "skipped": 0, "record_count": len(expected_records)}
+            if hasattr(document_store, "upsert_manifest_records"):
+                upsert_result = document_store.upsert_manifest_records(expected_records)
+            else:
+                for record in expected_records:
+                    document_store.upsert_manifest_record(record)
+                upsert_result = {"updated": len(expected_records), "skipped": 0, "record_count": len(expected_records)}
+
+            if int(upsert_result.get("updated") or 0):
+                try:
+                    get_agent().invalidate_caches()
+                except Exception:
+                    pass
+
+            was_stale = bool(missing_tables or stale_tables or missing_file_keys)
+            if missing_file_keys:
+                message = "Manifest is missing raw document entries; run document indexing to rebuild file metadata."
+            elif missing_tables or stale_tables:
+                message = "Postgres table metadata was missing or stale at startup and has been refreshed."
+            else:
+                message = "Manifest includes current Postgres table metadata."
+            status_payload: dict[str, object] = {
+                "checked": True,
+                "checked_at": checked_at,
+                "up_to_date": not missing_file_keys,
+                "was_stale_at_startup": was_stale,
+                "requires_attention": was_stale,
+                "message": message,
+                "expected_table_records": len(expected_records),
+                "missing_tables": missing_tables,
+                "stale_tables": stale_tables,
+                "missing_file_keys": missing_file_keys[:25],
+                "missing_file_count": len(missing_file_keys),
+                "updated_records": int(upsert_result.get("updated") or 0),
+                "skipped_records": int(upsert_result.get("skipped") or 0),
+            }
+        except Exception as exc:
+            status_payload = {
+                "checked": True,
+                "checked_at": checked_at,
+                "up_to_date": False,
+                "was_stale_at_startup": True,
+                "requires_attention": True,
+                "message": "Manifest metadata sync failed.",
+                "error": str(exc),
+                "expected_table_records": 0,
+                "missing_tables": [],
+                "stale_tables": [],
+                "missing_file_keys": [],
+                "missing_file_count": 0,
+                "updated_records": 0,
+                "skipped_records": 0,
+            }
+        MANIFEST_SYNC_STATUS.clear()
+        MANIFEST_SYNC_STATUS.update(status_payload)
+        return dict(MANIFEST_SYNC_STATUS)
+
+
 def _run_backend_warmup() -> None:
     try:
         get_agent().warm_up()
@@ -160,10 +255,9 @@ def _run_backend_warmup() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not get_settings().chat_warmup_enabled:
-        yield
-        return
-    threading.Thread(target=_run_backend_warmup, daemon=True).start()
+    _sync_table_metadata_manifest()
+    if get_settings().chat_warmup_enabled:
+        threading.Thread(target=_run_backend_warmup, daemon=True).start()
     yield
 
 
@@ -624,6 +718,13 @@ def health() -> dict[str, object]:
         "registered_tools": agent.registered_tool_names(),
         "warmup": agent.warmup_status(),
     }
+
+
+@app.get("/system/manifest-status")
+def system_manifest_status(user: HealthcareUserContext = Depends(active_user_context)) -> dict[str, object]:
+    if not MANIFEST_SYNC_STATUS.get("checked"):
+        _sync_table_metadata_manifest()
+    return dict(MANIFEST_SYNC_STATUS)
 
 
 @app.get("/news", response_model=GuardianNewsResponse)

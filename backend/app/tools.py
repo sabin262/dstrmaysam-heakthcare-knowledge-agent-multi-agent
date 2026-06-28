@@ -4,8 +4,10 @@ import json
 from dataclasses import dataclass
 from typing import Callable
 
+from .config import AppSettings
 from .retrieval import RetrievalHit, RetrievalService
 from .storage import DocumentRecord, DocumentStore
+from .tool_execution import ToolExecutionRouter
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,13 @@ def document_catalog_payload(record: DocumentRecord) -> dict[str, object]:
     }
 
 
-def build_agent_tools(retrieval: RetrievalService, documents: DocumentStore) -> list[AgentTool]:
+def build_agent_tools(
+    retrieval: RetrievalService,
+    documents: DocumentStore,
+    settings: AppSettings | None = None,
+) -> list[AgentTool]:
+    router = ToolExecutionRouter(settings)
+
     def rag_search(query: str) -> str:
         """Search indexed knowledge documents using retrieval augmented generation context."""
         return format_retrieval_hits(retrieval.search(query))
@@ -74,20 +82,26 @@ def build_agent_tools(retrieval: RetrievalService, documents: DocumentStore) -> 
         """Look up exact answers in CSV or table-like files stored in S3."""
         return json.dumps(documents.lookup_table(query), indent=2)
 
+    def routed(name: str, local_run: Callable[[str], str]) -> Callable[[str], str]:
+        def run(query: str) -> str:
+            return router.run(name, query, local_run)
+
+        return run
+
     return [
         AgentTool(
             name="rag_search",
             description="Semantic RAG search over indexed knowledge documents with citations.",
-            run=rag_search,
+            run=routed("rag_search", rag_search),
         ),
         AgentTool(
             name="document_catalog",
             description="List and filter available S3 knowledge documents by metadata.",
-            run=document_catalog,
+            run=routed("document_catalog", document_catalog),
         ),
         AgentTool(
             name="table_lookup",
             description="Find exact values from CSV files stored in S3.",
-            run=table_lookup,
+            run=routed("table_lookup", table_lookup),
         ),
     ]

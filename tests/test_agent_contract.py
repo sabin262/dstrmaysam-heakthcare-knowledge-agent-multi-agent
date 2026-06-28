@@ -939,6 +939,68 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(len(fake_llm.messages), 1)
         self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "supervisor_deterministic_guard_direct_answer")
 
+    def test_known_formulary_entity_info_query_is_routed_to_deterministic_specialist(self):
+        class TableDocuments(FakeDocuments):
+            def list_documents(self):
+                return [
+                    *super().list_documents(),
+                    DocumentRecord(
+                        title="Formulary table",
+                        uri="postgres://table/formulary",
+                        key="postgres://table/formulary",
+                        content_type="application/vnd.postgresql.table+json",
+                        metadata={
+                            "asset_source": "postgres_table_lookup",
+                            "source_table": "formulary",
+                            "source_table_key": "formulary",
+                            "columns": ["medicine_id", "medicine_name", "category", "restricted"],
+                            "row_count": 30,
+                            "semantic_terms": ["medicine", "drug", "formulary", "diazepam"],
+                            "categorical_values": {"medicine_name": ["Diazepam"]},
+                            "sample_values": ["medicine_name=Diazepam", "category=Sedative"],
+                            "allowed_roles": ["staff", "admin", "doctor", "pharmacy"],
+                        },
+                    ),
+                ]
+
+        retrieval = FakeRetrieval()
+        fake_llm = FakeLLM([fake_ai_message("Diazepam is probably in a document.")])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "formulary",
+                    "message": "Found 1 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "formulary",
+                            "source_filename": "formulary",
+                            "row": {
+                                "medicine_name": "Diazepam",
+                                "category": "Sedative",
+                                "restricted": "Yes",
+                                "approval_required": "Consultant approval",
+                                "max_adult_dose": "Per protocol",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm, retrieval=retrieval, documents=TableDocuments())
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "info on diazepam", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(lookup.calls[0]["query"], "medicine info on diazepam")
+        self.assertEqual(retrieval.calls, [])
+        self.assertIn("Diazepam details are as follows:", result.answer)
+        self.assertIn("- Category: Sedative", result.answer)
+        self.assertEqual(
+            result.metadata["performance"]["agent_flow"][0]["reason"],
+            "supervisor_deterministic_guard_direct_answer",
+        )
+
     def test_generic_info_query_falls_back_to_rag_when_deterministic_has_no_rows(self):
         retrieval = FakeRetrieval()
         fake_llm = FakeLLM(

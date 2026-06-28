@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .config import AppSettings
 from .healthcare import (
     HealthcareAccessControl,
     HealthcareSafetyGuard,
@@ -12,6 +13,7 @@ from .healthcare import (
 from .deterministic_lookup import DeterministicLookupService, detect_csv_table_mapping
 from .retrieval import RetrievalService
 from .storage import DocumentRecord, DocumentStore
+from .tool_execution import ToolExecutionRouter
 from .tools import AgentTool, format_retrieval_hits
 
 
@@ -147,12 +149,25 @@ def build_healthcare_agent_tools(
     access: HealthcareAccessControl,
     safety: HealthcareSafetyGuard,
     deterministic_lookup: DeterministicLookupService | None = None,
+    settings: AppSettings | None = None,
 ) -> list[AgentTool]:
+    router = ToolExecutionRouter(settings, user)
     deterministic_table_assets = _deterministic_table_assets(
         documents=documents,
         user=user,
         access=access,
     )
+
+    def routed(
+        name: str,
+        local_run,
+        *,
+        extra_payload: dict[str, Any] | None = None,
+    ):
+        def run(query: str) -> str:
+            return router.run(name, query, local_run, extra_payload=extra_payload)
+
+        return run
 
     def document_search(query: str) -> str:
         """Semantic search over approved healthcare documents."""
@@ -238,17 +253,17 @@ def build_healthcare_agent_tools(
         AgentTool(
             name="document_search",
             description="Semantic search over approved healthcare documents.",
-            run=document_search,
+            run=routed("document_search", document_search),
         ),
         AgentTool(
             name="policy_search",
             description="Focused retrieval over approved clinical/admin policies, SOPs, pathways, and guidelines.",
-            run=policy_search,
+            run=routed("policy_search", policy_search),
         ),
         AgentTool(
             name="catalogue_search",
             description="Find healthcare departments, services, owners, systems, and approved tools.",
-            run=catalogue_search,
+            run=routed("catalogue_search", catalogue_search),
         ),
         AgentTool(
             name="calendar_rota_lookup",
@@ -256,21 +271,33 @@ def build_healthcare_agent_tools(
                 "Lookup clinics, training, and general rota schedules from approved structured sources. "
                 "For staff availability, doctors, nurses, or on-call questions, prefer postgres_deterministic_lookup."
             ),
-            run=calendar_rota_lookup,
+            run=routed(
+                "calendar_rota_lookup",
+                calendar_rota_lookup,
+                extra_payload={"table_assets": deterministic_table_assets},
+            ),
         ),
         AgentTool(
             name="formulary_table_lookup",
             description="Lookup restricted medicines, formulary rows, approval rules, codes, and structured facts.",
-            run=formulary_table_lookup,
+            run=routed(
+                "formulary_table_lookup",
+                formulary_table_lookup,
+                extra_payload={"table_assets": deterministic_table_assets},
+            ),
         ),
         AgentTool(
             name="postgres_deterministic_lookup",
             description=_deterministic_tool_description(deterministic_table_assets),
-            run=postgres_deterministic_lookup,
+            run=routed(
+                "postgres_deterministic_lookup",
+                postgres_deterministic_lookup,
+                extra_payload={"table_assets": deterministic_table_assets},
+            ),
         ),
         AgentTool(
             name="safety_guard",
             description="Detect clinical risk, missing sources, PHI exposure, or escalation needs.",
-            run=safety_guard,
+            run=routed("safety_guard", safety_guard),
         ),
     ]

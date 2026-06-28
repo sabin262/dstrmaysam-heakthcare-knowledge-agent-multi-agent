@@ -192,6 +192,32 @@ def delete_json(path: str) -> dict[str, Any]:
     return response.json()
 
 
+def render_manifest_status_overlay() -> None:
+    if "access_token" not in st.session_state:
+        return
+    try:
+        status = get_json("/system/manifest-status")
+    except Exception:
+        return
+    if not isinstance(status, dict) or not status.get("requires_attention"):
+        return
+    message = str(status.get("message") or "Document manifest metadata needs attention.")
+    missing_tables = [str(item) for item in status.get("missing_tables") or []]
+    stale_tables = [str(item) for item in status.get("stale_tables") or []]
+    missing_file_count = int(status.get("missing_file_count") or 0)
+    details: list[str] = []
+    if missing_tables:
+        details.append(f"Missing table metadata: {', '.join(missing_tables[:8])}")
+    if stale_tables:
+        details.append(f"Stale table metadata: {', '.join(stale_tables[:8])}")
+    if missing_file_count:
+        details.append(f"Raw files missing from manifest: {missing_file_count}")
+    error = str(status.get("error") or "").strip()
+    if error:
+        details.append(f"Error: {error}")
+    st.warning(" ".join([message, *details]))
+
+
 @st.cache_data(ttl=NEWS_REFRESH_SECONDS, show_spinner=False)
 def fetch_news_payload() -> dict[str, Any]:
     response = requests.get(f"{BACKEND_URL}/news", timeout=20)
@@ -1880,7 +1906,6 @@ def render_admin_documents() -> None:
                 st.session_state.document_cache = list(result.get("documents", []))
                 st.session_state.document_cache_loaded = True
                 st.session_state.document_cache_error = None
-                render_documents_table(st.session_state.document_cache)
                 if result.get("force_reindex"):
                     st.caption(
                         "Re-indexed unchanged files because the OpenSearch index changed "
@@ -1889,6 +1914,7 @@ def render_admin_documents() -> None:
                     )
                 if result.get("deleted_chunks"):
                     st.caption(f"Deleted {result.get('deleted_chunks')} stale indexed chunk(s)")
+                st.rerun()
             except Exception as exc:
                 st.error(f"Ingestion failed: {exc}")
 
@@ -2215,18 +2241,21 @@ def render_chat_app_page() -> None:
         render_common_sidebar()
         st.divider()
         render_chat_sidebar()
+    render_manifest_status_overlay()
     render_chat_page()
 
 
 def render_news_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
+    render_manifest_status_overlay()
     render_news_page()
 
 
 def render_dashboard_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
+    render_manifest_status_overlay()
     render_admin_dashboard()
 
 
@@ -2261,18 +2290,21 @@ def render_patient_details_app_page() -> None:
             index=default_table_index,
         )
     section = next(key for key in table_keys if CRM_SECTION_LABELS[key] == table_label)
+    render_manifest_status_overlay()
     render_hospital_crm_dashboard(section)
 
 
 def render_users_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
+    render_manifest_status_overlay()
     render_admin_users()
 
 
 def render_documents_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
+    render_manifest_status_overlay()
     render_admin_documents()
 
 
