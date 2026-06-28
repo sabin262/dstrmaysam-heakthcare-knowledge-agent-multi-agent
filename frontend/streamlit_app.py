@@ -5,6 +5,7 @@ import queue
 import textwrap
 import threading
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import streamlit as st
@@ -1602,6 +1603,22 @@ def crm_label(value: str) -> str:
     return CRM_FIELD_LABELS.get(value, value.replace("_", " ").title())
 
 
+def widget_key_part(value: Any) -> str:
+    return "".join(character if character.isalnum() else "_" for character in str(value or "item"))[:80]
+
+
+def render_record_details(record: dict[str, Any], *, labeler=crm_label) -> None:
+    detail_rows = [
+        {"Field": labeler(str(key)), "Value": "" if value is None else str(value)}
+        for key, value in record.items()
+        if value not in (None, "")
+    ]
+    if detail_rows:
+        st.dataframe(detail_rows, hide_index=True, use_container_width=True)
+    else:
+        st.caption("No details available for this record.")
+
+
 def crm_filter_controls(section: str, filters: list[str]) -> dict[str, str]:
     values: dict[str, str] = {}
     if not filters:
@@ -1612,7 +1629,14 @@ def crm_filter_controls(section: str, filters: list[str]) -> dict[str, str]:
     return values
 
 
-def crm_payload_form(section: str, columns: list[str], defaults: dict[str, Any] | None = None, *, disabled_pk: str = "") -> dict[str, Any]:
+def crm_payload_form(
+    section: str,
+    columns: list[str],
+    defaults: dict[str, Any] | None = None,
+    *,
+    disabled_pk: str = "",
+    key_suffix: str = "",
+) -> dict[str, Any]:
     defaults = defaults or {}
     payload: dict[str, Any] = {}
     field_columns = st.columns(3)
@@ -1620,14 +1644,20 @@ def crm_payload_form(section: str, columns: list[str], defaults: dict[str, Any] 
         value = defaults.get(column, "")
         label = crm_label(column)
         disabled = bool(disabled_pk and column == disabled_pk)
+        widget_key = f"crm-{section}-{column}-{widget_key_part(key_suffix or disabled_pk or 'new')}"
         if column in {"on_call", "on_call_today", "restricted"}:
-            payload[column] = field_columns[index % 3].checkbox(label, value=bool(value), disabled=disabled)
+            payload[column] = field_columns[index % 3].checkbox(
+                label,
+                value=bool(value),
+                disabled=disabled,
+                key=widget_key,
+            )
         else:
             payload[column] = field_columns[index % 3].text_input(
                 label,
                 value="" if value is None else str(value),
                 disabled=disabled,
-                key=f"crm-{section}-{column}-{disabled_pk or 'new'}",
+                key=widget_key,
             )
     return payload
 
@@ -1678,8 +1708,77 @@ def render_hospital_crm_dashboard(section: str) -> None:
     metric_columns[1].metric("Section", label)
     metric_columns[2].metric("Primary key", primary_key)
 
+    def render_crm_record_overlay(selected_row: dict[str, Any]) -> None:
+        selected_id = str(selected_row.get(primary_key) or "")
+        render_record_details(selected_row)
+        st.divider()
+        with st.expander("Edit record", expanded=True):
+            with st.form(f"crm-update-{section}-{widget_key_part(selected_id)}"):
+                update_payload = crm_payload_form(
+                    section,
+                    columns,
+                    selected_row,
+                    disabled_pk=primary_key,
+                    key_suffix=selected_id,
+                )
+                update_submitted = st.form_submit_button("Save changes")
+            if update_submitted:
+                try:
+                    patch_json(f"/admin/crm/{section}/{selected_id}", update_payload)
+                    st.session_state.pop(cache_key, None)
+                    st.success("Record updated")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Update failed: {exc}")
+        with st.expander("Delete record", expanded=False):
+            st.warning(f"Delete {selected_id} from {label}.")
+            confirm_delete = st.checkbox(
+                "I understand this will delete the selected record",
+                key=f"crm-delete-confirm-{section}-{widget_key_part(selected_id)}",
+            )
+            if st.button(
+                "Delete record",
+                key=f"crm-delete-{section}-{widget_key_part(selected_id)}",
+                disabled=not confirm_delete,
+            ):
+                try:
+                    delete_json(f"/admin/crm/{section}/{selected_id}")
+                    st.session_state.pop(cache_key, None)
+                    st.success("Record deleted")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Delete failed: {exc}")
+
     if rows:
-        st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.caption("Select a row to view, edit, or delete the record.")
+        table_event = st.dataframe(
+            rows,
+            hide_index=True,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+        selected_rows = []
+        try:
+            selected_rows = list(table_event.selection.rows)
+        except Exception:
+            selected_rows = []
+        if selected_rows:
+            selected_index = int(selected_rows[0])
+            if 0 <= selected_index < len(rows):
+                selected_row = rows[selected_index]
+                selected_title = str(selected_row.get(primary_key) or label)
+                if hasattr(st, "dialog"):
+
+                    @st.dialog(f"{label} record", width="large")
+                    def crm_record_dialog() -> None:
+                        st.subheader(selected_title)
+                        render_crm_record_overlay(selected_row)
+
+                    crm_record_dialog()
+                else:
+                    st.subheader(selected_title)
+                    render_crm_record_overlay(selected_row)
     else:
         st.info(summary.get("message") or f"No {label.lower()} records found.")
 
@@ -1695,33 +1794,6 @@ def render_hospital_crm_dashboard(section: str) -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Create failed: {exc}")
-
-    if rows:
-        options = [str(row.get(primary_key) or "") for row in rows if row.get(primary_key)]
-        selected_id = st.selectbox("Select record to manage", options, key=f"crm-selected-{section}")
-        selected_row = next((row for row in rows if str(row.get(primary_key) or "") == selected_id), {})
-        with st.expander("Update selected record", expanded=False):
-            with st.form(f"crm-update-{section}"):
-                update_payload = crm_payload_form(section, columns, selected_row, disabled_pk=primary_key)
-                update_submitted = st.form_submit_button("Save changes")
-            if update_submitted:
-                try:
-                    patch_json(f"/admin/crm/{section}/{selected_id}", update_payload)
-                    st.session_state.pop(cache_key, None)
-                    st.success("Record updated")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Update failed: {exc}")
-        with st.expander("Delete selected record", expanded=False):
-            st.warning(f"Delete {selected_id} from {label}.")
-            if st.button("Delete selected record", key=f"crm-delete-{section}-{selected_id}"):
-                try:
-                    delete_json(f"/admin/crm/{section}/{selected_id}")
-                    st.session_state.pop(cache_key, None)
-                    st.success("Record deleted")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Delete failed: {exc}")
 
 
 def document_table_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1778,47 +1850,85 @@ def _update_cached_document(updated_document: dict[str, Any]) -> None:
     st.session_state.document_cache_error = None
 
 
-def render_document_metadata_editor(documents: list[dict[str, Any]]) -> None:
-    st.subheader("Document metadata")
-    for index, document in enumerate(documents):
-        metadata = document.get("metadata") or {}
-        title = document.get("title") or document.get("key") or document.get("uri") or "Untitled"
-        current_category = str(metadata.get("domain") or "general")
-        current_type = str(metadata.get("document_type") or "document")
-        raw_roles = metadata.get("allowed_roles", [])
-        if isinstance(raw_roles, str):
-            raw_roles = [raw_roles]
-        current_roles = [role for role in raw_roles if role in KNOWN_ROLES]
-        category_options = _metadata_options(DOCUMENT_CATEGORY_OPTIONS, current_category)
-        type_options = _metadata_options(DOCUMENT_TYPE_OPTIONS, current_type)
-        with st.expander(str(title)):
-            st.caption(document.get("uri", ""))
-            with st.form(f"document-metadata-{index}"):
-                category = st.selectbox(
-                    "Category",
-                    category_options,
-                    index=_option_index(category_options, current_category, "general"),
-                )
-                document_type = st.selectbox(
-                    "Document type",
-                    type_options,
-                    index=_option_index(type_options, current_type, "document"),
-                )
-                allowed_roles = st.multiselect(
-                    "Access roles",
-                    KNOWN_ROLES,
-                    default=current_roles or ["staff"],
-                )
-                submitted = st.form_submit_button("Save metadata")
-            if submitted:
-                if not allowed_roles:
-                    st.error("Select at least one access role")
-                    continue
+def document_detail_label(value: str) -> str:
+    labels = {
+        "title": "Title",
+        "key": "Key",
+        "uri": "URI",
+        "content_type": "Content type",
+        "chunk_count": "Chunks",
+        "ingestion_status": "Status",
+        "domain": "Category",
+        "document_type": "Document type",
+        "allowed_roles": "Access roles",
+    }
+    return labels.get(value, value.replace("_", " ").title())
+
+
+def _remove_cached_document(document_key: str) -> None:
+    st.session_state.document_cache = [
+        document
+        for document in st.session_state.get("document_cache", [])
+        if str(document.get("key") or "") != document_key
+    ]
+    st.session_state.document_cache_loaded = True
+    st.session_state.document_cache_error = None
+
+
+def render_document_detail_overlay(document: dict[str, Any], *, index: int) -> None:
+    metadata = document.get("metadata") or {}
+    title = document.get("title") or document.get("key") or document.get("uri") or "Untitled"
+    document_key = str(document.get("key") or document.get("uri") or title)
+    current_category = str(metadata.get("domain") or "general")
+    current_type = str(metadata.get("document_type") or "document")
+    raw_roles = metadata.get("allowed_roles", [])
+    if isinstance(raw_roles, str):
+        raw_roles = [raw_roles]
+    current_roles = [role for role in raw_roles if role in KNOWN_ROLES]
+    detail_payload = {
+        "title": title,
+        "key": document.get("key", ""),
+        "uri": document.get("uri", ""),
+        "content_type": document.get("content_type", ""),
+        "chunk_count": document.get("chunk_count", 0),
+        "ingestion_status": document.get("ingestion_status") or "indexed",
+        "domain": current_category,
+        "document_type": current_type,
+        "allowed_roles": ", ".join(str(role) for role in raw_roles),
+    }
+    render_record_details(detail_payload, labeler=document_detail_label)
+
+    category_options = _metadata_options(DOCUMENT_CATEGORY_OPTIONS, current_category)
+    type_options = _metadata_options(DOCUMENT_TYPE_OPTIONS, current_type)
+    key_part = widget_key_part(f"{index}-{document_key}")
+    st.divider()
+    with st.expander("Edit metadata", expanded=True):
+        with st.form(f"document-metadata-{key_part}"):
+            category = st.selectbox(
+                "Category",
+                category_options,
+                index=_option_index(category_options, current_category, "general"),
+            )
+            document_type = st.selectbox(
+                "Document type",
+                type_options,
+                index=_option_index(type_options, current_type, "document"),
+            )
+            allowed_roles = st.multiselect(
+                "Access roles",
+                KNOWN_ROLES,
+                default=current_roles or ["staff"],
+            )
+            submitted = st.form_submit_button("Save metadata")
+        if submitted:
+            if not allowed_roles:
+                st.error("Select at least one access role")
+            else:
                 try:
                     updated = patch_json(
                         "/admin/documents/metadata",
                         {
-                            "key": document.get("key") or document.get("uri") or title,
+                            "key": document_key,
                             "category": category,
                             "document_type": document_type,
                             "allowed_roles": allowed_roles,
@@ -1832,6 +1942,20 @@ def render_document_metadata_editor(documents: list[dict[str, Any]]) -> None:
                 except Exception as exc:
                     st.error(f"Metadata update failed: {exc}")
 
+    with st.expander("Delete document", expanded=False):
+        st.warning("This removes the document from the admin manifest and deletes the uploaded source file where available.")
+        confirm_delete = st.checkbox(
+            "I understand this will delete the selected document",
+            key=f"document-delete-confirm-{key_part}",
+        )
+        if st.button("Delete document", key=f"document-delete-{key_part}", disabled=not confirm_delete):
+            try:
+                delete_json(f"/admin/documents/{quote(document_key, safe='')}")
+                _remove_cached_document(str(document.get("key") or ""))
+                st.session_state.document_metadata_notice = "Document deleted. Run ingestion to refresh indexed chunks."
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Document delete failed: {exc}")
 
 def render_documents_table(documents: list[dict[str, Any]]) -> None:
     rows = document_table_rows(documents)
@@ -1846,8 +1970,35 @@ def render_documents_table(documents: list[dict[str, Any]]) -> None:
         "Categories",
         len({str(row.get("Category") or "general") for row in rows}),
     )
-    st.dataframe(rows, hide_index=True, use_container_width=True)
-    render_document_metadata_editor(documents)
+    st.caption("Select a row to view, edit, or delete the document.")
+    table_event = st.dataframe(
+        rows,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+    selected_rows = []
+    try:
+        selected_rows = list(table_event.selection.rows)
+    except Exception:
+        selected_rows = []
+    if selected_rows:
+        selected_index = int(selected_rows[0])
+        if 0 <= selected_index < len(documents):
+            selected_document = documents[selected_index]
+            selected_title = str(selected_document.get("title") or selected_document.get("key") or "Document")
+            if hasattr(st, "dialog"):
+
+                @st.dialog("Document details", width="large")
+                def document_detail_dialog() -> None:
+                    st.subheader(selected_title)
+                    render_document_detail_overlay(selected_document, index=selected_index)
+
+                document_detail_dialog()
+            else:
+                st.subheader(selected_title)
+                render_document_detail_overlay(selected_document, index=selected_index)
 
 
 def render_admin_documents() -> None:

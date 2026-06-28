@@ -50,6 +50,20 @@ def _merge_manifest_records(manifest: dict[str, Any], records: list[dict[str, An
     return {"updated": updated, "skipped": skipped, "record_count": len(records)}
 
 
+def _remove_manifest_record(manifest: dict[str, Any], key: str) -> bool:
+    existing_documents = [
+        dict(item)
+        for item in manifest.get("documents", [])
+        if isinstance(item, dict) and item.get("key")
+    ]
+    documents = [item for item in existing_documents if str(item.get("key") or "") != key]
+    removed = len(documents) != len(existing_documents)
+    if removed:
+        manifest["documents"] = documents
+        manifest["total_chunks"] = sum(int(item.get("chunk_count") or 0) for item in documents)
+    return removed
+
+
 @dataclass
 class DocumentRecord:
     title: str
@@ -156,6 +170,22 @@ class DocumentStore:
         )
         self.invalidate_manifest_cache()
 
+    @retry_transient
+    def delete_document(self, key: str) -> dict[str, Any]:
+        manifest = self._load_manifest()
+        removed_manifest = _remove_manifest_record(manifest, key)
+        if removed_manifest:
+            self.s3_client.put_object(
+                Bucket=self.settings.s3_bucket,
+                Key=self.settings.s3_manifest_key,
+                Body=json.dumps(manifest, indent=2).encode("utf-8"),
+                ContentType="application/json",
+            )
+        if self.settings.s3_bucket:
+            self.s3_client.delete_object(Bucket=self.settings.s3_bucket, Key=key)
+        self.invalidate_manifest_cache()
+        return {"key": key, "deleted_manifest_record": removed_manifest, "deleted_raw_document": True}
+
     def invalidate_manifest_cache(self) -> None:
         self._manifest_cache = None
         self._manifest_cache_expires_at = 0.0
@@ -249,6 +279,21 @@ class LocalDocumentStore(DocumentStore):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         self.invalidate_manifest_cache()
+
+    def delete_document(self, key: str) -> dict[str, Any]:
+        manifest = self._load_manifest()
+        removed_manifest = _remove_manifest_record(manifest, key)
+        if removed_manifest:
+            path = self._path_for_key(self.settings.s3_manifest_key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        raw_path = self._path_for_key(key)
+        raw_deleted = False
+        if raw_path.exists() and raw_path.is_file():
+            raw_path.unlink()
+            raw_deleted = True
+        self.invalidate_manifest_cache()
+        return {"key": key, "deleted_manifest_record": removed_manifest, "deleted_raw_document": raw_deleted}
 
     def _load_manifest(self) -> dict[str, Any]:
         ttl_seconds = max(0, self.settings.document_manifest_cache_ttl_seconds)

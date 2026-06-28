@@ -933,6 +933,39 @@ def update_admin_document_metadata(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
+@app.delete("/admin/documents/{document_key:path}")
+def delete_admin_document(
+    document_key: str,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        document_store = get_document_store()
+        documents = document_store.list_documents()
+        target = next(
+            (
+                document
+                for document in documents
+                if document.key == document_key or document.uri == document_key or document.title == document_key
+            ),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        if not hasattr(document_store, "delete_document"):
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Document store is read-only")
+        result = document_store.delete_document(target.key)
+        if hasattr(document_store, "invalidate_manifest_cache"):
+            document_store.invalidate_manifest_cache()
+        agent = get_agent()
+        if hasattr(agent, "invalidate_caches"):
+            agent.invalidate_caches()
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
 @app.post("/admin/documents/delete-indexes", response_model=AdminDeleteIndexesResponse)
 def delete_admin_document_indexes(
     request: AdminDeleteIndexesRequest,
