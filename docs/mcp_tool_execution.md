@@ -11,20 +11,15 @@ The healthcare backend can execute tools in two modes:
 2. The supervisor/specialist graph chooses a tool as before.
 3. `ToolExecutionRouter` checks `TOOL_EXECUTION_MODE`.
 4. In local mode, it calls the local function.
-5. In MCP mode, it calls `execute_project_tool` on the configured MCP server with:
+5. In MCP mode, it calls the selected MCP tool name directly on the configured MCP server with:
    - `project_id`
-   - selected `tool_name`
    - query
    - user roles/departments
    - tool-specific metadata such as table assets
 
 ## MCP Server
 
-The MCP server repo is `../MCP-Tools`. It exposes a FastMCP SSE endpoint and a generic project dispatcher:
-
-```text
-execute_project_tool(project_id, tool_name, payload)
-```
+The MCP server repo is `../MCP-Tools`. It is an external service, not a service in this project's Compose file. It exposes a FastMCP SSE endpoint and registers each healthcare project tool with `@mcp.tool()`.
 
 The first registered project is:
 
@@ -44,13 +39,13 @@ Current healthcare tool execution includes:
 
 ## Local Compose
 
-The main compose file includes an optional `mcp-tools` service built from `../MCP-Tools`.
+The main compose file does not include an MCP container. Start the external MCP service from `../MCP-Tools`, then point the backend at that service.
 
 Use:
 
 ```env
 TOOL_EXECUTION_MODE=mcp
-MCP_SERVER_URL=http://mcp-tools:8000/sse
+MCP_SERVER_URL=http://host.docker.internal:9000/sse
 MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
 ```
 
