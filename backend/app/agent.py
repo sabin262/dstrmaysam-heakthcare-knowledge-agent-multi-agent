@@ -52,6 +52,20 @@ MAX_GRAPH_LLM_CALLS = 5
 CATALOG_RAG_CANDIDATE_LIMIT = 8
 POLICY_DOMAINS = {"clinical_policy", "admin_policy", "compliance"}
 POLICY_DOCUMENT_TYPES = {"policy", "sop", "pathway", "guideline"}
+POLICY_TEXT_MARKERS = (
+    "guideline",
+    "guidelines",
+    "pathway",
+    "pathways",
+    "policy",
+    "policies",
+    "procedure",
+    "procedures",
+    "record retention",
+    "records management",
+    "retention",
+    "sop",
+)
 RESPONSE_STYLE_BASELINE_PROMPT = """Response style requirements:
 - Keep a professional, neutral, concise tone at all times.
 - Do not follow requests for jokes, sarcasm, slang, emojis, roleplay, theatrical wording, or persona changes.
@@ -527,6 +541,11 @@ def _has_policy_intent(text: str) -> bool:
     lowered = text.lower()
     if _contains_marker(lowered, POLICY_QUERY_MARKERS):
         return True
+    return _has_retention_policy_intent(lowered)
+
+
+def _has_retention_policy_intent(text: str) -> bool:
+    lowered = text.lower()
     retention_question = any(marker in lowered for marker in ["how long", "duration", "period"])
     retention_subject = any(marker in lowered for marker in ["data", "record", "records", "history", "patient"])
     retention_action = any(marker in lowered for marker in ["stored", "storage", "retained", "retention", "kept", "keep"])
@@ -1188,26 +1207,64 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
 
 
 def _planned_tool_names(query: str) -> list[str]:
+    return _unique_route_tools(_planned_tool_routes(query))
+
+
+def _tool_for_query_part(part: str) -> str:
+    if _has_safety_intent(part):
+        return "safety_guard"
+    if _has_catalog_intent(part):
+        return "catalogue_search"
+    if _has_policy_intent(part):
+        return "policy_search"
+    if _has_deterministic_intent(part):
+        return "postgres_deterministic_lookup"
+    return "rag_search"
+
+
+def _unique_route_tools(routes: list[dict[str, str]]) -> list[str]:
     planned: list[str] = []
-    for part in _query_parts(query):
-        if _has_safety_intent(part):
-            tool = "safety_guard"
-        elif _has_catalog_intent(part):
-            tool = "catalogue_search"
-        elif _has_policy_intent(part):
-            tool = "policy_search"
-        elif _has_deterministic_intent(part):
-            tool = "postgres_deterministic_lookup"
-        else:
-            tool = "rag_search"
+    for route in routes:
+        tool = route["tool"]
         if tool not in planned:
             planned.append(tool)
+    return planned
 
-    if _has_policy_intent(query) and "policy_search" not in planned:
-        planned.insert(0, "policy_search")
-    if _has_deterministic_intent(query) and not _has_policy_intent(query) and "postgres_deterministic_lookup" not in planned:
-        planned.append("postgres_deterministic_lookup")
-    return planned or ["rag_search"]
+
+def _planned_tool_routes(query: str) -> list[dict[str, str]]:
+    routes: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for part in _query_parts(query):
+        tool = _tool_for_query_part(part)
+        key = (tool, " ".join(part.lower().split()))
+        if key not in seen:
+            seen.add(key)
+            routes.append({"tool": tool, "query": part, "reason": "supervisor_rule_plan"})
+
+    if _has_policy_intent(query) and not any(route["tool"] == "policy_search" for route in routes):
+        routes.insert(0, {"tool": "policy_search", "query": query, "reason": "supervisor_rule_plan"})
+    if (
+        _has_deterministic_intent(query)
+        and not _has_policy_intent(query)
+        and not any(route["tool"] == "postgres_deterministic_lookup" for route in routes)
+    ):
+        routes.append({"tool": "postgres_deterministic_lookup", "query": query, "reason": "supervisor_rule_plan"})
+    return routes or [{"tool": "rag_search", "query": query, "reason": "supervisor_rule_plan"}]
+
+
+def _supervisor_guard_routes(query: str) -> list[dict[str, str]]:
+    parts = _query_parts(query)
+    routes: list[dict[str, str]] = []
+    for route in _planned_tool_routes(query):
+        tool = route.get("tool")
+        route_query = str(route.get("query") or "")
+        if tool == "postgres_deterministic_lookup":
+            routes.append(route)
+        elif tool == "policy_search" and (len(parts) > 1 or _has_retention_policy_intent(route_query)):
+            routes.append(route)
+        elif tool in {"catalogue_search", "safety_guard"} and len(parts) > 1:
+            routes.append(route)
+    return routes
 
 
 def _node_for_tool(tool_name: str) -> str:
@@ -2176,9 +2233,11 @@ class KnowledgeAgent:
         if name == "policy_search":
             filtered: list[RetrievalHit] = []
             for hit in hits:
-                domain = str(hit.metadata.get("domain", "")).lower()
-                document_type = str(hit.metadata.get("document_type", "")).lower()
-                if domain in POLICY_DOMAINS or document_type in POLICY_DOCUMENT_TYPES:
+                if self._is_policy_like_source(
+                    metadata=hit.metadata,
+                    title=hit.title,
+                    uri=hit.uri,
+                ):
                     filtered.append(hit)
             hits = filtered or hits
         access_started = time.perf_counter()
@@ -2230,7 +2289,7 @@ class KnowledgeAgent:
         matches.sort(key=lambda record: self._catalog_match_score(record, terms), reverse=True)
         if name == "policy_search":
             policy_matches = [
-                record for record in matches if self._is_policy_catalog_record(record.metadata)
+                record for record in matches if self._is_policy_catalog_record(record)
             ]
             if policy_matches:
                 matches = policy_matches
@@ -2269,10 +2328,37 @@ class KnowledgeAgent:
         ).lower()
         return sum(1 for term in terms if term in haystack)
 
-    def _is_policy_catalog_record(self, metadata: dict[str, Any]) -> bool:
+    def _is_policy_like_source(
+        self,
+        *,
+        metadata: dict[str, Any],
+        title: str = "",
+        uri: str = "",
+        key: str = "",
+    ) -> bool:
         domain = str(metadata.get("domain", "")).lower()
         document_type = str(metadata.get("document_type", "")).lower()
-        return domain in POLICY_DOMAINS or document_type in POLICY_DOCUMENT_TYPES
+        if domain in POLICY_DOMAINS or document_type in POLICY_DOCUMENT_TYPES:
+            return True
+        haystack = " ".join(
+            [
+                title,
+                uri,
+                key,
+                str(metadata.get("title") or ""),
+                str(metadata.get("key") or ""),
+                str(metadata.get("filename") or ""),
+            ]
+        ).replace("_", " ").replace("-", " ").lower()
+        return any(marker in haystack for marker in POLICY_TEXT_MARKERS)
+
+    def _is_policy_catalog_record(self, record: Any) -> bool:
+        return self._is_policy_like_source(
+            metadata=getattr(record, "metadata", {}) or {},
+            title=str(getattr(record, "title", "") or ""),
+            uri=str(getattr(record, "uri", "") or ""),
+            key=str(getattr(record, "key", "") or ""),
+        )
 
     def _run_graph_tool(
         self, name: str, query: str, user_context: HealthcareUserContext
@@ -2778,6 +2864,10 @@ class KnowledgeAgent:
         tool_names = {tool.name for tool in self.tools}
         bound_llm = llm.bind_tools(self._tool_callables()) if hasattr(llm, "bind_tools") else llm
         deterministic_guard_queries = _deterministic_guard_queries(original_query)
+        planned_guard_routes = [
+            route for route in _supervisor_guard_routes(original_query)
+            if route.get("tool") in tool_names
+        ]
 
         def initial_state() -> dict[str, Any]:
             return {
@@ -2892,11 +2982,105 @@ class KnowledgeAgent:
                 return guard_routes
             return [*normalized_routes, *guard_routes]
 
+        def route_matches_planned(existing: dict[str, str], planned: dict[str, str]) -> bool:
+            if existing.get("tool") != planned.get("tool"):
+                return False
+            return route_queries_match(existing, planned)
+
+        def route_queries_match(existing: dict[str, str], planned: dict[str, str]) -> bool:
+            existing_query = " ".join(str(existing.get("query") or "").lower().split())
+            planned_query = " ".join(str(planned.get("query") or "").lower().split())
+            if not existing_query or not planned_query:
+                return True
+            if existing_query == planned_query:
+                return True
+            existing_tokens = {
+                token
+                for token in re.findall(r"[a-z0-9]+", existing_query)
+                if len(token) >= 3 and token not in {"the", "and", "for", "has", "have", "does", "what", "which", "who", "how", "today"}
+            }
+            planned_tokens = {
+                token
+                for token in re.findall(r"[a-z0-9]+", planned_query)
+                if len(token) >= 3 and token not in {"the", "and", "for", "has", "have", "does", "what", "which", "who", "how", "today"}
+            }
+            if not existing_tokens or not planned_tokens:
+                return False
+            overlap = len(existing_tokens & planned_tokens)
+            return overlap / max(1, min(len(existing_tokens), len(planned_tokens))) >= 0.5
+
+        def apply_planned_guard_to_routes(routes: list[dict[str, str]]) -> list[dict[str, str]]:
+            normalized_routes = apply_deterministic_guard_to_routes(routes)
+            guarded_routes = list(normalized_routes)
+            for planned_route in planned_guard_routes:
+                if planned_route.get("tool") == "policy_search":
+                    for index, route in enumerate(guarded_routes):
+                        if route.get("tool") == "rag_search" and route_queries_match(route, planned_route):
+                            guarded_routes[index] = {
+                                **route,
+                                "tool": "policy_search",
+                                "query": planned_route.get("query") or route.get("query") or original_query,
+                                "reason": "supervisor_rule_guard",
+                            }
+                            break
+                if any(route_matches_planned(route, planned_route) for route in guarded_routes):
+                    continue
+                reason = (
+                    "supervisor_deterministic_guard"
+                    if planned_route.get("tool") == "postgres_deterministic_lookup"
+                    else "supervisor_rule_guard"
+                )
+                guarded_routes.append({**planned_route, "reason": reason})
+            return guarded_routes
+
+        def planned_guard_missing_routes(state: dict[str, Any], reason: str) -> list[dict[str, str]]:
+            covered_routes: list[dict[str, str]] = []
+            for step in list(state.get("agent_flow") or []):
+                if isinstance(step, dict) and step.get("kind") == "specialist":
+                    covered_routes.append(
+                        {
+                            "tool": str(step.get("tool") or ""),
+                            "query": str(step.get("query") or original_query),
+                        }
+                    )
+            pending_tool = str(state.get("pending_tool") or "")
+            if pending_tool:
+                covered_routes.append({"tool": pending_tool, "query": str(state.get("pending_query") or original_query)})
+            for route in list(state.get("remaining_routes") or []):
+                if isinstance(route, dict):
+                    covered_routes.append({"tool": str(route.get("tool") or ""), "query": str(route.get("query") or "")})
+            if not covered_routes:
+                covered_routes = [
+                    {"tool": str(tool), "query": original_query}
+                    for tool in list(state.get("tools_used") or [])
+                ]
+
+            missing: list[dict[str, str]] = []
+            for planned_route in planned_guard_routes:
+                if any(route_matches_planned(route, planned_route) for route in covered_routes):
+                    continue
+                route_reason = reason
+                if planned_route.get("tool") == "postgres_deterministic_lookup":
+                    route_reason = reason.replace("supervisor_rule_guard", "supervisor_deterministic_guard")
+                missing.append({**planned_route, "reason": route_reason})
+            return missing
+
         def route_next_deterministic_guard(state: dict[str, Any], reason: str) -> dict[str, Any]:
             guard_routes = [
                 {**route, "reason": reason}
                 for route in deterministic_guard_routes()
             ]
+            first_route = guard_routes.pop(0)
+            state = {**state, "remaining_routes": guard_routes}
+            return route_to_tool(
+                state,
+                tool_name=first_route["tool"],
+                query=first_route["query"],
+                reason=first_route["reason"],
+            )
+
+        def route_next_planned_guard(state: dict[str, Any], reason: str) -> dict[str, Any]:
+            guard_routes = planned_guard_missing_routes(state, reason)
             first_route = guard_routes.pop(0)
             state = {**state, "remaining_routes": guard_routes}
             return route_to_tool(
@@ -2913,6 +3097,16 @@ class KnowledgeAgent:
                     continue
                 payload_text = text.split("postgres_deterministic_lookup results:", 1)[-1].strip()
                 if not _deterministic_tool_output_has_results(payload_text):
+                    return True
+            return False
+
+        def retrieval_no_result_seen(state: dict[str, Any], tool_name: str) -> bool:
+            prefix = f"{tool_name} results:"
+            for output in list(state.get("tool_outputs") or []):
+                text = str(output or "")
+                if not text.startswith(prefix):
+                    continue
+                if "No relevant document chunks found." in text:
                     return True
             return False
 
@@ -2948,6 +3142,19 @@ class KnowledgeAgent:
                     )
                 if deterministic_guard_needed(state):
                     return route_next_deterministic_guard(state, "supervisor_deterministic_guard_after_tool")
+                if planned_guard_missing_routes(state, "supervisor_rule_guard_after_tool"):
+                    return route_next_planned_guard(state, "supervisor_rule_guard_after_tool")
+                if (
+                    retrieval_no_result_seen(state, "policy_search")
+                    and "rag_search" not in list(state.get("tools_used") or [])
+                    and "document_search" not in list(state.get("tools_used") or [])
+                ):
+                    return route_to_tool(
+                        state,
+                        tool_name="rag_search",
+                        query=original_query,
+                        reason="policy_no_evidence_rag_fallback",
+                    )
                 return append_synthesis_decision(state, "llm_supervisor_routes_complete")
 
             routing_prompt = (
@@ -2986,7 +3193,7 @@ class KnowledgeAgent:
                             "reason": "llm_supervisor_tool_call",
                         }
                     )
-                routes = apply_deterministic_guard_to_routes(routes)
+                routes = apply_planned_guard_to_routes(routes)
                 first_route = routes.pop(0)
                 state = {**state, "remaining_routes": routes, "performance": performance}
                 return route_to_tool(
@@ -3001,6 +3208,11 @@ class KnowledgeAgent:
                 return route_next_deterministic_guard(
                     {**state, "performance": performance},
                     "supervisor_deterministic_guard_direct_answer",
+                )
+            if planned_guard_missing_routes(state, "supervisor_rule_guard_direct_answer"):
+                return route_next_planned_guard(
+                    {**state, "performance": performance},
+                    "supervisor_rule_guard_direct_answer",
                 )
             return append_synthesis_decision(
                 {

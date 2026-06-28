@@ -128,6 +128,47 @@ class FakeDocuments(DocumentStore):
         return [{"source": "s3://bucket/raw/table.csv", "row": {"key": "leave", "value": "20 days"}}]
 
 
+class RetentionRetrieval(FakeRetrieval):
+    def search(self, query: str, top_k: int = 5, document_keys=None):
+        self.calls.append(
+            {"query": query, "top_k": top_k, "document_keys": list(document_keys or [])}
+        )
+        hits = [
+            RetrievalHit(
+                title="RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf",
+                uri="s3://bucket/raw/RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf",
+                text="Patient records and clinical data must be retained for eight years after the last episode of care.",
+                score=0.98,
+                metadata={
+                    "domain": "general",
+                    "document_type": "document",
+                    "allowed_roles": ["staff"],
+                },
+            )
+        ]
+        if document_keys:
+            allowed = set(document_keys)
+            hits = [hit for hit in hits if hit.uri.removeprefix("s3://bucket/") in allowed]
+        return hits[:top_k]
+
+
+class RetentionDocuments(FakeDocuments):
+    def list_documents(self):
+        return super().list_documents() + [
+            DocumentRecord(
+                title="RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf",
+                uri="s3://bucket/raw/RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf",
+                key="raw/RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf",
+                content_type="application/pdf",
+                metadata={
+                    "domain": "general",
+                    "document_type": "document",
+                    "allowed_roles": ["staff"],
+                },
+            )
+        ]
+
+
 class FakeAIMessage:
     def __init__(self, content: str = "", tool_calls=None):
         self.content = content
@@ -1478,7 +1519,7 @@ class AgentContractTests(unittest.TestCase):
         self.assertIn("Ward 12", result.answer)
         self.assertNotIn("- Defibrillator; Location: Ward 11", result.answer)
 
-    def test_multipart_lookup_and_rag_are_chosen_by_llm(self):
+    def test_multipart_policy_and_lookup_are_chosen_by_supervisor_guard(self):
         retrieval = FakeRetrieval()
         fake_llm = FakeLLM(
             [
@@ -1517,7 +1558,7 @@ class AgentContractTests(unittest.TestCase):
             session_id="session",
         )
 
-        self.assertEqual(result.tools_used, ["rag_search", "postgres_deterministic_lookup"])
+        self.assertEqual(result.tools_used, ["policy_search", "postgres_deterministic_lookup"])
         self.assertEqual(len(fake_llm.messages), 2)
         self.assertEqual(len(retrieval.calls), 1)
         self.assertEqual(len(lookup.calls), 1)
@@ -1550,6 +1591,76 @@ class AgentContractTests(unittest.TestCase):
             "supervisor_deterministic_guard",
             [step.get("reason") for step in result.metadata["performance"]["agent_flow"]],
         )
+
+    def test_multipart_direct_answer_runs_structured_and_policy_subquestions(self):
+        retrieval = RetentionRetrieval()
+        fake_llm = FakeLLM(
+            [
+                fake_ai_message("John has an appointment, but I do not know the retention policy."),
+                fake_ai_message(
+                    "John Spencer has one appointment. Patient data is retained for eight years after the last episode of care."
+                ),
+            ]
+        )
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "appointments",
+                    "message": "Found 1 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "uploaded_lookup_rows",
+                            "source_filename": "appointments.csv",
+                            "row": {
+                                "patient_name": "John Spencer",
+                                "appointment_id": "APT-001",
+                                "clinic": "Cardiology Follow-up",
+                                "date": "2026-06-24",
+                                "time": "09:00",
+                                "status": "Booked",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm, retrieval=retrieval, documents=RetentionDocuments())
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer(
+            "user",
+            "does John spencer have any appointments? How long is patient data stored?",
+            session_id="session",
+        )
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup", "policy_search"])
+        self.assertEqual(lookup.calls[0]["query"], "does John spencer have any appointments")
+        self.assertEqual(retrieval.calls[-1]["query"], "How long is patient data stored")
+        self.assertEqual(
+            retrieval.calls[-1]["document_keys"],
+            ["raw/RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf"],
+        )
+        self.assertIn("eight years", result.answer)
+        self.assertTrue(any("RGH-POL-006" in source["title"] for source in result.sources))
+
+    def test_policy_search_keeps_policy_named_document_with_generic_metadata(self):
+        retrieval = RetentionRetrieval()
+        fake_llm = FakeLLM(
+            [
+                fake_tool_call_message("policy_search", "How long is patient data stored"),
+                fake_ai_message("Patient data is retained for eight years after the last episode of care."),
+            ]
+        )
+        agent = make_agent(fake_llm, retrieval=retrieval, documents=RetentionDocuments())
+
+        result = agent.answer("user", "How long is patient data stored?", session_id="session")
+
+        self.assertEqual(result.tools_used, ["policy_search"])
+        self.assertEqual(
+            retrieval.calls[-1]["document_keys"],
+            ["raw/RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf"],
+        )
+        self.assertTrue(any("RGH-POL-006" in source["title"] for source in result.sources))
 
     def test_greeting_can_use_supervisor_direct_answer(self):
         fake_llm = FakeLLM([fake_ai_message("Hello.")])

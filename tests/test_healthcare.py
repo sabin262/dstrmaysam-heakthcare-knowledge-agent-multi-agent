@@ -47,10 +47,9 @@ class HealthcareScaffoldTests(unittest.TestCase):
     def test_ingestion_metadata_infers_healthcare_domain(self):
         metadata = infer_healthcare_metadata("raw/clinical/sepsis-sop.docx", "abc")
         self.assertEqual(metadata["domain"], "clinical_policy")
-        self.assertEqual(metadata["document_type"], "policy")
+        self.assertEqual(metadata["document_type"], "sop")
         self.assertIn("doctor", metadata["allowed_roles"])
 
 
 if __name__ == "__main__":
     unittest.main()
-

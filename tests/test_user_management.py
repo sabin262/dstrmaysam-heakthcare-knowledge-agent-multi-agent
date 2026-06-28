@@ -313,9 +313,10 @@ class FakeRetrievalService:
 class FakeIngestionJob:
     calls = 0
 
-    def __init__(self, settings, secret_provider):
+    def __init__(self, settings, secret_provider, deterministic_lookup=None):
         self.settings = settings
         self.secret_provider = secret_provider
+        self.deterministic_lookup = deterministic_lookup
 
     def run(self):
         FakeIngestionJob.calls += 1
@@ -441,7 +442,7 @@ class AdminDocumentApiTests(unittest.TestCase):
         self.assertEqual(self.documents.uploads[0]["key"], "raw/Clinical_Policy.md")
         self.assertEqual(self.documents.uploads[0]["data"], b"# Policy")
 
-    def test_admin_csv_upload_goes_to_postgres_lookup_not_raw_documents(self):
+    def test_admin_csv_upload_stores_raw_file_and_postgres_lookup_metadata(self):
         response = self.client.post(
             "/admin/documents/upload",
             headers=self.headers_for("admin", "adminpass1"),
@@ -449,13 +450,16 @@ class AdminDocumentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["key"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
-        self.assertEqual(self.documents.uploads, [])
-        self.assertEqual(self.documents.manifest_records[0]["key"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
-        self.assertEqual(self.documents.manifest_records[0]["uri"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
+        self.assertEqual(response.json()["key"], "raw/doctor_rota.csv")
+        self.assertEqual(response.json()["uri"], "s3://bucket/raw/doctor_rota.csv")
+        self.assertEqual(self.documents.uploads[0]["key"], "raw/doctor_rota.csv")
+        self.assertEqual(self.documents.uploads[0]["data"], b"date,doctor\nToday,Dr Aisha Malik\n")
+        self.assertEqual(self.documents.manifest_records[0]["key"], "raw/doctor_rota.csv")
+        self.assertEqual(self.documents.manifest_records[0]["uri"], "s3://bucket/raw/doctor_rota.csv")
         self.assertEqual(self.documents.manifest_records[0]["chunk_count"], 0)
-        self.assertEqual(self.documents.manifest_records[0]["ingestion_status"], "metadata_only")
+        self.assertEqual(self.documents.manifest_records[0]["ingestion_status"], "lookup_indexed")
         self.assertEqual(self.documents.manifest_records[0]["metadata"]["asset_source"], "postgres_uploaded_lookup")
+        self.assertEqual(self.documents.manifest_records[0]["metadata"]["lookup_uri"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
         self.assertEqual(self.documents.manifest_records[0]["metadata"]["row_count"], 1)
         self.assertEqual(self.documents.manifest_records[0]["metadata"]["columns"], ["date", "doctor"])
         self.assertIn("aisha", self.documents.manifest_records[0]["metadata"]["semantic_terms"])

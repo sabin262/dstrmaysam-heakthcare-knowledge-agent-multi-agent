@@ -89,6 +89,15 @@ class FakeCollection:
         return True
 
 
+class FakeDeterministicLookup:
+    def __init__(self):
+        self.uploads = []
+
+    def ingest_uploaded_csv(self, filename, data, access_level="all_staff"):
+        self.uploads.append({"filename": filename, "data": data, "access_level": access_level})
+        return 1
+
+
 class LocalModeTests(unittest.TestCase):
     def test_env_secret_provider_loads_env_and_persists_local_app_secret(self):
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
@@ -244,6 +253,26 @@ class LocalModeTests(unittest.TestCase):
             self.assertEqual(result["documents"][1]["key"], "raw/policy.txt")
             self.assertEqual(result["documents"][1]["uri"], "local://raw/policy.txt")
             self.assertEqual(result["indexed_documents"], 1)
+
+    def test_local_chroma_ingestion_rehydrates_raw_csv_lookup_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_settings = settings(local_data_dir=tmpdir)
+            raw_path = Path(tmpdir) / "raw" / "doctor_rota.csv"
+            raw_path.parent.mkdir(parents=True)
+            raw_path.write_text("date,doctor\nToday,Dr Aisha Malik\n", encoding="utf-8")
+            lookup = FakeDeterministicLookup()
+            job = LocalChromaIngestionJob(app_settings, StaticSecretProvider(app_settings, {}), lookup)
+            job._collection = FakeCollection()
+            job._embed = lambda text: [0.1, 0.2, 0.3]
+
+            result = job.run()
+
+            self.assertEqual(result["indexed_documents"], 0)
+            self.assertEqual(result["documents"][0]["key"], "raw/doctor_rota.csv")
+            self.assertEqual(result["documents"][0]["uri"], "local://raw/doctor_rota.csv")
+            self.assertEqual(result["documents"][0]["ingestion_status"], "lookup_indexed")
+            self.assertEqual(result["documents"][0]["metadata"]["lookup_uri"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
+            self.assertEqual(lookup.uploads[0]["filename"], "doctor_rota.csv")
 
     def test_local_chroma_retrieval_returns_hits_and_neighbors(self):
         app_settings = settings(rag_top_k=1, rag_neighbor_chunks=1)

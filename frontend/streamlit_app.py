@@ -1802,6 +1802,27 @@ def submit_chat_query(query: str) -> None:
     st.session_state.messages.append({"role": "assistant", "content": data["answer"]})
 
 
+def chat_progress_messages(query: str) -> list[str]:
+    lowered = query.lower()
+    messages = ["Supervisor is reading the question and splitting any sub-questions."]
+    planned: list[str] = []
+    if any(marker in lowered for marker in ["on call", "on-call", "oncall", "rota", "shift", "appointment", "patient", "ward", "equipment", "ventilator", "medicine", "drug", "formulary"]):
+        planned.append("DeterministicLookupAgent is checking Postgres/CSV rows for exact operational facts.")
+    if any(marker in lowered for marker in ["policy", "sop", "guideline", "pathway", "retention", "stored", "records management", "privacy", "governance", "confidentiality"]):
+        planned.append("PolicyAgent is searching indexed policy and governance chunks.")
+    if any(marker in lowered for marker in ["document", "catalog", "catalogue", "uploaded", "indexed"]):
+        planned.append("CatalogAgent is checking the document inventory and metadata.")
+    if any(marker in lowered for marker in ["urgent", "quick", "emergency", "unsafe", "escalate", "risk"]):
+        planned.append("SafetyAgent is checking whether escalation guidance is needed.")
+    if not planned:
+        planned.append("RAGAgent is searching indexed knowledge chunks for relevant context.")
+    messages.extend(planned)
+    if any("PolicyAgent" in item for item in planned):
+        messages.append("If focused policy search has no matching chunks, the graph will try a broader document search before final synthesis.")
+    messages.append("SynthesisAgent is combining specialist evidence into the final answer.")
+    return messages
+
+
 def _chat_request_worker(
     query: str,
     session_id: str | None,
@@ -1846,13 +1867,14 @@ def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> No
     worker.start()
 
     step_index = 0
-    render_chat_progress(progress_placeholder, CHAT_PROGRESS_MESSAGES[step_index])
+    progress_messages = chat_progress_messages(query)
+    render_chat_progress(progress_placeholder, progress_messages[step_index])
     while worker.is_alive():
         worker.join(timeout=0.75)
         if not worker.is_alive():
             break
-        step_index = min(step_index + 1, len(CHAT_PROGRESS_MESSAGES) - 1)
-        render_chat_progress(progress_placeholder, CHAT_PROGRESS_MESSAGES[step_index])
+        step_index = min(step_index + 1, len(progress_messages) - 1)
+        render_chat_progress(progress_placeholder, progress_messages[step_index])
     render_chat_progress(
         progress_placeholder,
         "Answer ready.",
