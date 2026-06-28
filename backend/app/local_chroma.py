@@ -11,7 +11,9 @@ from .ingest import (
     checksum_bytes,
     chunk_text,
     is_metadata_only_manifest_record,
+    merge_manifest_records_by_key,
     parse_document,
+    postgres_table_manifest_records,
     table_lookup_manifest_record,
 )
 from .retrieval import RetrievalHit, RetrievalService
@@ -181,6 +183,10 @@ class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMi
                 deleted_chunks += self._delete_document_chunks(key)
                 deleted_documents += 1
 
+        manifest_documents = merge_manifest_records_by_key(
+            manifest_documents,
+            postgres_table_manifest_records(self.deterministic_lookup),
+        )
         total_chunks = sum(int(document.get("chunk_count") or 0) for document in manifest_documents)
         manifest = {
             "vector_backend": "chroma",

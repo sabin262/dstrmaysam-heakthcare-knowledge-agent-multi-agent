@@ -305,6 +305,36 @@ def csv_lookup_manifest_record(
     return table_lookup_manifest_record(key, data, sync_result, content_type, uri=uri)
 
 
+def postgres_table_manifest_records(deterministic_lookup: Any | None) -> list[dict[str, Any]]:
+    if deterministic_lookup is None or not hasattr(deterministic_lookup, "table_lookup_manifest_records"):
+        return []
+    return [dict(record) for record in deterministic_lookup.table_lookup_manifest_records()]
+
+
+def merge_manifest_records_by_key(
+    documents: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not records:
+        return documents
+    merged_by_key: dict[str, dict[str, Any]] = {
+        str(document.get("key")): dict(document)
+        for document in documents
+        if isinstance(document, dict) and document.get("key")
+    }
+    ordered_keys = [str(document.get("key")) for document in documents if isinstance(document, dict) and document.get("key")]
+    ordered_set = set(ordered_keys)
+    for record in records:
+        key = str(record.get("key") or "")
+        if not key:
+            continue
+        merged_by_key[key] = dict(record)
+        if key not in ordered_set:
+            ordered_keys.append(key)
+            ordered_set.add(key)
+    return [merged_by_key[key] for key in ordered_keys if key in merged_by_key]
+
+
 class IngestionJob:
     def __init__(self, settings: AppSettings, secret_provider: SecretProvider, deterministic_lookup: Any | None = None):
         self.settings = settings
@@ -397,6 +427,10 @@ class IngestionJob:
                 deleted_chunks += self._delete_document_chunks(key)
                 deleted_documents += 1
 
+        manifest_documents = merge_manifest_records_by_key(
+            manifest_documents,
+            postgres_table_manifest_records(self.deterministic_lookup),
+        )
         total_chunks = sum(int(document.get("chunk_count") or 0) for document in manifest_documents)
         manifest = {
             "opensearch_index": self.settings.opensearch_index,

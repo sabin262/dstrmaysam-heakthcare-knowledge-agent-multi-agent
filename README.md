@@ -13,7 +13,8 @@ The application is built for internal healthcare knowledge work: staff can ask d
 - RAG over uploaded PDF, DOCX, markdown, text, and CSV content.
 - Local Chroma vector search for development mode.
 - OpenSearch Serverless vector and keyword retrieval for AWS mode.
-- Postgres-backed deterministic lookup for patients, doctors, departments, contacts, appointments, wards, formulary rows, staff rota style data, and uploaded CSV rows.
+- Postgres-backed deterministic lookup for patients, doctors, departments, contacts, appointments, wards, formulary rows, staff rota style data, and table-backed CSV uploads.
+- Optional MCP tool execution mode where the backend still performs agent routing/tool selection but sends selected tool calls to the MCP server.
 - Role-aware document access and structured-data access filtering.
 - Langfuse tracing, prompt loading, trace enrichment, and optional RAGAS score publishing.
 - Offline golden dataset evaluation and stress testing.
@@ -35,6 +36,7 @@ flowchart LR
     Agent --> Azure["Azure OpenAI"]
     Agent --> Retrieval["RAG Retrieval"]
     Agent --> Lookup["Postgres Deterministic Lookup"]
+    Agent -. "optional MCP mode" .-> MCP["MCP Tools Server"]
     Agent --> History["Chat History"]
     Agent --> Langfuse["Langfuse"]
 
@@ -44,6 +46,7 @@ flowchart LR
     Store --> LocalFiles["data/raw and manifests"]
     Store --> S3["S3 Raw Documents and Manifest"]
     Lookup --> Postgres["Postgres Healthcare Tables"]
+    MCP --> Postgres
 ```
 
 Local development uses local files, Chroma, `.env` credentials, and Postgres. AWS deployment uses Secrets Manager, S3, OpenSearch Serverless, IAM task roles, and the configured chat history backend.
@@ -99,6 +102,7 @@ Docker Compose starts:
 - Backend API at `http://localhost:8000`
 - Frontend UI at `http://localhost:8501`
 - Postgres at `localhost:5432`
+- Optional MCP tools server at `http://localhost:8001/sse`
 
 For local testing only, Compose enables a seeded admin overlay:
 
@@ -129,6 +133,25 @@ Local mode uses:
 - `data/manifests/documents.json` for the manifest
 - Chroma under `data/chroma`
 - Postgres for deterministic lookup and chat history
+
+### Tool Execution Mode
+
+By default tools execute locally inside the backend:
+
+```env
+TOOL_EXECUTION_MODE=local
+```
+
+To execute selected tool calls on the MCP server while keeping supervisor and specialist routing in the backend:
+
+```env
+TOOL_EXECUTION_MODE=mcp
+MCP_SERVER_URL=http://mcp-tools:8000/sse
+MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
+MCP_TOOL_NAME=execute_project_tool
+```
+
+The MCP server lives in `../MCP-Tools` for local Compose and is intended to be hosted as its own AWS service later. Keep `TOOL_EXECUTION_MODE=local` for the current in-process behavior.
 
 If `LOCAL_APP_SECRET_FILE` does not exist, the backend creates it with a generated session secret and the configured local username/password.
 

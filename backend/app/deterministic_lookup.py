@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import csv
+import hashlib
 import io
 import re
 from dataclasses import dataclass, field
@@ -409,6 +410,50 @@ def build_csv_semantic_metadata(filename: str, data: bytes) -> dict[str, Any]:
     }
 
 
+def build_table_semantic_metadata(
+    table_key: str,
+    table_name: str,
+    columns: Sequence[str],
+    rows: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    semantic_terms = set(_normalized_terms(" ".join([table_key, table_name, table_name.replace("_", " ")])))
+    for column in columns:
+        semantic_terms.update(_normalized_terms(column))
+        semantic_terms.update(_normalized_terms(str(column).replace("_", " ")))
+
+    column_values: dict[str, set[str]] = {str(column): set() for column in columns}
+    sample_values: list[str] = []
+    seen_samples: set[str] = set()
+    for row in rows[:CSV_SEMANTIC_SAMPLE_ROWS]:
+        for column in columns:
+            raw_value = row.get(str(column))
+            value = str(raw_value).strip() if raw_value is not None else ""
+            if not value:
+                continue
+            semantic_terms.update(_normalized_terms(value))
+            if len(value) <= 80:
+                column_values[str(column)].add(value)
+                sample = f"{column}={value}"
+                if sample not in seen_samples and len(sample_values) < CSV_SAMPLE_VALUE_LIMIT:
+                    seen_samples.add(sample)
+                    sample_values.append(sample)
+
+    categorical_values: dict[str, list[str]] = {}
+    for column, values in column_values.items():
+        if not values:
+            continue
+        if len(categorical_values) >= CSV_CATEGORICAL_COLUMN_LIMIT:
+            break
+        categorical_values[column] = sorted(values, key=lambda item: (len(item), item.lower()))[:CSV_CATEGORICAL_VALUE_LIMIT]
+
+    return {
+        "columns": [str(column) for column in columns],
+        "semantic_terms": sorted(semantic_terms)[:CSV_SEMANTIC_TERM_LIMIT],
+        "categorical_values": categorical_values,
+        "sample_values": sample_values,
+    }
+
+
 def _best_search_term(terms: list[str], stopwords: set[str] | None = None) -> str:
     for term in terms:
         if re.fullmatch(r"(mrn)?\d{4,}|mrn\d+", term.lower()):
@@ -445,7 +490,8 @@ def _name_search_terms(terms: list[str], stopwords: set[str] | None = None) -> l
 def _has_count_intent(query: str) -> bool:
     q = query.lower()
     terms = set(_terms(query))
-    return "how many" in q or "how much" in q or bool(terms & AGGREGATE_QUERY_MARKERS)
+    explicit_count_terms = AGGREGATE_QUERY_MARKERS - {"how"}
+    return "how many" in q or "how much" in q or bool(terms & explicit_count_terms)
 
 
 def _has_row_value_intent(query: str) -> bool:
@@ -933,6 +979,85 @@ class DeterministicLookupService:
 
     def __init__(self, settings: AppSettings):
         self.settings = settings
+
+    def table_lookup_manifest_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                for table_key, config in CRM_TABLES.items():
+                    table_name = str(config["table"])
+                    columns = [str(column) for column in config["columns"]]
+                    selected_columns = ", ".join(columns)
+                    cur.execute(f"SELECT COUNT(*) AS row_count FROM {table_name}")
+                    count_row = cur.fetchone() or {}
+                    row_count = int(count_row.get("row_count") or 0)
+                    cur.execute(
+                        f"""
+                        SELECT {selected_columns}
+                        FROM {table_name}
+                        ORDER BY {config["pk"]}
+                        LIMIT %s
+                        """,
+                        (CSV_SEMANTIC_SAMPLE_ROWS,),
+                    )
+                    sample_rows = [dict(row) for row in cur.fetchall()]
+                    semantic_metadata = build_table_semantic_metadata(table_key, table_name, columns, sample_rows)
+                    lookup_uri = f"postgres://table/{table_name}"
+                    title = f"{table_key.replace('_', ' ').title()} table"
+                    checksum_payload = {
+                        "table_key": table_key,
+                        "table_name": table_name,
+                        "row_count": row_count,
+                        "columns": columns,
+                        "semantic_metadata": semantic_metadata,
+                    }
+                    checksum = hashlib.sha256(
+                        json.dumps(checksum_payload, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()
+                    records.append(
+                        {
+                            "key": lookup_uri,
+                            "title": title,
+                            "uri": lookup_uri,
+                            "content_type": "application/vnd.postgresql.table+json",
+                            "checksum": checksum,
+                            "metadata": {
+                                "key": lookup_uri,
+                                "checksum": checksum,
+                                "owner": "system",
+                                "version": "postgres",
+                                "effective_date": "system",
+                                "review_date": "system",
+                                "approval_status": "system",
+                                "sensitivity": "internal",
+                                "domain": "deterministic_lookup",
+                                "document_type": "postgres_table",
+                                "allowed_roles": [
+                                    "staff",
+                                    "admin",
+                                    "manager",
+                                    "doctor",
+                                    "nurse",
+                                    "pharmacy",
+                                    "clinical_governance",
+                                ],
+                                "asset_source": "postgres_table_lookup",
+                                "source_table": table_name,
+                                "source_table_key": table_key,
+                                "lookup_uri": lookup_uri,
+                                "row_count": row_count,
+                                "columns": columns,
+                                "semantic_terms": semantic_metadata.get("semantic_terms") or [],
+                                "categorical_values": semantic_metadata.get("categorical_values") or {},
+                                "sample_values": semantic_metadata.get("sample_values") or [],
+                                "search_backend": "postgres",
+                                "rag_indexed": False,
+                            },
+                            "chunk_count": 0,
+                            "ingestion_status": "metadata_only",
+                        }
+                    )
+        return records
 
     def lookup(
         self,
@@ -1643,7 +1768,7 @@ class DeterministicLookupService:
                 if category == "departments":
                     return self._query_departments(cur, terms, scopes, limit, stopwords)
                 if category == "contacts":
-                    return self._query_contacts(cur, terms, scopes, limit, stopwords)
+                    return self._query_contact_information(cur, terms, scopes, limit, stopwords)
                 if category == "appointments":
                     return self._query_appointments(cur, terms, scopes, limit, stopwords)
                 if category == "wards":
@@ -1893,6 +2018,8 @@ class DeterministicLookupService:
         appointment_query = any(marker in q for marker in ["appointment", "appointments", "clinic", "slot", "referral"])
         if appointment_query:
             return "appointments"
+        if any(marker in q for marker in ["contact", "phone", "email", "bleep", "extension", "call", "reach"]):
+            return "contacts"
         patient_location_query = any(
             marker in q for marker in ["ward", "bed", "ipd", "inpatient", "location", "located", "where"]
         )
@@ -1906,8 +2033,6 @@ class DeterministicLookupService:
             return "doctors"
         if any(marker in q for marker in ["department", "service", "unit"]):
             return "departments"
-        if any(marker in q for marker in ["contact", "phone", "email", "bleep", "extension"]):
-            return "contacts"
         if any(marker in q for marker in ["ward", "bed", "floor"]):
             return "wards"
         if any(marker in q for marker in ["medicine", "drug", "formulary", "restricted", "dose"]):
@@ -2541,6 +2666,211 @@ class DeterministicLookupService:
             (list(scopes), pattern, pattern, pattern, pattern, pattern, limit),
         )
         return list(cur.fetchall())
+
+    def _query_contact_information(
+        self,
+        cur,
+        terms: list[str],
+        scopes: tuple[str, ...],
+        limit: int,
+        stopwords: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        contact_stopwords = {
+            "contact",
+            "contacts",
+            "call",
+            "calling",
+            "phone",
+            "email",
+            "reach",
+            "info",
+            "information",
+            "how",
+            "can",
+            "for",
+            "dr",
+            "doctor",
+            "doctors",
+            "patient",
+            "patients",
+            "ward",
+            "department",
+        }
+        pattern = _like(_best_search_term(terms, (stopwords or set()) | contact_stopwords))
+        if pattern == "%%":
+            pattern = _like(_best_search_term(terms, stopwords))
+        rows: list[dict[str, Any]] = []
+        person_terms = [
+            term
+            for term in terms
+            if term not in contact_stopwords
+            and term not in STOPWORDS
+            and not re.fullmatch(r"(mrn)?\d{4,}|mrn\d+", term.lower())
+        ][:4]
+        doctor_requested = bool(set(terms) & {"dr", "doctor", "doctors", "consultant", "physician"})
+        patient_requested = bool(set(terms) & {"patient", "patients", "mrn", "nhs"})
+        person_name_requested = len(person_terms) >= 2
+
+        def wrapped_rows(source_table: str, fetched: Sequence[dict[str, Any]], pk: str) -> list[dict[str, Any]]:
+            wrapped: list[dict[str, Any]] = []
+            for item in fetched:
+                payload = dict(item)
+                wrapped.append(
+                    {
+                        "source_table": source_table,
+                        "source_filename": source_table,
+                        "row_number": payload.get(pk),
+                        "row": payload,
+                        "access_level": payload.get("access_level"),
+                    }
+                )
+            return wrapped
+
+        def append_rows(source_table: str, fetched: Sequence[dict[str, Any]], pk: str) -> None:
+            rows.extend(wrapped_rows(source_table, fetched, pk))
+
+        def person_match_clause(column: str, query_terms: Sequence[str]) -> tuple[str, list[Any]]:
+            if not query_terms:
+                return f"lower({column}) LIKE %s", [pattern]
+            parts = [f"lower({column}) LIKE %s" for _ in query_terms]
+            return " AND ".join(parts), [_like(term) for term in query_terms]
+
+        def fetch_doctors(row_limit: int) -> list[dict[str, Any]]:
+            clause, params = person_match_clause("full_name", person_terms)
+            cur.execute(
+                f"""
+                SELECT doctor_id, full_name, grade, specialty, department_name,
+                       phone, email, bleep, on_call_today, access_level
+                FROM doctors
+                WHERE {self._access_sql()}
+                  AND ({clause})
+                ORDER BY full_name
+                LIMIT %s
+                """,
+                (list(scopes), *params, max(1, row_limit)),
+            )
+            return wrapped_rows("doctors", list(cur.fetchall()), "doctor_id")
+
+        def fetch_patients(row_limit: int) -> list[dict[str, Any]]:
+            clause, params = person_match_clause("full_name", person_terms)
+            cur.execute(
+                f"""
+                SELECT patient_id, mrn, full_name, ward_code, department_name,
+                       named_consultant, care_status, access_level
+                FROM patients
+                WHERE {self._access_sql()}
+                  AND ({clause})
+                ORDER BY full_name
+                LIMIT %s
+                """,
+                (list(scopes), *params, max(1, row_limit)),
+            )
+            return wrapped_rows("patients", list(cur.fetchall()), "patient_id")
+
+        def fetch_staff_schedule(row_limit: int) -> list[dict[str, Any]]:
+            clause, params = person_match_clause("staff_name", person_terms)
+            cur.execute(
+                f"""
+                SELECT schedule_id, shift_date, department_name, role, staff_name,
+                       shift_start, shift_end, on_call, contact, access_level
+                FROM staff_schedule
+                WHERE {self._access_sql()}
+                  AND ({clause})
+                ORDER BY shift_date, shift_start, staff_name
+                LIMIT %s
+                """,
+                (list(scopes), *params, max(1, row_limit)),
+            )
+            return wrapped_rows("staff_schedule", list(cur.fetchall()), "schedule_id")
+
+        if doctor_requested:
+            doctor_rows = fetch_doctors(limit)
+            if doctor_rows:
+                return doctor_rows[:limit]
+        if patient_requested:
+            patient_rows = fetch_patients(limit)
+            if patient_rows:
+                return patient_rows[:limit]
+        if person_name_requested:
+            patient_rows = fetch_patients(limit)
+            doctor_rows = fetch_doctors(limit)
+            if patient_rows and not doctor_rows:
+                return patient_rows[:limit]
+            if doctor_rows and not patient_rows:
+                return doctor_rows[:limit]
+            if patient_rows or doctor_rows:
+                return (patient_rows or doctor_rows)[:limit]
+            staff_rows = fetch_staff_schedule(limit)
+            if staff_rows:
+                return staff_rows[:limit]
+
+        cur.execute(
+            f"""
+            SELECT contact_id, contact_type, department_name, contact_name, role,
+                   phone, email, available_hours, escalation_level, access_level
+            FROM organization_contacts
+            WHERE {self._access_sql()}
+              AND (%s = '%%' OR lower(department_name) LIKE %s OR lower(contact_type) LIKE %s
+                   OR lower(role) LIKE %s OR lower(contact_name) LIKE %s)
+            ORDER BY
+              CASE WHEN lower(department_name) LIKE %s THEN 0 ELSE 1 END,
+              escalation_level,
+              contact_name
+            LIMIT %s
+            """,
+            (list(scopes), pattern, pattern, pattern, pattern, pattern, pattern, max(1, limit)),
+        )
+        append_rows("organization_contacts", list(cur.fetchall()), "contact_id")
+
+        if len(rows) < limit:
+            cur.execute(
+                f"""
+                SELECT department_id, department_name, specialty_group, location, main_phone,
+                       email, service_lead, escalation_contact, access_level
+                FROM departments
+                WHERE {self._access_sql()}
+                  AND (%s = '%%' OR lower(department_name) LIKE %s OR lower(specialty_group) LIKE %s
+                       OR lower(service_lead) LIKE %s)
+                ORDER BY department_name
+                LIMIT %s
+                """,
+                (list(scopes), pattern, pattern, pattern, pattern, max(1, limit - len(rows))),
+            )
+            append_rows("departments", list(cur.fetchall()), "department_id")
+
+        if len(rows) < limit and not person_name_requested:
+            cur.execute(
+                f"""
+                SELECT schedule_id, shift_date, department_name, role, staff_name,
+                       shift_start, shift_end, on_call, contact, access_level
+                FROM staff_schedule
+                WHERE {self._access_sql()}
+                  AND (%s = '%%' OR lower(staff_name) LIKE %s OR lower(role) LIKE %s
+                       OR lower(department_name) LIKE %s OR lower(contact) LIKE %s)
+                ORDER BY shift_date, shift_start, staff_name
+                LIMIT %s
+                """,
+                (list(scopes), pattern, pattern, pattern, pattern, pattern, max(1, limit - len(rows))),
+            )
+            append_rows("staff_schedule", list(cur.fetchall()), "schedule_id")
+
+        if len(rows) < limit:
+            cur.execute(
+                f"""
+                SELECT ward_code, ward_name, department_name, floor, bed_capacity,
+                       beds_available, nurse_in_charge, phone, access_level
+                FROM wards
+                WHERE {self._access_sql()}
+                  AND (%s = '%%' OR lower(ward_code) LIKE %s OR lower(ward_name) LIKE %s
+                       OR lower(department_name) LIKE %s OR lower(nurse_in_charge) LIKE %s)
+                ORDER BY ward_name
+                LIMIT %s
+                """,
+                (list(scopes), pattern, pattern, pattern, pattern, pattern, max(1, limit - len(rows))),
+            )
+            append_rows("wards", list(cur.fetchall()), "ward_code")
+
+        return rows[:limit]
 
     def _query_appointments(self, cur, terms: list[str], scopes: tuple[str, ...], limit: int, stopwords: set[str] | None = None):
         search_terms = _name_search_terms(terms, stopwords)

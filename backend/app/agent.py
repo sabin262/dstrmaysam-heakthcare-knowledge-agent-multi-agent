@@ -44,6 +44,12 @@ HEALTHCARE_TOOL_NAMES = [
     "safety_guard",
 ]
 RETRIEVAL_SOURCE_TOOLS = {"rag_search", "document_search", "policy_search"}
+DETERMINISTIC_ROUTE_TOOLS = {
+    "calendar_rota_lookup",
+    "formulary_table_lookup",
+    "postgres_deterministic_lookup",
+    "table_lookup",
+}
 DETERMINISTIC_INLINE_ROW_LIMIT = 10
 CHAT_EXECUTION_MODE_LABELS = {
     "supervisor": "Supervisor",
@@ -682,6 +688,32 @@ def _has_short_entity_lookup_intent(text: str) -> bool:
     return 1 <= len(useful_terms) <= 3
 
 
+def _short_entity_lookup_terms(text: str) -> list[str]:
+    lowered = text.lower()
+    ignored = ENTITY_LOOKUP_MARKERS | {"tell", "show", "give", "need", "about", "with", "please"}
+    return [
+        term
+        for term in re.findall(r"[A-Za-z0-9@._+-]+", lowered)
+        if len(term) >= 3 and term not in ignored
+    ][:3]
+
+
+def _lookup_metadata_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+    if isinstance(value, dict):
+        for item in value.values():
+            tokens.update(_lookup_metadata_tokens(item))
+        return tokens
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            tokens.update(_lookup_metadata_tokens(item))
+        return tokens
+    for token in re.findall(r"[A-Za-z0-9@._+-]+", str(value).lower()):
+        if len(token) >= 3:
+            tokens.add(token)
+    return tokens
+
+
 def _has_generic_info_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_policy_intent(text):
@@ -766,12 +798,24 @@ def _deterministic_tool_output_has_results(output: str) -> bool:
 
 
 DETERMINISTIC_DETAIL_LABELS = {
-    "access_level": "Access level",
     "approval_required": "Approval required",
     "category": "Category",
+    "available_hours": "Available hours",
+    "bleep": "Bleep",
+    "contact": "Contact",
+    "contact_name": "Contact name",
+    "contact_type": "Contact type",
+    "email": "Email",
+    "escalation_contact": "Escalation contact",
+    "main_phone": "Phone",
     "max_adult_dose": "Maximum adult dose",
     "monitoring_required": "Monitoring required",
+    "phone": "Phone",
     "restricted": "Restricted",
+    "role": "Role",
+    "service_lead": "Service lead",
+    "shift_end": "Shift end",
+    "shift_start": "Shift start",
 }
 DETERMINISTIC_DETAIL_ORDER = (
     "category",
@@ -779,7 +823,6 @@ DETERMINISTIC_DETAIL_ORDER = (
     "approval_required",
     "max_adult_dose",
     "monitoring_required",
-    "access_level",
 )
 DETERMINISTIC_NAME_FIELDS = (
     "medicine_name",
@@ -844,16 +887,26 @@ EQUIPMENT_DETAIL_ORDER = (
     "phone",
     "last_service_date",
     "next_service_due",
-    "access_level",
 )
 DETERMINISTIC_OMITTED_DETAIL_FIELDS = {
+    "access_level",
+    "appointment_id",
+    "audit_id",
+    "clinic_id",
+    "contact_id",
+    "department_id",
+    "doctor_id",
+    "finance_id",
     "id",
     "medicine_id",
     "asset_id",
+    "patient_id",
     "row_number",
+    "schedule_id",
     "source",
     "source_filename",
     "source_table",
+    "training_id",
 }
 
 
@@ -888,10 +941,7 @@ def _clean_entity_from_query(query: str) -> str:
 def _lookup_row_payload(row: dict[str, Any]) -> dict[str, Any]:
     nested = row.get("row")
     if isinstance(nested, dict):
-        payload = dict(nested)
-        if "access_level" not in payload and row.get("access_level"):
-            payload["access_level"] = row.get("access_level")
-        return payload
+        return dict(nested)
     return {
         key: value
         for key, value in row.items()
@@ -916,6 +966,8 @@ def _lookup_list_name(payload: dict[str, Any]) -> str:
 def _lookup_list_title(query: str, payload: dict[str, Any]) -> str:
     lowered = query.lower()
     category = str(payload.get("category") or "").lower()
+    if _has_contact_intent(query):
+        return "Contact options"
     if "medicine" in lowered or "formulary" in lowered or "drug" in lowered:
         return "Medicines"
     if any(marker in lowered for marker in ("equipment type", "equipment types", "asset type", "asset types", "device type", "device types")):
@@ -947,6 +999,146 @@ def _format_count_detail(payload: dict[str, Any]) -> str:
     if parts:
         return "; ".join(parts)
     return _lookup_list_name(payload)
+
+
+def _has_contact_intent(query: str) -> bool:
+    lowered = query.lower()
+    return any(marker in lowered for marker in ("contact", "phone", "email", "bleep", "call", "reach"))
+
+
+def _has_on_call_intent(query: str) -> bool:
+    lowered = query.lower()
+    return any(marker in lowered for marker in ("on call", "on-call", "oncall"))
+
+
+def _is_contact_payload(payload: dict[str, Any]) -> bool:
+    normalized_keys = {_normalize_payload_key(key) for key in payload}
+    return bool(
+        normalized_keys
+        & {
+            "phone",
+            "main_phone",
+            "email",
+            "bleep",
+            "contact",
+            "contact_name",
+            "contact_type",
+            "available_hours",
+            "escalation_contact",
+            "service_lead",
+            "nurse_in_charge",
+            "named_consultant",
+        }
+    )
+
+
+def _contact_target_from_query(query: str) -> str:
+    cleaned = re.sub(
+        r"^\s*(?:how\s+(?:do|can)\s+i\s+)?(?:contact(?:\s+info(?:rmation)?)?|call|reach|get\s+in\s+touch\s+with|phone|email)\s+(?:for|about|on)?\s*",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    ).strip(" .?\t\n")
+    return cleaned or _clean_entity_from_query(query)
+
+
+def _contact_display_name(payload: dict[str, Any]) -> str:
+    for fields in (
+        ("contact_name", "role"),
+        ("full_name", "patient_name", "staff_name"),
+        ("department_name",),
+        ("ward_name",),
+        ("name",),
+    ):
+        value = _payload_value(payload, fields)
+        if value not in (None, "", []):
+            return str(value)
+    return "Contact"
+
+
+def _format_contact_option(payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    detail_fields = (
+        "contact_type",
+        "grade",
+        "role",
+        "department_name",
+        "specialty",
+        "phone",
+        "main_phone",
+        "email",
+        "bleep",
+        "contact",
+        "available_hours",
+        "location",
+        "ward_code",
+        "ward_name",
+        "nurse_in_charge",
+        "named_consultant",
+        "escalation_contact",
+    )
+    seen_values: set[str] = set()
+    for field in detail_fields:
+        value = payload.get(field)
+        if value in (None, "", []):
+            continue
+        text = _detail_value(field, value)
+        key = f"{field}:{text}".lower()
+        if key in seen_values:
+            continue
+        seen_values.add(key)
+        lines.append(f"   - {_detail_label(field)}: {text}")
+    return lines
+
+
+def _format_contact_answer(query: str, row_payloads: list[dict[str, Any]]) -> str:
+    contact_payloads = [payload for payload in row_payloads if _is_contact_payload(payload)]
+    if not contact_payloads:
+        return ""
+    target = _contact_target_from_query(query)
+    if len(contact_payloads) == 1:
+        lines = [f"Contact information for {target}:"]
+    else:
+        lines = [f"Contact options for {target}:"]
+    lines.append("")
+    for index, payload in enumerate(contact_payloads[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
+        lines.append(f"{index}. {_contact_display_name(payload)}")
+        option_lines = _format_contact_option(payload)
+        lines.extend(option_lines or ["   - No direct contact detail is recorded."])
+    if len(contact_payloads) > DETERMINISTIC_INLINE_ROW_LIMIT:
+        lines.append("")
+        lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(contact_payloads)} contact option(s).")
+    return "\n".join(lines) + _expandable_all_rows(contact_payloads, summary="Show all contact options")
+
+
+def _format_on_call_answer(query: str, row_payloads: list[dict[str, Any]]) -> str:
+    on_call_payloads = [
+        payload
+        for payload in row_payloads
+        if payload.get("staff_name") not in (None, "", [])
+        and (
+            payload.get("shift_start") not in (None, "", [])
+            or payload.get("shift_end") not in (None, "", [])
+            or payload.get("on_call") not in (None, "", [])
+        )
+    ]
+    if not on_call_payloads:
+        return ""
+
+    lines = ["On-call staff:"]
+    lines.append("")
+    for index, payload in enumerate(on_call_payloads[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
+        staff_name = str(payload.get("staff_name") or "Staff member")
+        lines.append(f"{index}. {staff_name}")
+        for field in ("department_name", "role", "shift_start", "shift_end", "contact"):
+            value = payload.get(field)
+            if value in (None, "", []):
+                continue
+            lines.append(f"   - {_detail_label(field)}: {_detail_value(field, value)}")
+    if len(on_call_payloads) > DETERMINISTIC_INLINE_ROW_LIMIT:
+        lines.append("")
+        lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(on_call_payloads)} on-call staff.")
+    return "\n".join(lines) + _expandable_all_rows(on_call_payloads, summary="Show all on-call staff")
 
 
 def _full_row_fields(payload: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1169,6 +1361,17 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
         return str(payload.get("message") or "No matching deterministic database rows were found.")
 
     row_payloads = [_lookup_row_payload(row) for row in rows if isinstance(row, dict)]
+    on_call_list_intent = _has_on_call_intent(query)
+    if on_call_list_intent:
+        on_call_answer = _format_on_call_answer(query, row_payloads)
+        if on_call_answer:
+            return on_call_answer
+
+    if _has_contact_intent(query):
+        contact_answer = _format_contact_answer(query, row_payloads)
+        if contact_answer:
+            return contact_answer
+
     equipment_payloads = [payload for payload in row_payloads if _is_equipment_payload(payload)]
     equipment_availability = _has_equipment_availability_intent(query)
     generic_row_list = _has_generic_row_value_list_intent(query)
@@ -1179,7 +1382,6 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
             prefer_available=equipment_availability,
         )
 
-    on_call_list_intent = any(marker in query.lower() for marker in ["on call", "on-call", "oncall"])
     if (_has_list_lookup_intent(query) or generic_row_list or on_call_list_intent) and len(rows) > 1:
         title = "On-call staff" if on_call_list_intent else _lookup_list_title(query, row_payloads[0] if row_payloads else {})
         unique_payloads = _unique_payloads_by_list_name(row_payloads)
@@ -1687,7 +1889,7 @@ class KnowledgeAgent:
         self.safety = HealthcareSafetyGuard(self.redactor)
         self.audit = HealthcareAuditLogger()
         self.deterministic_lookup = DeterministicLookupService(settings)
-        self.tools = build_agent_tools(retrieval, documents)
+        self.tools = build_agent_tools(retrieval, documents, settings=settings)
         self._llm: Any | None = None
         self._fast_llm: Any | None = None
         self._llm_lock = threading.Lock()
@@ -1821,6 +2023,7 @@ class KnowledgeAgent:
                 access=self.access,
                 safety=self.safety,
                 deterministic_lookup=self.deterministic_lookup,
+                settings=self.settings,
             )
             original_tools = self.tools
             try:
@@ -2441,6 +2644,32 @@ class KnowledgeAgent:
                 errors=[error],
             )
 
+    def _known_formulary_guard_query(self, query: str, user_context: HealthcareUserContext) -> str:
+        if not _has_short_entity_lookup_intent(query):
+            return ""
+        if _has_policy_intent(query):
+            return ""
+        terms = _short_entity_lookup_terms(query)
+        if not terms:
+            return ""
+        try:
+            records = self.access.filter_documents(user_context, self.documents.list_documents())
+        except Exception:
+            return ""
+        for record in records:
+            metadata = record.metadata or {}
+            if str(metadata.get("asset_source") or "") != "postgres_table_lookup":
+                continue
+            if str(metadata.get("source_table") or "") != "formulary":
+                continue
+            lookup_tokens = set()
+            lookup_tokens.update(_lookup_metadata_tokens(metadata.get("semantic_terms") or []))
+            lookup_tokens.update(_lookup_metadata_tokens(metadata.get("categorical_values") or {}))
+            lookup_tokens.update(_lookup_metadata_tokens(metadata.get("sample_values") or []))
+            if all(term in lookup_tokens for term in terms):
+                return query if query.lower().strip().startswith("medicine ") else f"medicine {query}"
+        return ""
+
     def _format_retrieval_hits(self, hits: list[RetrievalHit]) -> str:
         if not hits:
             return "No relevant document chunks found."
@@ -2881,10 +3110,21 @@ class KnowledgeAgent:
         tool_names = {tool.name for tool in self.tools}
         bound_llm = llm.bind_tools(self._tool_callables()) if hasattr(llm, "bind_tools") else llm
         deterministic_guard_queries = _deterministic_guard_queries(original_query)
+        known_formulary_guard_query = self._known_formulary_guard_query(original_query, user_context)
+        if known_formulary_guard_query and known_formulary_guard_query not in deterministic_guard_queries:
+            deterministic_guard_queries.append(known_formulary_guard_query)
         planned_guard_routes = [
             route for route in _supervisor_guard_routes(original_query)
             if route.get("tool") in tool_names
         ]
+        if known_formulary_guard_query and "postgres_deterministic_lookup" in tool_names:
+            planned_guard_routes.append(
+                {
+                    "tool": "postgres_deterministic_lookup",
+                    "query": known_formulary_guard_query,
+                    "reason": "supervisor_formulary_entity_guard",
+                }
+            )
 
         def initial_state() -> dict[str, Any]:
             return {
@@ -2953,12 +3193,12 @@ class KnowledgeAgent:
         def deterministic_guard_needed(state: dict[str, Any]) -> bool:
             if not deterministic_guard_queries:
                 return False
-            if "postgres_deterministic_lookup" in list(state.get("tools_used") or []):
+            if any(tool in DETERMINISTIC_ROUTE_TOOLS for tool in list(state.get("tools_used") or [])):
                 return False
-            if str(state.get("pending_tool") or "") == "postgres_deterministic_lookup":
+            if str(state.get("pending_tool") or "") in DETERMINISTIC_ROUTE_TOOLS:
                 return False
             for route in list(state.get("remaining_routes") or []):
-                if str(dict(route).get("tool") or "") == "postgres_deterministic_lookup":
+                if str(dict(route).get("tool") or "") in DETERMINISTIC_ROUTE_TOOLS:
                     return False
             return True
 
@@ -2999,13 +3239,23 @@ class KnowledgeAgent:
                     normalized_routes.append(route)
             if any(route.get("tool") == "postgres_deterministic_lookup" for route in normalized_routes):
                 return normalized_routes
+            if any(
+                str(route.get("tool") or "") in DETERMINISTIC_ROUTE_TOOLS
+                and any(route_queries_match(route, {"query": guard_query}) for guard_query in deterministic_guard_queries)
+                for route in normalized_routes
+            ):
+                return normalized_routes
             guard_routes = deterministic_guard_routes()
             if planned_requires_only_deterministic():
                 return guard_routes
             return [*normalized_routes, *guard_routes]
 
         def route_matches_planned(existing: dict[str, str], planned: dict[str, str]) -> bool:
-            if existing.get("tool") != planned.get("tool"):
+            existing_tool = str(existing.get("tool") or "")
+            planned_tool = str(planned.get("tool") or "")
+            if existing_tool != planned_tool and not (
+                existing_tool in DETERMINISTIC_ROUTE_TOOLS and planned_tool in DETERMINISTIC_ROUTE_TOOLS
+            ):
                 return False
             return route_queries_match(existing, planned)
 
@@ -3115,11 +3365,13 @@ class KnowledgeAgent:
         def deterministic_no_result_seen(state: dict[str, Any]) -> bool:
             for output in list(state.get("tool_outputs") or []):
                 text = str(output or "")
-                if not text.startswith("postgres_deterministic_lookup results:"):
-                    continue
-                payload_text = text.split("postgres_deterministic_lookup results:", 1)[-1].strip()
-                if not _deterministic_tool_output_has_results(payload_text):
-                    return True
+                for tool_name in DETERMINISTIC_ROUTE_TOOLS:
+                    prefix = f"{tool_name} results:"
+                    if not text.startswith(prefix):
+                        continue
+                    payload_text = text.split(prefix, 1)[-1].strip()
+                    if not _deterministic_tool_output_has_results(payload_text):
+                        return True
             return False
 
         def retrieval_no_result_seen(state: dict[str, Any], tool_name: str) -> bool:
@@ -3183,7 +3435,7 @@ class KnowledgeAgent:
                 f"{user_prompt}\n\n"
                 "Supervisor routing task:\n"
                 "- Choose the best specialist tool call(s) for this healthcare question.\n"
-                "- Use postgres_deterministic_lookup for exact structured facts, counts, lists, rota, patients, appointments, wards, contacts, departments, CSV rows, and formulary rows.\n"
+                "- Use postgres_deterministic_lookup for exact structured facts, counts, lists, rota, patients, appointments, wards, contacts, departments, Postgres table rows, and formulary rows.\n"
                 "- Use policy_search for policies, SOPs, pathways, guidelines, compliance, privacy, confidentiality, and governance.\n"
                 "- Use catalogue_search for document inventory and metadata questions.\n"
                 "- Use safety_guard for urgent clinical risk, escalation, PHI, or unsafe requests.\n"
@@ -3320,12 +3572,21 @@ class KnowledgeAgent:
             ]
             deterministic_sections: list[str] = []
             deterministic_no_result_sections: list[str] = []
+            seen_deterministic_sections: set[str] = set()
             non_deterministic_outputs: list[str] = []
             deterministic_index = 0
             for output in tool_outputs:
                 output_text = str(output)
-                if output_text.startswith("postgres_deterministic_lookup results:"):
-                    payload_text = output_text.split("postgres_deterministic_lookup results:", 1)[-1].strip()
+                deterministic_prefix = next(
+                    (
+                        f"{tool_name} results:"
+                        for tool_name in DETERMINISTIC_ROUTE_TOOLS
+                        if output_text.startswith(f"{tool_name} results:")
+                    ),
+                    "",
+                )
+                if deterministic_prefix:
+                    payload_text = output_text.split(deterministic_prefix, 1)[-1].strip()
                     try:
                         payload = json.loads(payload_text)
                     except json.JSONDecodeError:
@@ -3342,18 +3603,23 @@ class KnowledgeAgent:
                     ).strip()
                     if formatted:
                         category = str(payload.get("category") or "") if isinstance(payload, dict) else ""
+                        normalized_formatted = "\n".join(line.strip() for line in formatted.splitlines() if line.strip())
                         if not _deterministic_tool_output_has_results(payload_text) and category != "staff_rota":
-                            deterministic_no_result_sections.append(formatted)
-                        else:
+                            if normalized_formatted not in seen_deterministic_sections:
+                                seen_deterministic_sections.add(normalized_formatted)
+                                deterministic_no_result_sections.append(formatted)
+                        elif normalized_formatted not in seen_deterministic_sections:
+                            seen_deterministic_sections.add(normalized_formatted)
                             deterministic_sections.append(formatted)
                 else:
                     non_deterministic_outputs.append(output_text)
 
+            deterministic_only = bool(tools_used) and all(tool in DETERMINISTIC_ROUTE_TOOLS for tool in tools_used)
             if direct_answer and not tool_context:
                 answer = direct_answer
                 synthesis_status = "direct_answer"
                 synthesis_ms = 0
-            elif tools_used and set(tools_used) == {"postgres_deterministic_lookup"}:
+            elif deterministic_only:
                 answer = "\n\n".join([*deterministic_sections, *deterministic_no_result_sections]) or self._offline_answer(
                     query=original_query,
                     tool_context=tool_context,

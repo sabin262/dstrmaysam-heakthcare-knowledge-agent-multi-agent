@@ -11,6 +11,45 @@ from .config import AppSettings
 from .retries import retry_transient
 
 
+def _records_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return json.dumps(left, sort_keys=True, default=str) == json.dumps(right, sort_keys=True, default=str)
+
+
+def _merge_manifest_records(manifest: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
+    existing_documents = [
+        dict(item)
+        for item in manifest.get("documents", [])
+        if isinstance(item, dict) and item.get("key")
+    ]
+    existing_by_key = {str(item.get("key")): item for item in existing_documents}
+    updated = 0
+    skipped = 0
+    for record in records:
+        key = str(record.get("key") or "")
+        if not key:
+            continue
+        current = existing_by_key.get(key)
+        normalized = dict(record)
+        if current is not None and _records_equal(current, normalized):
+            skipped += 1
+            continue
+        existing_by_key[key] = normalized
+        updated += 1
+
+    ordered_keys = [str(item.get("key")) for item in existing_documents if str(item.get("key")) in existing_by_key]
+    ordered_set = set(ordered_keys)
+    ordered_keys.extend(key for key in existing_by_key if key not in ordered_set)
+    documents = [existing_by_key[key] for key in ordered_keys]
+    manifest["documents"] = documents
+    manifest["total_chunks"] = sum(int(item.get("chunk_count") or 0) for item in documents)
+    manifest["manifest_record_sync"] = {
+        "updated": updated,
+        "skipped": skipped,
+        "record_count": len(records),
+    }
+    return {"updated": updated, "skipped": skipped, "record_count": len(records)}
+
+
 @dataclass
 class DocumentRecord:
     title: str
@@ -59,6 +98,19 @@ class DocumentStore:
     def lookup_table(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return []
 
+    def list_raw_document_keys(self) -> list[str]:
+        if not self.settings.s3_bucket:
+            return []
+        prefix = self.settings.s3_raw_prefix
+        keys: list[str] = []
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.settings.s3_bucket, Prefix=prefix):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if key and not key.endswith("/"):
+                    keys.append(key)
+        return sorted(keys)
+
     @retry_transient
     def read_text(self, key: str) -> str:
         response = self.s3_client.get_object(Bucket=self.settings.s3_bucket, Key=key)
@@ -77,15 +129,14 @@ class DocumentStore:
 
     @retry_transient
     def upsert_manifest_record(self, record: dict[str, Any]) -> None:
+        self.upsert_manifest_records([record])
+
+    @retry_transient
+    def upsert_manifest_records(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         manifest = self._load_manifest()
-        records = [
-            dict(item)
-            for item in manifest.get("documents", [])
-            if isinstance(item, dict) and item.get("key") != record.get("key")
-        ]
-        records.append(dict(record))
-        manifest["documents"] = records
-        manifest["total_chunks"] = sum(int(item.get("chunk_count") or 0) for item in records)
+        result = _merge_manifest_records(manifest, records)
+        if result["updated"] == 0:
+            return result
         self.s3_client.put_object(
             Bucket=self.settings.s3_bucket,
             Key=self.settings.s3_manifest_key,
@@ -93,6 +144,7 @@ class DocumentStore:
             ContentType="application/json",
         )
         self.invalidate_manifest_cache()
+        return result
 
     @retry_transient
     def replace_manifest(self, manifest: dict[str, Any]) -> None:
@@ -168,20 +220,29 @@ class LocalDocumentStore(DocumentStore):
         path.write_bytes(data)
         self.invalidate_manifest_cache()
 
+    def list_raw_document_keys(self) -> list[str]:
+        root = self._path_for_key(self.settings.s3_raw_prefix)
+        if not root.exists():
+            return []
+        keys: list[str] = []
+        for path in root.rglob("*"):
+            if path.is_file():
+                keys.append(path.relative_to(self.local_data_dir).as_posix())
+        return sorted(keys)
+
     def upsert_manifest_record(self, record: dict[str, Any]) -> None:
+        self.upsert_manifest_records([record])
+
+    def upsert_manifest_records(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         manifest = self._load_manifest()
-        records = [
-            dict(item)
-            for item in manifest.get("documents", [])
-            if isinstance(item, dict) and item.get("key") != record.get("key")
-        ]
-        records.append(dict(record))
-        manifest["documents"] = records
-        manifest["total_chunks"] = sum(int(item.get("chunk_count") or 0) for item in records)
+        result = _merge_manifest_records(manifest, records)
+        if result["updated"] == 0:
+            return result
         path = self._path_for_key(self.settings.s3_manifest_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         self.invalidate_manifest_cache()
+        return result
 
     def replace_manifest(self, manifest: dict[str, Any]) -> None:
         path = self._path_for_key(self.settings.s3_manifest_key)
