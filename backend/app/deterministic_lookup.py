@@ -155,6 +155,52 @@ AUTHORITATIVE_LOOKUP_CATEGORIES = {
     "appointments",
     "wards",
     "formulary",
+    "equipment",
+}
+
+CRM_TABLES: dict[str, dict[str, Any]] = {
+    "patients": {
+        "table": "patients",
+        "pk": "patient_id",
+        "columns": ["patient_id", "mrn", "nhs_number", "full_name", "date_of_birth", "ward_code", "department_id", "department_name", "named_consultant", "care_status", "risk_flags", "access_level"],
+        "search": ["patient_id", "mrn", "nhs_number", "full_name", "department_name", "named_consultant", "care_status", "risk_flags"],
+        "filters": ["department_name", "ward_code", "care_status", "access_level"],
+    },
+    "doctors": {
+        "table": "doctors",
+        "pk": "doctor_id",
+        "columns": ["doctor_id", "full_name", "grade", "specialty", "department_id", "department_name", "phone", "email", "bleep", "on_call_today", "access_level"],
+        "search": ["doctor_id", "full_name", "grade", "specialty", "department_name", "phone", "email", "bleep"],
+        "filters": ["department_name", "specialty", "on_call_today", "access_level"],
+    },
+    "departments": {
+        "table": "departments",
+        "pk": "department_id",
+        "columns": ["department_id", "department_name", "specialty_group", "location", "main_phone", "email", "service_lead", "escalation_contact", "access_level"],
+        "search": ["department_id", "department_name", "specialty_group", "location", "main_phone", "email", "service_lead", "escalation_contact"],
+        "filters": ["specialty_group", "access_level"],
+    },
+    "schedule": {
+        "table": "staff_schedule",
+        "pk": "schedule_id",
+        "columns": ["schedule_id", "shift_date", "department_id", "department_name", "role", "staff_name", "shift_start", "shift_end", "on_call", "contact", "access_level"],
+        "search": ["schedule_id", "department_name", "role", "staff_name", "contact"],
+        "filters": ["department_name", "role", "on_call", "shift_date", "access_level"],
+    },
+    "appointments": {
+        "table": "appointments",
+        "pk": "appointment_id",
+        "columns": ["appointment_id", "patient_mrn", "patient_name", "clinic_name", "department_id", "department_name", "appointment_date", "appointment_time", "clinician_name", "status", "referral_priority", "access_level"],
+        "search": ["appointment_id", "patient_mrn", "patient_name", "clinic_name", "department_name", "clinician_name", "status", "referral_priority"],
+        "filters": ["department_name", "status", "referral_priority", "appointment_date", "access_level"],
+    },
+    "finance": {
+        "table": "finance_records",
+        "pk": "finance_id",
+        "columns": ["finance_id", "patient_mrn", "patient_name", "department_id", "department_name", "account_type", "payer_type", "amount_due", "amount_paid", "balance", "invoice_status", "last_invoice_date", "access_level"],
+        "search": ["finance_id", "patient_mrn", "patient_name", "department_name", "account_type", "payer_type", "invoice_status"],
+        "filters": ["department_name", "payer_type", "invoice_status", "access_level"],
+    },
 }
 
 CSV_SEMANTIC_SAMPLE_ROWS = 200
@@ -450,6 +496,40 @@ def _normalized_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
 
 
+def _generated_id(prefix: str, *values: Any) -> str:
+    raw = "-".join(str(value).strip().lower() for value in values if str(value).strip())
+    cleaned = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    if not cleaned:
+        cleaned = "record"
+    return f"{prefix}-{cleaned[:48]}".upper()
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _department_id_for_name(name: str) -> str | None:
+    normalized = str(name).strip().lower()
+    mapping = {
+        "cardiology": "DEP-CARD",
+        "community care": "DEP-COMM",
+        "emergency department": "DEP-ED",
+        "icu": "DEP-ICU",
+        "intensive care unit": "DEP-ICU",
+        "maternity": "DEP-MAT",
+        "mental health": "DEP-MH",
+        "oncology": "DEP-ONC",
+        "paediatrics": "DEP-PAED",
+        "pathology": "DEP-PATH",
+        "pharmacy": "DEP-PHAR",
+        "radiology": "DEP-RAD",
+        "renal": "DEP-RENAL",
+        "respiratory": "DEP-RESP",
+        "surgery": "DEP-SURG",
+    }
+    return mapping.get(normalized)
+
+
 def _row_value(payload: dict[str, Any], field_candidates: Sequence[str]) -> Any:
     candidate_keys = {_normalized_key(field) for field in field_candidates}
     for key, value in payload.items():
@@ -686,31 +766,85 @@ class DeterministicLookupService:
         )
         try:
             handled_distinct_lookup = False
-            if _is_equipment_asset_list_query(query):
+            if category == "equipment" and _is_equipment_asset_list_query(query):
                 distinct_field = "equipment_type"
-                row_value_search_used = True
-                distinct_filenames = _csv_filenames_with_fields(
-                    csv_assets or [],
-                    ("equipment_type", "asset_type", "device_type", "type"),
-                    ("equipment", "asset", "device"),
-                )
-                rows = self._query_uploaded_distinct_field_values(
-                    scopes,
-                    ("equipment_type", "asset_type", "device_type", "type"),
-                    source_filenames=distinct_filenames or None,
-                    limit=limit,
-                    output_field="equipment_type",
-                    fallback_markers=("equipment", "asset", "device"),
-                )
+                try:
+                    rows = self._query_equipment_distinct_values(scopes, limit)
+                except Exception:
+                    rows = []
+                if not rows:
+                    row_value_search_used = True
+                    distinct_filenames = _csv_filenames_with_fields(
+                        csv_assets or [],
+                        ("equipment_type", "asset_type", "device_type", "type"),
+                        ("equipment", "asset", "device"),
+                    )
+                    rows = self._query_uploaded_distinct_field_values(
+                        scopes,
+                        ("equipment_type", "asset_type", "device_type", "type"),
+                        source_filenames=distinct_filenames or None,
+                        limit=limit,
+                        output_field="equipment_type",
+                        fallback_markers=("equipment", "asset", "device"),
+                    )
                 if rows:
                     handled_distinct_lookup = True
                     matched_csv_sources = sorted(
                         {
-                            str(row.get("source_filename"))
+                            str(row.get("source_filename") or "equipment_assets")
                             for row in rows
                             if row.get("source_filename")
                         }
+                    ) or ["equipment_assets"]
+            elif category == "equipment":
+                try:
+                    with self._connect() as conn:
+                        with conn.cursor() as cur:
+                            rows = self._query_equipment(cur, _terms(query), scopes, limit, row_value_count_stopwords)
+                except Exception:
+                    rows = []
+                if aggregate_intent == "count":
+                    try:
+                        matching_rows = self._count_equipment(query, scopes, stopwords=row_value_count_stopwords)
+                    except Exception:
+                        matching_rows = 0
+                    aggregate_result = {
+                        "type": "count",
+                        "matching_rows": matching_rows,
+                        "counts_by_source": {"equipment_assets": matching_rows},
+                        "source_filenames": ["equipment_assets"],
+                    }
+                if rows:
+                    matched_csv_sources = ["equipment_assets"]
+                    handled_distinct_lookup = True
+                else:
+                    row_value_search_used = True
+                    fallback_filenames = selected_filenames or None
+                    rows = self._query_uploaded_lookup_rows(
+                        query,
+                        scopes,
+                        limit,
+                        source_filenames=fallback_filenames,
+                        stopwords=row_value_count_stopwords,
                     )
+                    if aggregate_intent == "count":
+                        counts_by_source = self._count_uploaded_lookup_rows(
+                            query,
+                            scopes,
+                            source_filenames=fallback_filenames,
+                            stopwords=row_value_count_stopwords,
+                        )
+                        aggregate_result = {
+                            "type": "count",
+                            "matching_rows": sum(counts_by_source.values()),
+                            "counts_by_source": counts_by_source,
+                            "source_filenames": sorted(counts_by_source),
+                        }
+                    if rows:
+                        matched_csv_sources = sorted(
+                            {str(row.get("source_filename")) for row in rows if row.get("source_filename")}
+                        )
+                        handled_distinct_lookup = True
             elif _is_medicine_list_query(query):
                 distinct_field = "medicine"
                 row_value_search_used = True
@@ -1038,8 +1172,295 @@ class DeterministicLookupService:
                     """,
                     rows,
                 )
+                self._sync_known_csv_table(cur, filename, [json.loads(row[2]) for row in rows])
             conn.commit()
         return len(rows)
+
+    def _sync_known_csv_table(self, cur, filename: str, rows: Sequence[dict[str, str]]) -> None:
+        normalized = filename.lower()
+        if normalized == "staff_rota.csv":
+            self._sync_staff_schedule_rows(cur, rows)
+        elif normalized == "appointment_clinics.csv":
+            self._sync_clinic_session_rows(cur, rows)
+        elif normalized == "equipment_assets.csv":
+            self._sync_equipment_asset_rows(cur, rows)
+        elif normalized == "medication_formulary.csv":
+            self._sync_formulary_rows(cur, rows)
+        elif normalized == "ward_directory.csv":
+            self._sync_ward_rows(cur, rows)
+        elif normalized == "department_contacts.csv":
+            self._sync_contact_rows(cur, rows)
+        elif normalized == "audit_schedule.csv":
+            self._sync_audit_rows(cur, rows)
+        elif normalized == "training_compliance.csv":
+            self._sync_training_rows(cur, rows)
+
+    def _sync_staff_schedule_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for index, row in enumerate(rows, start=1):
+            department = row.get("department", "")
+            cur.execute(
+                """
+                INSERT INTO staff_schedule
+                    (schedule_id, shift_date, department_id, department_name, role, staff_name,
+                     shift_start, shift_end, on_call, contact, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (schedule_id) DO UPDATE SET
+                    shift_date = EXCLUDED.shift_date,
+                    department_id = EXCLUDED.department_id,
+                    department_name = EXCLUDED.department_name,
+                    role = EXCLUDED.role,
+                    staff_name = EXCLUDED.staff_name,
+                    shift_start = EXCLUDED.shift_start,
+                    shift_end = EXCLUDED.shift_end,
+                    on_call = EXCLUDED.on_call,
+                    contact = EXCLUDED.contact,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    row.get("schedule_id") or f"SCH-CSV-{index:04d}",
+                    row.get("date") or row.get("shift_date"),
+                    _department_id_for_name(department),
+                    department,
+                    row.get("role", ""),
+                    row.get("staff_name") or row.get("name", ""),
+                    row.get("shift_start") or "00:00",
+                    row.get("shift_end") or "00:00",
+                    _truthy(row.get("on_call")),
+                    row.get("contact") or "",
+                    row.get("access_level") or "clinical",
+                ),
+            )
+
+    def _sync_clinic_session_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for row in rows:
+            cur.execute(
+                """
+                INSERT INTO clinic_sessions
+                    (clinic_id, clinic_name, clinic_date, start_time, consultant, slots_total,
+                     slots_available, referral_priority, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (clinic_id) DO UPDATE SET
+                    clinic_name = EXCLUDED.clinic_name,
+                    clinic_date = EXCLUDED.clinic_date,
+                    start_time = EXCLUDED.start_time,
+                    consultant = EXCLUDED.consultant,
+                    slots_total = EXCLUDED.slots_total,
+                    slots_available = EXCLUDED.slots_available,
+                    referral_priority = EXCLUDED.referral_priority,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    row.get("clinic_id"),
+                    row.get("clinic_name", ""),
+                    row.get("date"),
+                    row.get("start_time") or "00:00",
+                    row.get("consultant", ""),
+                    int(row.get("slots_total") or 0),
+                    int(row.get("slots_available") or 0),
+                    row.get("referral_priority", ""),
+                    row.get("access_level") or "clinical",
+                ),
+            )
+
+    def _sync_equipment_asset_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for row in rows:
+            cur.execute(
+                """
+                INSERT INTO equipment_assets
+                    (asset_id, equipment_type, location, status, last_service_date,
+                     next_service_due, clinical_engineering_contact, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (asset_id) DO UPDATE SET
+                    equipment_type = EXCLUDED.equipment_type,
+                    location = EXCLUDED.location,
+                    status = EXCLUDED.status,
+                    last_service_date = EXCLUDED.last_service_date,
+                    next_service_due = EXCLUDED.next_service_due,
+                    clinical_engineering_contact = EXCLUDED.clinical_engineering_contact,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    row.get("asset_id"),
+                    row.get("equipment_type", ""),
+                    row.get("location", ""),
+                    row.get("status", ""),
+                    row.get("last_service_date") or None,
+                    row.get("next_service_due") or None,
+                    row.get("clinical_engineering_contact", ""),
+                    row.get("access_level") or "all_staff",
+                ),
+            )
+
+    def _sync_formulary_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for row in rows:
+            medicine_name = row.get("medicine") or row.get("medicine_name") or row.get("drug") or ""
+            if not medicine_name:
+                continue
+            cur.execute("SELECT medicine_id FROM formulary WHERE lower(medicine_name) = lower(%s) LIMIT 1", (medicine_name,))
+            existing = cur.fetchone()
+            medicine_id = (existing or {}).get("medicine_id") if existing else _generated_id("MED", medicine_name)
+            cur.execute(
+                """
+                INSERT INTO formulary
+                    (medicine_id, medicine_name, category, restricted, approval_required,
+                     max_adult_dose, monitoring_required, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (medicine_id) DO UPDATE SET
+                    medicine_name = EXCLUDED.medicine_name,
+                    category = EXCLUDED.category,
+                    restricted = EXCLUDED.restricted,
+                    approval_required = EXCLUDED.approval_required,
+                    max_adult_dose = EXCLUDED.max_adult_dose,
+                    monitoring_required = EXCLUDED.monitoring_required,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    medicine_id,
+                    medicine_name,
+                    row.get("category", ""),
+                    _truthy(row.get("restricted")),
+                    row.get("approval_required", ""),
+                    row.get("max_adult_dose", ""),
+                    row.get("monitoring_required", ""),
+                    row.get("access_level") or "all_staff",
+                ),
+            )
+
+    def _sync_ward_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for row in rows:
+            department = row.get("specialty") or row.get("department") or ""
+            cur.execute(
+                """
+                INSERT INTO wards
+                    (ward_code, ward_name, department_id, department_name, floor, bed_capacity,
+                     beds_available, nurse_in_charge, phone, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, COALESCE((SELECT beds_available FROM wards WHERE ward_code = %s), 0), %s, %s, %s)
+                ON CONFLICT (ward_code) DO UPDATE SET
+                    ward_name = EXCLUDED.ward_name,
+                    department_id = EXCLUDED.department_id,
+                    department_name = EXCLUDED.department_name,
+                    floor = EXCLUDED.floor,
+                    bed_capacity = EXCLUDED.bed_capacity,
+                    nurse_in_charge = EXCLUDED.nurse_in_charge,
+                    phone = EXCLUDED.phone,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    row.get("ward_code"),
+                    row.get("ward_name", ""),
+                    _department_id_for_name(department),
+                    department,
+                    row.get("floor") or "",
+                    int(row.get("bed_capacity") or 0),
+                    row.get("ward_code"),
+                    row.get("nurse_in_charge") or "",
+                    row.get("phone") or "",
+                    row.get("access_level") or "all_staff",
+                ),
+            )
+
+    def _sync_contact_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for index, row in enumerate(rows, start=1):
+            department = row.get("department") or ""
+            cur.execute(
+                """
+                INSERT INTO organization_contacts
+                    (contact_id, contact_type, department_id, department_name, contact_name, role,
+                     phone, email, available_hours, escalation_level, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (contact_id) DO UPDATE SET
+                    contact_type = EXCLUDED.contact_type,
+                    department_id = EXCLUDED.department_id,
+                    department_name = EXCLUDED.department_name,
+                    contact_name = EXCLUDED.contact_name,
+                    role = EXCLUDED.role,
+                    phone = EXCLUDED.phone,
+                    email = EXCLUDED.email,
+                    available_hours = EXCLUDED.available_hours,
+                    escalation_level = EXCLUDED.escalation_level,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    row.get("contact_id") or f"CON-CSV-{index:04d}",
+                    row.get("escalation_type") or row.get("contact_type") or "",
+                    _department_id_for_name(department),
+                    department,
+                    row.get("contact_name") or "",
+                    row.get("role") or "",
+                    row.get("phone") or "",
+                    row.get("email") or "",
+                    row.get("available_hours") or "",
+                    "urgent" if "urgent" in (row.get("escalation_type") or "").lower() else "routine",
+                    row.get("access_level") or "all_staff",
+                ),
+            )
+
+    def _sync_audit_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for row in rows:
+            department = row.get("department") or ""
+            cur.execute(
+                """
+                INSERT INTO compliance_audits
+                    (audit_id, topic, department_id, department_name, lead, due_date, status,
+                     last_score_percent, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (audit_id) DO UPDATE SET
+                    topic = EXCLUDED.topic,
+                    department_id = EXCLUDED.department_id,
+                    department_name = EXCLUDED.department_name,
+                    lead = EXCLUDED.lead,
+                    due_date = EXCLUDED.due_date,
+                    status = EXCLUDED.status,
+                    last_score_percent = EXCLUDED.last_score_percent,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    row.get("audit_id"),
+                    row.get("topic") or "",
+                    _department_id_for_name(department),
+                    department,
+                    row.get("lead") or "",
+                    row.get("due_date"),
+                    row.get("status") or "",
+                    int(row.get("last_score_percent") or 0),
+                    row.get("access_level") or "manager",
+                ),
+            )
+
+    def _sync_training_rows(self, cur, rows: Sequence[dict[str, str]]) -> None:
+        for row in rows:
+            department = row.get("department") or ""
+            training_id = row.get("training_id") or _generated_id("TRN", row.get("staff_id", ""), row.get("training_module", ""))
+            cur.execute(
+                """
+                INSERT INTO training_records
+                    (training_id, staff_name, role, department_id, department_name, training_module,
+                     completion_date, expiry_date, status, access_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (training_id) DO UPDATE SET
+                    staff_name = EXCLUDED.staff_name,
+                    role = EXCLUDED.role,
+                    department_id = EXCLUDED.department_id,
+                    department_name = EXCLUDED.department_name,
+                    training_module = EXCLUDED.training_module,
+                    completion_date = EXCLUDED.completion_date,
+                    expiry_date = EXCLUDED.expiry_date,
+                    status = EXCLUDED.status,
+                    access_level = EXCLUDED.access_level
+                """,
+                (
+                    training_id,
+                    row.get("staff_name") or "",
+                    row.get("role") or "",
+                    _department_id_for_name(department),
+                    department,
+                    row.get("training_module") or "",
+                    row.get("completion_date") or None,
+                    row.get("expiry_date") or None,
+                    row.get("status") or "",
+                    row.get("access_level") or "manager",
+                ),
+            )
 
     def delete_uploaded_lookup_rows(self) -> int:
         with self._connect() as conn:
@@ -1130,6 +1551,8 @@ class DeterministicLookupService:
                     return self._query_wards(cur, terms, scopes, limit, stopwords)
                 if category == "formulary":
                     return self._query_formulary(cur, terms, scopes, limit, stopwords)
+                if category == "equipment":
+                    return self._query_equipment(cur, terms, scopes, limit, stopwords)
                 return self._query_directory(cur, primary, scopes, limit, stopwords)
 
     def _query_uploaded_lookup_rows(
@@ -1587,6 +2010,8 @@ class DeterministicLookupService:
             return "wards"
         if any(marker in q for marker in ["medicine", "drug", "formulary", "restricted", "dose"]):
             return "formulary"
+        if any(marker in q for marker in ["equipment", "asset", "device", "ventilator", "defibrillator", "pump", "monitor", "machine"]):
+            return "equipment"
         return "directory"
 
     def _access_sql(self) -> str:
@@ -1666,6 +2091,17 @@ class DeterministicLookupService:
             for pattern in patterns:
                 params.extend([pattern, pattern])
 
+        schedule_rows = self._query_staff_schedule_table(
+            query,
+            lookup_scopes,
+            limit,
+            requested_dates=requested_dates,
+            requested_groups=requested_groups,
+            department_terms=department_terms,
+        )
+        if schedule_rows:
+            return schedule_rows
+
         params.append(limit)
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -1709,6 +2145,77 @@ class DeterministicLookupService:
                     requested_groups=requested_groups,
                     department_terms=department_terms,
                 )
+
+    def _query_staff_schedule_table(
+        self,
+        query: str,
+        scopes: tuple[str, ...],
+        limit: int,
+        *,
+        requested_dates: Sequence[str] | None = None,
+        requested_groups: set[str] | None = None,
+        department_terms: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        where_parts = [self._access_sql()]
+        params: list[Any] = [list(scopes)]
+        if requested_dates:
+            where_parts.append("shift_date::text = ANY(%s)")
+            params.append(list(requested_dates))
+        if _requires_on_call(query):
+            where_parts.append("on_call = true")
+
+        role_filters: list[str] = []
+        groups = requested_groups or set()
+        if "doctor" in groups:
+            role_filters.extend(["%consultant%", "%physician%", "%registrar%", "%doctor%", "%clinician%"])
+        if "nurse" in groups:
+            role_filters.append("%nurse%")
+        if role_filters:
+            where_parts.append("(" + " OR ".join(["lower(role) LIKE %s OR lower(staff_name) LIKE %s" for _ in role_filters]) + ")")
+            for pattern in role_filters:
+                params.extend([pattern, pattern])
+
+        for term in list(department_terms or [])[:4]:
+            pattern = _like(term)
+            where_parts.append("(lower(department_name) LIKE %s OR lower(staff_name) LIKE %s OR lower(role) LIKE %s)")
+            params.extend([pattern, pattern, pattern])
+
+        params.append(limit)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT schedule_id, shift_date AS date, department_name AS department,
+                           role, staff_name, shift_start, shift_end, on_call, contact, access_level
+                    FROM staff_schedule
+                    WHERE {" AND ".join(where_parts)}
+                    ORDER BY shift_date, department_name, role, staff_name
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
+                rows = []
+                for row in cur.fetchall():
+                    row_dict = dict(row)
+                    rows.append(
+                        {
+                            "source_table": "staff_schedule",
+                            "source_filename": "staff_schedule",
+                            "row_number": row_dict.get("schedule_id"),
+                            "row": {
+                                "date": str(row_dict.get("date") or ""),
+                                "department": row_dict.get("department"),
+                                "role": row_dict.get("role"),
+                                "staff_name": row_dict.get("staff_name"),
+                                "shift_start": str(row_dict.get("shift_start") or ""),
+                                "shift_end": str(row_dict.get("shift_end") or ""),
+                                "on_call": "Yes" if row_dict.get("on_call") else "No",
+                                "contact": row_dict.get("contact"),
+                            },
+                            "access_level": row_dict.get("access_level"),
+                        }
+                    )
+                return rows
 
     def _query_staff_rota_local_csv(
         self,
@@ -1773,6 +2280,164 @@ class DeterministicLookupService:
                 if len(rows) >= limit:
                     break
         return rows
+
+    def crm_sections(self) -> dict[str, Any]:
+        return {
+            section: {
+                "primary_key": config["pk"],
+                "columns": list(config["columns"]),
+                "filters": list(config.get("filters") or []),
+            }
+            for section, config in CRM_TABLES.items()
+        }
+
+    def crm_list(
+        self,
+        section: str,
+        user: HealthcareUserContext,
+        *,
+        query: str = "",
+        filters: dict[str, str] | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        config = self._crm_config(section)
+        scopes = _access_scopes(user)
+        filters = {str(key): str(value).strip() for key, value in (filters or {}).items() if str(value).strip()}
+        where_parts = [self._access_sql()]
+        params: list[Any] = [list(scopes)]
+        search = query.strip()
+        if search:
+            pattern = _like(search)
+            search_columns = [column for column in config["search"] if column in config["columns"]]
+            where_parts.append("(" + " OR ".join([f"lower(CAST({column} AS TEXT)) LIKE %s" for column in search_columns]) + ")")
+            params.extend([pattern] * len(search_columns))
+        for column in config.get("filters") or []:
+            value = filters.get(column)
+            if not value:
+                continue
+            if column.startswith("on_call"):
+                where_parts.append(f"{column} = %s")
+                params.append(_truthy(value))
+            else:
+                where_parts.append(f"lower(CAST({column} AS TEXT)) LIKE %s")
+                params.append(_like(value))
+        limit = max(1, min(limit, 500))
+        params.append(limit)
+        columns = ", ".join(config["columns"])
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {columns}
+                    FROM {config["table"]}
+                    WHERE {" AND ".join(where_parts)}
+                    ORDER BY {config["pk"]}
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
+                rows = [dict(row) for row in cur.fetchall()]
+        return {
+            "section": section,
+            "primary_key": config["pk"],
+            "columns": list(config["columns"]),
+            "filters": list(config.get("filters") or []),
+            "rows": rows,
+            "summary": {
+                "row_count": len(rows),
+                "message": "No matching rows found." if not rows else f"Found {len(rows)} matching row(s).",
+            },
+        }
+
+    def crm_create(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self._crm_config(section)
+        values = self._crm_payload(config, payload, require_pk=True)
+        columns = list(values)
+        placeholders = ", ".join(["%s"] * len(columns))
+        assignments = ", ".join([f"{column} = EXCLUDED.{column}" for column in columns if column != config["pk"]])
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {config["table"]} ({", ".join(columns)})
+                    VALUES ({placeholders})
+                    ON CONFLICT ({config["pk"]}) DO UPDATE SET {assignments}
+                    RETURNING {", ".join(config["columns"])}
+                    """,
+                    tuple(values[column] for column in columns),
+                )
+                row = dict(cur.fetchone() or {})
+            conn.commit()
+        return row
+
+    def crm_update(self, section: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self._crm_config(section)
+        values = self._crm_payload(config, payload, require_pk=False)
+        if not values:
+            return self.crm_get(section, record_id)
+        assignments = ", ".join([f"{column} = %s" for column in values])
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {config["table"]}
+                    SET {assignments}
+                    WHERE {config["pk"]} = %s
+                    RETURNING {", ".join(config["columns"])}
+                    """,
+                    tuple(values.values()) + (record_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise ValueError(f"{section} record not found: {record_id}")
+        return dict(row)
+
+    def crm_delete(self, section: str, record_id: str) -> dict[str, Any]:
+        config = self._crm_config(section)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM {config['table']} WHERE {config['pk']} = %s RETURNING {config['pk']}",
+                    (record_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise ValueError(f"{section} record not found: {record_id}")
+        return {"deleted": True, "section": section, "record_id": record_id}
+
+    def crm_get(self, section: str, record_id: str) -> dict[str, Any]:
+        config = self._crm_config(section)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {', '.join(config['columns'])} FROM {config['table']} WHERE {config['pk']} = %s",
+                    (record_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            raise ValueError(f"{section} record not found: {record_id}")
+        return dict(row)
+
+    def _crm_config(self, section: str) -> dict[str, Any]:
+        normalized = section.strip().lower().replace("-", "_")
+        if normalized not in CRM_TABLES:
+            raise ValueError(f"Unknown CRM section: {section}")
+        return CRM_TABLES[normalized]
+
+    def _crm_payload(self, config: dict[str, Any], payload: dict[str, Any], *, require_pk: bool) -> dict[str, Any]:
+        allowed = set(config["columns"])
+        values = {
+            str(key): value
+            for key, value in (payload or {}).items()
+            if str(key) in allowed and value not in (None, "")
+        }
+        if not require_pk:
+            values.pop(config["pk"], None)
+        if require_pk and not values.get(config["pk"]):
+            raise ValueError(f"Missing primary key: {config['pk']}")
+        return values
 
     def patient_dashboard(
         self,
@@ -2138,6 +2803,92 @@ class DeterministicLookupService:
             (list(scopes), pattern, pattern, pattern, limit),
         )
         return list(cur.fetchall())
+
+    def _query_equipment(self, cur, terms: list[str], scopes: tuple[str, ...], limit: int, stopwords: set[str] | None = None):
+        search_terms = _expanded_search_terms(" ".join(terms), stopwords or set())
+        useful = [
+            term
+            for term in search_terms
+            if term not in ROW_VALUE_GENERIC_QUERY_MARKERS and term not in ROW_VALUE_CONTEXT_STOPWORDS
+        ]
+        patterns = [_like(term) for term in (useful[:8] or [_best_search_term(terms, stopwords)])]
+        search_where = " OR ".join(
+            [
+                "(lower(asset_id) LIKE %s OR lower(equipment_type) LIKE %s OR lower(location) LIKE %s OR lower(status) LIKE %s)"
+                for _ in patterns
+            ]
+        )
+        search_params = [value for pattern in patterns for value in (pattern, pattern, pattern, pattern)]
+        cur.execute(
+            f"""
+            SELECT asset_id, equipment_type, location, status, last_service_date,
+                   next_service_due, clinical_engineering_contact, access_level
+            FROM equipment_assets
+            WHERE {self._access_sql()}
+              AND ({search_where})
+            ORDER BY
+              CASE WHEN lower(status) = 'available' THEN 0 ELSE 1 END,
+              equipment_type,
+              location
+            LIMIT %s
+            """,
+            (list(scopes), *search_params, limit),
+        )
+        return list(cur.fetchall())
+
+    def _query_equipment_distinct_values(self, scopes: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT equipment_type, count(*) AS row_count
+                    FROM equipment_assets
+                    WHERE {self._access_sql()}
+                    GROUP BY equipment_type
+                    ORDER BY equipment_type
+                    LIMIT %s
+                    """,
+                    (list(scopes), limit),
+                )
+                return [
+                    {
+                        "source_table": "equipment_assets",
+                        "source_filename": "equipment_assets",
+                        "row_number": index,
+                        "row": {"equipment_type": row["equipment_type"], "count": row["row_count"]},
+                        "access_level": "all_staff",
+                    }
+                    for index, row in enumerate(cur.fetchall(), start=1)
+                ]
+
+    def _count_equipment(self, query: str, scopes: tuple[str, ...], stopwords: set[str] | None = None) -> int:
+        terms = _expanded_search_terms(query, stopwords or set())
+        useful = [
+            term
+            for term in terms
+            if term not in ROW_VALUE_GENERIC_QUERY_MARKERS and term not in ROW_VALUE_CONTEXT_STOPWORDS
+        ]
+        patterns = [_like(term) for term in (useful[:8] or [_best_search_term(_terms(query), stopwords)])]
+        search_where = " OR ".join(
+            [
+                "(lower(asset_id) LIKE %s OR lower(equipment_type) LIKE %s OR lower(location) LIKE %s OR lower(status) LIKE %s)"
+                for _ in patterns
+            ]
+        )
+        search_params = [value for pattern in patterns for value in (pattern, pattern, pattern, pattern)]
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT count(*) AS matching_rows
+                    FROM equipment_assets
+                    WHERE {self._access_sql()}
+                      AND ({search_where})
+                    """,
+                    (list(scopes), *search_params),
+                )
+                row = cur.fetchone() or {}
+                return int(row.get("matching_rows") or 0)
 
     def _query_directory(self, cur, primary: str, scopes: tuple[str, ...], limit: int, stopwords: set[str] | None = None):
         pattern = _like(primary if primary and primary not in (stopwords or set()) else "")

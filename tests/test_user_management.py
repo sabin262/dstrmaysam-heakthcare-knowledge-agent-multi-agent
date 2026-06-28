@@ -331,6 +331,7 @@ class FakePatientLookup:
         self.calls = []
         self.uploads = []
         self.deleted_lookup_rows = False
+        self.crm_calls = []
 
     def ingest_uploaded_csv(self, filename, data, access_level="all_staff"):
         self.uploads.append(
@@ -374,6 +375,47 @@ class FakePatientLookup:
                 }
             ],
         }
+
+    def crm_sections(self):
+        return {
+            "patients": {
+                "primary_key": "patient_id",
+                "columns": ["patient_id", "full_name", "department_name", "access_level"],
+                "filters": ["department_name"],
+            }
+        }
+
+    def crm_list(self, section, user, query="", filters=None, limit=100):
+        self.crm_calls.append(
+            {"action": "list", "section": section, "query": query, "filters": dict(filters or {}), "limit": limit}
+        )
+        return {
+            "section": section,
+            "primary_key": "patient_id",
+            "columns": ["patient_id", "full_name", "department_name", "access_level"],
+            "filters": ["department_name"],
+            "rows": [
+                {
+                    "patient_id": "PAT-001",
+                    "full_name": "John Spencer",
+                    "department_name": "Cardiology",
+                    "access_level": "clinical",
+                }
+            ],
+            "summary": {"row_count": 1},
+        }
+
+    def crm_create(self, section, payload):
+        self.crm_calls.append({"action": "create", "section": section, "payload": dict(payload)})
+        return dict(payload)
+
+    def crm_update(self, section, record_id, payload):
+        self.crm_calls.append({"action": "update", "section": section, "record_id": record_id, "payload": dict(payload)})
+        return {"patient_id": record_id, **dict(payload)}
+
+    def crm_delete(self, section, record_id):
+        self.crm_calls.append({"action": "delete", "section": section, "record_id": record_id})
+        return {"deleted": True, "record_id": record_id}
 
 
 class AdminDocumentApiTests(unittest.TestCase):
@@ -820,6 +862,48 @@ class AdminDocumentApiTests(unittest.TestCase):
         self.assertEqual(self.patient_lookup.calls[0]["patient_identifier"], "MRN10001")
         self.assertEqual(self.patient_lookup.calls[0]["tables"], ["patients"])
         self.assertEqual(self.patient_lookup.calls[0]["limit"], 25)
+
+    def test_admin_crm_routes_use_postgres_lookup_service(self):
+        sections = self.client.get(
+            "/admin/crm/sections",
+            headers=self.headers_for("admin", "adminpass1"),
+        )
+        self.assertEqual(sections.status_code, 200)
+        self.assertIn("patients", sections.json())
+
+        listed = self.client.get(
+            "/admin/crm/patients",
+            headers=self.headers_for("admin", "adminpass1"),
+            params={"q": "john", "department_name": "Cardiology", "limit": 25},
+        )
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["rows"][0]["patient_id"], "PAT-001")
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "list")
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["filters"], {"department_name": "Cardiology"})
+
+        created = self.client.post(
+            "/admin/crm/patients",
+            headers=self.headers_for("admin", "adminpass1"),
+            json={"patient_id": "PAT-999", "full_name": "Test Patient"},
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "create")
+
+        updated = self.client.patch(
+            "/admin/crm/patients/PAT-999",
+            headers=self.headers_for("admin", "adminpass1"),
+            json={"full_name": "Updated Patient"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "update")
+
+        deleted = self.client.delete(
+            "/admin/crm/patients/PAT-999",
+            headers=self.headers_for("admin", "adminpass1"),
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.json()["deleted"])
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "delete")
 
 
 if __name__ == "__main__":

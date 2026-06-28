@@ -7,7 +7,7 @@ from pathlib import PurePath
 import re
 import threading
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -1119,6 +1119,83 @@ def admin_patient_details(
             tables=tables,
             limit=limit,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.get("/admin/crm/sections")
+def admin_crm_sections(
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    return get_deterministic_lookup_service().crm_sections()
+
+
+@app.get("/admin/crm/{section}")
+def admin_crm_list(
+    section: str,
+    request: Request,
+    q: str = Query(default="", max_length=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    filters = {
+        key: value
+        for key, value in request.query_params.items()
+        if key not in {"q", "limit"} and value
+    }
+    try:
+        return get_deterministic_lookup_service().crm_list(
+            section,
+            user,
+            query=q,
+            filters=filters,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.post("/admin/crm/{section}")
+def admin_crm_create(
+    section: str,
+    payload: dict[str, object],
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        return get_deterministic_lookup_service().crm_create(section, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.patch("/admin/crm/{section}/{record_id}")
+def admin_crm_update(
+    section: str,
+    record_id: str,
+    payload: dict[str, object],
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        return get_deterministic_lookup_service().crm_update(section, record_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.delete("/admin/crm/{section}/{record_id}")
+def admin_crm_delete(
+    section: str,
+    record_id: str,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        return get_deterministic_lookup_service().crm_delete(section, record_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 

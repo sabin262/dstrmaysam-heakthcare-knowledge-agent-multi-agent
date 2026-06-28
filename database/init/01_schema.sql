@@ -81,6 +81,32 @@ CREATE TABLE IF NOT EXISTS appointments (
     access_level TEXT NOT NULL DEFAULT 'clinical'
 );
 
+CREATE TABLE IF NOT EXISTS staff_schedule (
+    schedule_id TEXT PRIMARY KEY,
+    shift_date DATE NOT NULL,
+    department_id TEXT REFERENCES departments(department_id),
+    department_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    staff_name TEXT NOT NULL,
+    shift_start TIME NOT NULL,
+    shift_end TIME NOT NULL,
+    on_call BOOLEAN NOT NULL DEFAULT false,
+    contact TEXT NOT NULL,
+    access_level TEXT NOT NULL DEFAULT 'clinical'
+);
+
+CREATE TABLE IF NOT EXISTS clinic_sessions (
+    clinic_id TEXT PRIMARY KEY,
+    clinic_name TEXT NOT NULL,
+    clinic_date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    consultant TEXT NOT NULL,
+    slots_total INTEGER NOT NULL,
+    slots_available INTEGER NOT NULL,
+    referral_priority TEXT NOT NULL,
+    access_level TEXT NOT NULL DEFAULT 'clinical'
+);
+
 CREATE TABLE IF NOT EXISTS formulary (
     medicine_id TEXT PRIMARY KEY,
     medicine_name TEXT NOT NULL,
@@ -90,6 +116,58 @@ CREATE TABLE IF NOT EXISTS formulary (
     max_adult_dose TEXT NOT NULL,
     monitoring_required TEXT NOT NULL,
     access_level TEXT NOT NULL DEFAULT 'all_staff'
+);
+
+CREATE TABLE IF NOT EXISTS equipment_assets (
+    asset_id TEXT PRIMARY KEY,
+    equipment_type TEXT NOT NULL,
+    location TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_service_date DATE,
+    next_service_due DATE,
+    clinical_engineering_contact TEXT NOT NULL,
+    access_level TEXT NOT NULL DEFAULT 'all_staff'
+);
+
+CREATE TABLE IF NOT EXISTS finance_records (
+    finance_id TEXT PRIMARY KEY,
+    patient_mrn TEXT REFERENCES patients(mrn),
+    patient_name TEXT NOT NULL,
+    department_id TEXT REFERENCES departments(department_id),
+    department_name TEXT NOT NULL,
+    account_type TEXT NOT NULL,
+    payer_type TEXT NOT NULL,
+    amount_due NUMERIC(12,2) NOT NULL DEFAULT 0,
+    amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+    balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+    invoice_status TEXT NOT NULL,
+    last_invoice_date DATE,
+    access_level TEXT NOT NULL DEFAULT 'manager'
+);
+
+CREATE TABLE IF NOT EXISTS compliance_audits (
+    audit_id TEXT PRIMARY KEY,
+    topic TEXT NOT NULL,
+    department_id TEXT REFERENCES departments(department_id),
+    department_name TEXT NOT NULL,
+    lead TEXT NOT NULL,
+    due_date DATE NOT NULL,
+    status TEXT NOT NULL,
+    last_score_percent INTEGER NOT NULL DEFAULT 0,
+    access_level TEXT NOT NULL DEFAULT 'manager'
+);
+
+CREATE TABLE IF NOT EXISTS training_records (
+    training_id TEXT PRIMARY KEY,
+    staff_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    department_id TEXT REFERENCES departments(department_id),
+    department_name TEXT NOT NULL,
+    training_module TEXT NOT NULL,
+    completion_date DATE,
+    expiry_date DATE,
+    status TEXT NOT NULL,
+    access_level TEXT NOT NULL DEFAULT 'manager'
 );
 
 CREATE TABLE IF NOT EXISTS uploaded_lookup_rows (
@@ -108,6 +186,12 @@ CREATE INDEX IF NOT EXISTS idx_doctors_name ON doctors (lower(full_name));
 CREATE INDEX IF NOT EXISTS idx_doctors_department ON doctors (lower(department_name));
 CREATE INDEX IF NOT EXISTS idx_contacts_department ON organization_contacts (lower(department_name));
 CREATE INDEX IF NOT EXISTS idx_appointments_patient ON appointments (lower(patient_name), lower(patient_mrn));
+CREATE INDEX IF NOT EXISTS idx_staff_schedule_department ON staff_schedule (lower(department_name), shift_date);
+CREATE INDEX IF NOT EXISTS idx_staff_schedule_name ON staff_schedule (lower(staff_name));
+CREATE INDEX IF NOT EXISTS idx_clinic_sessions_date ON clinic_sessions (clinic_date);
 CREATE INDEX IF NOT EXISTS idx_formulary_name ON formulary (lower(medicine_name));
+CREATE INDEX IF NOT EXISTS idx_equipment_assets_type ON equipment_assets (lower(equipment_type));
+CREATE INDEX IF NOT EXISTS idx_equipment_assets_status ON equipment_assets (lower(status));
+CREATE INDEX IF NOT EXISTS idx_finance_records_patient ON finance_records (lower(patient_name), lower(patient_mrn));
 CREATE INDEX IF NOT EXISTS idx_uploaded_lookup_source ON uploaded_lookup_rows (lower(source_filename));
 CREATE INDEX IF NOT EXISTS idx_uploaded_lookup_search ON uploaded_lookup_rows USING gin (to_tsvector('simple', searchable_text));
