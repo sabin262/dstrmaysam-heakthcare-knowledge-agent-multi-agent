@@ -91,11 +91,21 @@ class FakeIndices:
         return {"acknowledged": True}
 
 
-def make_job(s3, opensearch=None, app_settings=None):
+class FakeDeterministicLookup:
+    def __init__(self):
+        self.uploads = []
+
+    def ingest_uploaded_csv(self, filename, data, access_level="all_staff"):
+        self.uploads.append({"filename": filename, "data": data, "access_level": access_level})
+        return 1
+
+
+def make_job(s3, opensearch=None, app_settings=None, deterministic_lookup=None):
     job = IngestionJob.__new__(IngestionJob)
     job.settings = app_settings or settings()
     job.secret_provider = None
     job.s3 = s3
+    job.deterministic_lookup = deterministic_lookup
     job._embeddings = None
     job._opensearch = opensearch or FakeOpenSearch()
     job._embed = lambda text: None
@@ -113,6 +123,16 @@ class IncrementalIngestionTests(unittest.TestCase):
         self.assertEqual(document.metadata["domain"], "admin_policy")
         self.assertEqual(document.metadata["document_type"], "policy")
         self.assertNotIn("facts", document.metadata)
+
+    def test_data_retention_policy_filename_infers_compliance_policy_metadata(self):
+        document = parse_document(
+            "raw/RGH-POL-006_Data_Retention_and_Records_Management_Policy.pdf",
+            b"Data Retention and Records Management Policy",
+        )
+
+        self.assertEqual(document.metadata["domain"], "compliance")
+        self.assertEqual(document.metadata["document_type"], "policy")
+        self.assertIn("clinical_governance", document.metadata["allowed_roles"])
 
     def test_chunk_text_honors_configured_size_and_overlap(self):
         chunks = chunk_text("abcdefghij" * 200, chunk_size=500, chunk_overlap=100)
@@ -258,8 +278,9 @@ class IncrementalIngestionTests(unittest.TestCase):
         self.assertEqual(result["documents"], [])
         self.assertEqual(opensearch.deletes[0]["body"], {"query": {"term": {"key": "raw/removed.md"}}})
 
-    def test_csv_files_are_not_indexed_for_rag(self):
+    def test_csv_files_are_stored_as_lookup_assets_not_rag_chunks(self):
         opensearch = FakeOpenSearch()
+        lookup = FakeDeterministicLookup()
         job = make_job(
             FakeS3(
                 {
@@ -268,14 +289,23 @@ class IncrementalIngestionTests(unittest.TestCase):
                 }
             ),
             opensearch,
+            deterministic_lookup=lookup,
         )
 
         result = job.run()
 
         self.assertEqual(result["indexed_documents"], 1)
-        self.assertEqual(result["documents"][0]["key"], "raw/privacy_policy.md")
-        self.assertEqual(result["documents"][0]["uri"], "s3://bucket/raw/privacy_policy.md")
+        self.assertEqual(result["documents"][0]["key"], "raw/doctor_rota.csv")
+        self.assertEqual(result["documents"][0]["uri"], "s3://bucket/raw/doctor_rota.csv")
+        self.assertEqual(result["documents"][0]["ingestion_status"], "lookup_indexed")
+        self.assertEqual(result["documents"][0]["metadata"]["asset_source"], "postgres_table_lookup")
+        self.assertEqual(result["documents"][0]["metadata"]["source_table"], "staff_schedule")
+        self.assertEqual(result["documents"][0]["metadata"]["lookup_uri"], "postgres://table/staff_schedule")
+        self.assertEqual(result["documents"][0]["metadata"]["row_count"], 1)
+        self.assertEqual(result["documents"][1]["key"], "raw/privacy_policy.md")
+        self.assertEqual(result["documents"][1]["uri"], "s3://bucket/raw/privacy_policy.md")
         self.assertEqual(opensearch.indexes[0]["body"]["key"], "raw/privacy_policy.md")
+        self.assertEqual(lookup.uploads[0]["filename"], "doctor_rota.csv")
 
     def test_metadata_only_csv_manifest_records_are_preserved(self):
         manifest = {

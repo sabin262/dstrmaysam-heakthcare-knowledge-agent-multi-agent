@@ -313,9 +313,10 @@ class FakeRetrievalService:
 class FakeIngestionJob:
     calls = 0
 
-    def __init__(self, settings, secret_provider):
+    def __init__(self, settings, secret_provider, deterministic_lookup=None):
         self.settings = settings
         self.secret_provider = secret_provider
+        self.deterministic_lookup = deterministic_lookup
 
     def run(self):
         FakeIngestionJob.calls += 1
@@ -330,6 +331,7 @@ class FakePatientLookup:
         self.calls = []
         self.uploads = []
         self.deleted_lookup_rows = False
+        self.crm_calls = []
 
     def ingest_uploaded_csv(self, filename, data, access_level="all_staff"):
         self.uploads.append(
@@ -373,6 +375,47 @@ class FakePatientLookup:
                 }
             ],
         }
+
+    def crm_sections(self):
+        return {
+            "patients": {
+                "primary_key": "patient_id",
+                "columns": ["patient_id", "full_name", "department_name", "access_level"],
+                "filters": ["department_name"],
+            }
+        }
+
+    def crm_list(self, section, user, query="", filters=None, limit=100):
+        self.crm_calls.append(
+            {"action": "list", "section": section, "query": query, "filters": dict(filters or {}), "limit": limit}
+        )
+        return {
+            "section": section,
+            "primary_key": "patient_id",
+            "columns": ["patient_id", "full_name", "department_name", "access_level"],
+            "filters": ["department_name"],
+            "rows": [
+                {
+                    "patient_id": "PAT-001",
+                    "full_name": "John Spencer",
+                    "department_name": "Cardiology",
+                    "access_level": "clinical",
+                }
+            ],
+            "summary": {"row_count": 1},
+        }
+
+    def crm_create(self, section, payload):
+        self.crm_calls.append({"action": "create", "section": section, "payload": dict(payload)})
+        return dict(payload)
+
+    def crm_update(self, section, record_id, payload):
+        self.crm_calls.append({"action": "update", "section": section, "record_id": record_id, "payload": dict(payload)})
+        return {"patient_id": record_id, **dict(payload)}
+
+    def crm_delete(self, section, record_id):
+        self.crm_calls.append({"action": "delete", "section": section, "record_id": record_id})
+        return {"deleted": True, "record_id": record_id}
 
 
 class AdminDocumentApiTests(unittest.TestCase):
@@ -441,7 +484,7 @@ class AdminDocumentApiTests(unittest.TestCase):
         self.assertEqual(self.documents.uploads[0]["key"], "raw/Clinical_Policy.md")
         self.assertEqual(self.documents.uploads[0]["data"], b"# Policy")
 
-    def test_admin_csv_upload_goes_to_postgres_lookup_not_raw_documents(self):
+    def test_admin_csv_upload_stores_raw_file_and_postgres_lookup_metadata(self):
         response = self.client.post(
             "/admin/documents/upload",
             headers=self.headers_for("admin", "adminpass1"),
@@ -449,13 +492,17 @@ class AdminDocumentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["key"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
-        self.assertEqual(self.documents.uploads, [])
-        self.assertEqual(self.documents.manifest_records[0]["key"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
-        self.assertEqual(self.documents.manifest_records[0]["uri"], "postgres://uploaded_lookup_rows/doctor_rota.csv")
+        self.assertEqual(response.json()["key"], "raw/doctor_rota.csv")
+        self.assertEqual(response.json()["uri"], "s3://bucket/raw/doctor_rota.csv")
+        self.assertEqual(self.documents.uploads[0]["key"], "raw/doctor_rota.csv")
+        self.assertEqual(self.documents.uploads[0]["data"], b"date,doctor\nToday,Dr Aisha Malik\n")
+        self.assertEqual(self.documents.manifest_records[0]["key"], "raw/doctor_rota.csv")
+        self.assertEqual(self.documents.manifest_records[0]["uri"], "s3://bucket/raw/doctor_rota.csv")
         self.assertEqual(self.documents.manifest_records[0]["chunk_count"], 0)
-        self.assertEqual(self.documents.manifest_records[0]["ingestion_status"], "metadata_only")
-        self.assertEqual(self.documents.manifest_records[0]["metadata"]["asset_source"], "postgres_uploaded_lookup")
+        self.assertEqual(self.documents.manifest_records[0]["ingestion_status"], "lookup_indexed")
+        self.assertEqual(self.documents.manifest_records[0]["metadata"]["asset_source"], "postgres_table_lookup")
+        self.assertEqual(self.documents.manifest_records[0]["metadata"]["source_table"], "staff_schedule")
+        self.assertEqual(self.documents.manifest_records[0]["metadata"]["lookup_uri"], "postgres://table/staff_schedule")
         self.assertEqual(self.documents.manifest_records[0]["metadata"]["row_count"], 1)
         self.assertEqual(self.documents.manifest_records[0]["metadata"]["columns"], ["date", "doctor"])
         self.assertIn("aisha", self.documents.manifest_records[0]["metadata"]["semantic_terms"])
@@ -543,13 +590,13 @@ class AdminDocumentApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["deleted_chunks"], 7)
-        self.assertEqual(response.json()["deleted_lookup_rows"], 5)
+        self.assertEqual(response.json()["deleted_lookup_rows"], 0)
         self.assertTrue(response.json()["manifest_cleared"])
         self.assertEqual(response.json()["backend"], "opensearch")
         self.assertTrue(response.json()["raw_documents_preserved"])
-        self.assertFalse(response.json()["deterministic_lookup_preserved"])
+        self.assertTrue(response.json()["deterministic_lookup_preserved"])
         self.assertTrue(self.retrieval.deleted)
-        self.assertTrue(self.patient_lookup.deleted_lookup_rows)
+        self.assertFalse(self.patient_lookup.deleted_lookup_rows)
         self.assertEqual(self.documents.replaced_manifests[0]["documents"], [])
         self.assertEqual(self.documents.replaced_manifests[0]["opensearch_index"], "idx")
         self.assertTrue(self.agent.invalidated)
@@ -816,6 +863,48 @@ class AdminDocumentApiTests(unittest.TestCase):
         self.assertEqual(self.patient_lookup.calls[0]["patient_identifier"], "MRN10001")
         self.assertEqual(self.patient_lookup.calls[0]["tables"], ["patients"])
         self.assertEqual(self.patient_lookup.calls[0]["limit"], 25)
+
+    def test_admin_crm_routes_use_postgres_lookup_service(self):
+        sections = self.client.get(
+            "/admin/crm/sections",
+            headers=self.headers_for("admin", "adminpass1"),
+        )
+        self.assertEqual(sections.status_code, 200)
+        self.assertIn("patients", sections.json())
+
+        listed = self.client.get(
+            "/admin/crm/patients",
+            headers=self.headers_for("admin", "adminpass1"),
+            params={"q": "john", "department_name": "Cardiology", "limit": 25},
+        )
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["rows"][0]["patient_id"], "PAT-001")
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "list")
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["filters"], {"department_name": "Cardiology"})
+
+        created = self.client.post(
+            "/admin/crm/patients",
+            headers=self.headers_for("admin", "adminpass1"),
+            json={"patient_id": "PAT-999", "full_name": "Test Patient"},
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "create")
+
+        updated = self.client.patch(
+            "/admin/crm/patients/PAT-999",
+            headers=self.headers_for("admin", "adminpass1"),
+            json={"full_name": "Updated Patient"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "update")
+
+        deleted = self.client.delete(
+            "/admin/crm/patients/PAT-999",
+            headers=self.headers_for("admin", "adminpass1"),
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.json()["deleted"])
+        self.assertEqual(self.patient_lookup.crm_calls[-1]["action"], "delete")
 
 
 if __name__ == "__main__":

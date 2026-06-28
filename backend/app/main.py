@@ -7,7 +7,7 @@ from pathlib import PurePath
 import re
 import threading
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -21,10 +21,10 @@ from .auth import (
     UserManagementError,
 )
 from .config import AppSettings
-from .deterministic_lookup import DeterministicLookupService, build_csv_semantic_metadata
+from .deterministic_lookup import DeterministicLookupService, UnsupportedCsvLookupError, supported_csv_lookup_mappings
 from .healthcare import HealthcareUserContext
 from .history import PostgresChatHistoryRepository, create_chat_history_repository
-from .ingest import IngestionJob, checksum_bytes
+from .ingest import IngestionJob, table_lookup_manifest_record
 from .local_chroma import LocalChromaIngestionJob, LocalChromaRetrievalService
 from .models import (
     AdminDocumentUploadResponse,
@@ -135,8 +135,8 @@ def get_news_service() -> GuardianNewsService:
 def create_ingestion_job():
     settings = get_settings()
     if settings.use_local_resources():
-        return LocalChromaIngestionJob(settings, get_secret_provider())
-    return IngestionJob(settings, get_secret_provider())
+        return LocalChromaIngestionJob(settings, get_secret_provider(), get_deterministic_lookup_service())
+    return IngestionJob(settings, get_secret_provider(), get_deterministic_lookup_service())
 
 
 @lru_cache
@@ -265,43 +265,6 @@ def _document_record_payload(document) -> dict[str, object]:
         "metadata": dict(document.metadata or {}),
         "chunk_count": int(document.chunk_count or 0),
         "ingestion_status": document.ingestion_status or "",
-    }
-
-
-def _csv_manifest_record(filename: str, data: bytes, rows_inserted: int, content_type: str) -> dict[str, object]:
-    semantic_metadata = build_csv_semantic_metadata(filename, data)
-    columns = [str(column).strip() for column in semantic_metadata.get("columns") or [] if str(column).strip()]
-    key = f"postgres://uploaded_lookup_rows/{filename}"
-    return {
-        "key": key,
-        "title": filename,
-        "uri": key,
-        "content_type": content_type,
-        "checksum": checksum_bytes(data),
-        "metadata": {
-            "key": key,
-            "checksum": checksum_bytes(data),
-            "owner": "uploaded",
-            "version": "uploaded",
-            "effective_date": "unknown",
-            "review_date": "unknown",
-            "approval_status": "uploaded",
-            "sensitivity": "internal",
-            "domain": "deterministic_lookup",
-            "document_type": "csv_table",
-            "allowed_roles": ["staff", "admin", "manager", "doctor", "nurse", "pharmacy", "clinical_governance"],
-            "asset_source": "postgres_uploaded_lookup",
-            "source_table": "uploaded_lookup_rows",
-            "row_count": rows_inserted,
-            "columns": columns,
-            "semantic_terms": semantic_metadata.get("semantic_terms") or [],
-            "categorical_values": semantic_metadata.get("categorical_values") or {},
-            "sample_values": semantic_metadata.get("sample_values") or [],
-            "search_backend": "postgres",
-            "rag_indexed": False,
-        },
-        "chunk_count": 0,
-        "ingestion_status": "metadata_only",
     }
 
 
@@ -768,24 +731,41 @@ async def upload_admin_document(
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
     if filename.lower().endswith(".csv"):
+        key = _raw_document_key(filename)
+        content_type = file.content_type or "text/csv"
         try:
-            rows_inserted = get_deterministic_lookup_service().ingest_uploaded_csv(filename, data)
+            sync_result = get_deterministic_lookup_service().ingest_uploaded_csv(filename, data)
+        except UnsupportedCsvLookupError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": str(exc),
+                    "supported_mappings": supported_csv_lookup_mappings(),
+                },
+            ) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-        if rows_inserted == 0:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No CSV lookup rows found")
-        content_type = file.content_type or "text/csv"
+        try:
+            get_document_store().upload_document(key, data, content_type)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         try:
             document_store = get_document_store()
             if hasattr(document_store, "upsert_manifest_record"):
                 document_store.upsert_manifest_record(
-                    _csv_manifest_record(filename, data, rows_inserted, content_type)
+                    table_lookup_manifest_record(
+                        key,
+                        data,
+                        sync_result,
+                        content_type,
+                        uri=f"s3://{get_settings().s3_bucket}/{key}",
+                    )
                 )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         return AdminDocumentUploadResponse(
-            key=f"postgres://uploaded_lookup_rows/{filename}",
-            uri=f"postgres://uploaded_lookup_rows/{filename}",
+            key=key,
+            uri=f"s3://{get_settings().s3_bucket}/{key}",
             content_type=content_type,
             size_bytes=len(data),
         )
@@ -871,10 +851,6 @@ def delete_admin_document_indexes(
         elif hasattr(retrieval_service, "invalidate_cache"):
             retrieval_service.invalidate_cache()
 
-        deterministic_lookup = get_deterministic_lookup_service()
-        if hasattr(deterministic_lookup, "delete_uploaded_lookup_rows"):
-            deleted_lookup_rows = int(deterministic_lookup.delete_uploaded_lookup_rows())
-
         document_store = get_document_store()
         if hasattr(document_store, "replace_manifest"):
             document_store.replace_manifest(_empty_index_manifest())
@@ -893,7 +869,7 @@ def delete_admin_document_indexes(
         manifest_cleared=True,
         backend="chroma" if get_settings().use_local_resources() else "opensearch",
         raw_documents_preserved=True,
-        deterministic_lookup_preserved=False,
+        deterministic_lookup_preserved=True,
     )
 
 
@@ -1145,6 +1121,83 @@ def admin_patient_details(
             tables=tables,
             limit=limit,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.get("/admin/crm/sections")
+def admin_crm_sections(
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    return get_deterministic_lookup_service().crm_sections()
+
+
+@app.get("/admin/crm/{section}")
+def admin_crm_list(
+    section: str,
+    request: Request,
+    q: str = Query(default="", max_length=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    filters = {
+        key: value
+        for key, value in request.query_params.items()
+        if key not in {"q", "limit"} and value
+    }
+    try:
+        return get_deterministic_lookup_service().crm_list(
+            section,
+            user,
+            query=q,
+            filters=filters,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.post("/admin/crm/{section}")
+def admin_crm_create(
+    section: str,
+    payload: dict[str, object],
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        return get_deterministic_lookup_service().crm_create(section, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.patch("/admin/crm/{section}/{record_id}")
+def admin_crm_update(
+    section: str,
+    record_id: str,
+    payload: dict[str, object],
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        return get_deterministic_lookup_service().crm_update(section, record_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.delete("/admin/crm/{section}/{record_id}")
+def admin_crm_delete(
+    section: str,
+    record_id: str,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> dict[str, object]:
+    try:
+        return get_deterministic_lookup_service().crm_delete(section, record_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 

@@ -14,6 +14,12 @@ from .retries import retry_transient
 from .secrets import SecretProvider
 
 
+LOOKUP_TABLE_ASSET_SOURCE = "postgres_table_lookup"
+LOOKUP_TABLE_URI_PREFIX = "postgres://table"
+LEGACY_LOOKUP_CSV_ASSET_SOURCE = "postgres_uploaded_lookup"
+SUPPORTED_RAW_EXTENSIONS = (".pdf", ".docx", ".txt", ".md", ".csv")
+
+
 @dataclass
 class ParsedDocument:
     key: str
@@ -28,24 +34,80 @@ def checksum_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def infer_healthcare_metadata(key: str, checksum: str) -> dict[str, Any]:
-    normalized = key.lower()
+def _normalized_metadata_text(*values: str) -> str:
+    return " ".join(values).replace("_", " ").replace("-", " ").lower()
+
+
+def infer_healthcare_metadata(key: str, checksum: str, text: str = "") -> dict[str, Any]:
+    normalized = _normalized_metadata_text(key, text[:4000])
     domain = "general"
     document_type = "document"
     allowed_roles = ["staff"]
 
-    if any(marker in normalized for marker in ["clinical", "sop", "pathway", "guideline", "sepsis"]):
+    policy_markers = [
+        "policy",
+        "policies",
+        "procedure",
+        "procedures",
+        "sop",
+        "standard operating procedure",
+        "pathway",
+        "pathways",
+        "guideline",
+        "guidelines",
+    ]
+    compliance_markers = [
+        "breach",
+        "compliance",
+        "confidentiality",
+        "data protection",
+        "data retention",
+        "governance",
+        "information governance",
+        "privacy",
+        "record retention",
+        "records management",
+        "retention",
+        "safeguarding",
+    ]
+    clinical_markers = ["clinical", "sepsis", "infection", "medication safety", "patient safety"]
+    admin_markers = ["hr", "training", "payroll", "onboarding", "leave", "absence"]
+
+    if any(marker in normalized for marker in compliance_markers):
+        domain = "compliance"
+        document_type = "policy" if any(marker in normalized for marker in policy_markers) else "document"
+        allowed_roles = ["staff", "admin", "manager", "clinical_governance"]
+    elif any(marker in normalized for marker in clinical_markers + ["sop", "pathway", "guideline"]):
         domain = "clinical_policy"
-        document_type = "policy"
+        if "sop" in normalized or "standard operating procedure" in normalized:
+            document_type = "sop"
+        elif "pathway" in normalized:
+            document_type = "pathway"
+        elif "guideline" in normalized:
+            document_type = "guideline"
+        else:
+            document_type = "policy"
         allowed_roles = ["doctor", "nurse", "clinical_governance", "admin"]
-    elif any(marker in normalized for marker in ["hr", "training", "payroll", "onboarding"]):
+    elif any(marker in normalized for marker in admin_markers):
         domain = "admin_policy"
         document_type = "policy"
         allowed_roles = ["staff", "admin", "manager"]
-    elif any(marker in normalized for marker in ["incident", "breach", "safeguarding", "governance"]):
+    elif any(marker in normalized for marker in ["incident"]):
         domain = "compliance"
         document_type = "policy"
         allowed_roles = ["staff", "manager", "clinical_governance"]
+    elif any(marker in normalized for marker in policy_markers):
+        domain = "admin_policy"
+        if "sop" in normalized or "standard operating procedure" in normalized:
+            document_type = "sop"
+        elif "pathway" in normalized:
+            document_type = "pathway"
+        elif "guideline" in normalized:
+            document_type = "guideline"
+        elif "procedure" in normalized:
+            document_type = "procedure"
+        else:
+            document_type = "policy"
     elif any(marker in normalized for marker in ["catalogue", "directory", "service", "owner", "system"]):
         domain = "catalogue"
         document_type = "directory"
@@ -76,7 +138,6 @@ def parse_document(key: str, data: bytes) -> ParsedDocument:
     lower = key.lower()
     title = key.rsplit("/", 1)[-1]
     checksum = checksum_bytes(data)
-    metadata = infer_healthcare_metadata(key, checksum)
 
     if lower.endswith(".pdf"):
         try:
@@ -111,6 +172,7 @@ def parse_document(key: str, data: bytes) -> ParsedDocument:
         text = data.decode("utf-8", errors="replace")
         content_type = "text/plain"
 
+    metadata = infer_healthcare_metadata(key, checksum, text)
     return ParsedDocument(
         key=key,
         title=title,
@@ -144,17 +206,111 @@ def is_metadata_only_manifest_record(record: dict[str, Any]) -> bool:
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     return (
         str(record.get("ingestion_status") or "") == "metadata_only"
-        or str(metadata.get("asset_source") or "") == "postgres_uploaded_lookup"
+        or str(metadata.get("asset_source") or "") in {LOOKUP_TABLE_ASSET_SOURCE, LEGACY_LOOKUP_CSV_ASSET_SOURCE}
         or str(record.get("uri") or "").startswith("postgres://")
         or str(record.get("key") or "").startswith("postgres://")
     )
 
 
+def table_lookup_manifest_record(
+    key: str,
+    data: bytes,
+    sync_result: Any,
+    content_type: str = "text/csv",
+    *,
+    uri: str | None = None,
+) -> dict[str, object]:
+    from .deterministic_lookup import build_csv_semantic_metadata, detect_csv_table_mapping
+
+    filename = key.rsplit("/", 1)[-1]
+    if isinstance(sync_result, int):
+        semantic_metadata = build_csv_semantic_metadata(filename, data)
+        mapping = detect_csv_table_mapping(filename, semantic_metadata.get("columns") or []) or {}
+        table_name = str(mapping.get("table_name") or "")
+        table_key = str(mapping.get("table_key") or "")
+        rows_inserted = int(sync_result)
+    else:
+        semantic_metadata = dict(getattr(sync_result, "semantic_metadata", {}) or {})
+        table_name = str(getattr(sync_result, "table_name", "") or "")
+        table_key = str(getattr(sync_result, "table_key", "") or "")
+        rows_inserted = int(getattr(sync_result, "rows_inserted", 0) or 0)
+    columns = [str(column).strip() for column in semantic_metadata.get("columns") or [] if str(column).strip()]
+    lookup_uri = f"{LOOKUP_TABLE_URI_PREFIX}/{table_name}"
+    checksum = checksum_bytes(data)
+    return {
+        "key": key,
+        "title": filename,
+        "uri": uri or f"s3://{key}",
+        "content_type": content_type,
+        "checksum": checksum,
+        "metadata": {
+            "key": key,
+            "checksum": checksum,
+            "owner": "uploaded",
+            "version": "uploaded",
+            "effective_date": "unknown",
+            "review_date": "unknown",
+            "approval_status": "uploaded",
+            "sensitivity": "internal",
+            "domain": "deterministic_lookup",
+            "document_type": "postgres_table",
+            "allowed_roles": ["staff", "admin", "manager", "doctor", "nurse", "pharmacy", "clinical_governance"],
+            "asset_source": LOOKUP_TABLE_ASSET_SOURCE,
+            "source_table": table_name,
+            "source_table_key": table_key,
+            "source_filename": filename,
+            "lookup_uri": lookup_uri,
+            "row_count": rows_inserted,
+            "columns": columns,
+            "semantic_terms": semantic_metadata.get("semantic_terms") or [],
+            "categorical_values": semantic_metadata.get("categorical_values") or {},
+            "sample_values": semantic_metadata.get("sample_values") or [],
+            "search_backend": "postgres",
+            "rag_indexed": False,
+        },
+        "chunk_count": 0,
+        "ingestion_status": "lookup_indexed",
+    }
+
+
+def csv_lookup_manifest_record(
+    key: str,
+    data: bytes,
+    rows_inserted: int,
+    content_type: str = "text/csv",
+    *,
+    uri: str | None = None,
+) -> dict[str, object]:
+    from .deterministic_lookup import build_csv_semantic_metadata, detect_csv_table_mapping
+
+    filename = key.rsplit("/", 1)[-1]
+    semantic_metadata = build_csv_semantic_metadata(filename, data)
+    mapping = detect_csv_table_mapping(filename, semantic_metadata.get("columns") or [])
+    if mapping is None:
+        table_name = "unknown"
+        table_key = ""
+    else:
+        table_name = str(mapping["table_name"])
+        table_key = str(mapping["table_key"])
+
+    class _SyncResult:
+        pass
+
+    sync_result = _SyncResult()
+    sync_result.filename = filename
+    sync_result.table_name = table_name
+    sync_result.table_key = table_key
+    sync_result.rows_inserted = rows_inserted
+    sync_result.semantic_metadata = semantic_metadata
+    return table_lookup_manifest_record(key, data, sync_result, content_type, uri=uri)
+
+
 class IngestionJob:
-    def __init__(self, settings: AppSettings, secret_provider: SecretProvider):
+    def __init__(self, settings: AppSettings, secret_provider: SecretProvider, deterministic_lookup: Any | None = None):
         self.settings = settings
         self.secret_provider = secret_provider
         self.s3 = boto3_client(settings, "s3")
+        self.deterministic_lookup = deterministic_lookup
         self._embeddings: Any | None = None
         self._opensearch: Any | None = None
         self._opensearch_index_checked = False
@@ -169,12 +325,13 @@ class IngestionJob:
             for document in existing_manifest.get("documents", [])
             if isinstance(document, dict) and document.get("key") and not is_metadata_only_manifest_record(document)
         }
+        raw_documents = self._load_raw_documents()
+        raw_keys = {str(document.get("key") or "") for document in raw_documents}
         metadata_only_documents = [
             dict(document)
             for document in existing_manifest.get("documents", [])
-            if isinstance(document, dict) and is_metadata_only_manifest_record(document)
+            if isinstance(document, dict) and is_metadata_only_manifest_record(document) and str(document.get("key") or "") not in raw_keys
         ]
-        raw_documents = self._load_raw_documents()
         seen_keys: set[str] = set()
         indexed_chunks = 0
         indexed_documents = 0
@@ -186,6 +343,19 @@ class IngestionJob:
             key = raw_document["key"]
             seen_keys.add(key)
             checksum = checksum_bytes(raw_document["body"])
+            if key.lower().endswith(".csv"):
+                sync_result = self._ingest_lookup_csv(key, raw_document["body"])
+                manifest_documents.append(
+                    table_lookup_manifest_record(
+                        key,
+                        raw_document["body"],
+                        sync_result,
+                        "text/csv",
+                        uri=f"s3://{self.settings.s3_bucket}/{key}",
+                    )
+                )
+                continue
+
             existing_document = existing_by_key.get(key)
             if existing_document and existing_document.get("checksum") == checksum and not force_reindex:
                 skipped_documents += 1
@@ -267,11 +437,17 @@ class IngestionJob:
                 key = item["Key"]
                 if key.endswith("/"):
                     continue
-                if not key.lower().endswith((".pdf", ".docx", ".txt", ".md")):
+                if not key.lower().endswith(SUPPORTED_RAW_EXTENSIONS):
                     continue
                 body = self.s3.get_object(Bucket=self.settings.s3_bucket, Key=key)["Body"].read()
                 documents.append({"key": key, "body": body})
         return documents
+
+    def _ingest_lookup_csv(self, key: str, data: bytes) -> Any:
+        if self.deterministic_lookup is None or not hasattr(self.deterministic_lookup, "ingest_uploaded_csv"):
+            raise RuntimeError("Deterministic table lookup service is not configured for CSV sync.")
+        filename = key.rsplit("/", 1)[-1]
+        return self.deterministic_lookup.ingest_uploaded_csv(filename, data)
 
     def _load_documents(self) -> list[ParsedDocument]:
         return [parse_document(document["key"], document["body"]) for document in self._load_raw_documents()]

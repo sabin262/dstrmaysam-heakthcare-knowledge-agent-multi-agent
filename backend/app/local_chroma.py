@@ -6,13 +6,16 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .config import AppSettings
-from .ingest import checksum_bytes, chunk_text, is_metadata_only_manifest_record, parse_document
+from .ingest import (
+    SUPPORTED_RAW_EXTENSIONS,
+    checksum_bytes,
+    chunk_text,
+    is_metadata_only_manifest_record,
+    parse_document,
+    table_lookup_manifest_record,
+)
 from .retrieval import RetrievalHit, RetrievalService
 from .secrets import SecretProvider
-
-
-SUPPORTED_LOCAL_EXTENSIONS = (".pdf", ".docx", ".txt", ".md")
-
 
 def _local_uri(key: str) -> str:
     return f"local://{key}"
@@ -87,10 +90,11 @@ class LocalChromaCollectionMixin:
 
 
 class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMixin):
-    def __init__(self, settings: AppSettings, secret_provider: SecretProvider):
+    def __init__(self, settings: AppSettings, secret_provider: SecretProvider, deterministic_lookup: Any | None = None):
         self.settings = settings
         self.secret_provider = secret_provider
         self.local_data_dir = Path(settings.local_data_dir)
+        self.deterministic_lookup = deterministic_lookup
         self._embeddings: Any | None = None
         self._collection: Any | None = None
 
@@ -104,13 +108,14 @@ class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMi
             for document in existing_manifest.get("documents", [])
             if isinstance(document, dict) and document.get("key") and not is_metadata_only_manifest_record(document)
         }
+        raw_documents = self._load_raw_documents()
+        raw_keys = {str(document.get("key") or "") for document in raw_documents}
         metadata_only_documents = [
             dict(document)
             for document in existing_manifest.get("documents", [])
-            if isinstance(document, dict) and is_metadata_only_manifest_record(document)
+            if isinstance(document, dict) and is_metadata_only_manifest_record(document) and str(document.get("key") or "") not in raw_keys
         ]
 
-        raw_documents = self._load_raw_documents()
         seen_keys: set[str] = set()
         manifest_documents: list[dict[str, Any]] = list(metadata_only_documents)
         indexed_chunks = 0
@@ -124,6 +129,19 @@ class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMi
             body = raw_document["body"]
             seen_keys.add(key)
             checksum = checksum_bytes(body)
+            if key.lower().endswith(".csv"):
+                sync_result = self._ingest_lookup_csv(key, body)
+                manifest_documents.append(
+                    table_lookup_manifest_record(
+                        key,
+                        body,
+                        sync_result,
+                        "text/csv",
+                        uri=_local_uri(key),
+                    )
+                )
+                continue
+
             existing_document = existing_by_key.get(key)
             if existing_document and existing_document.get("checksum") == checksum and not force_reindex:
                 skipped_documents += 1
@@ -233,11 +251,17 @@ class LocalChromaIngestionJob(LocalChromaEmbeddingMixin, LocalChromaCollectionMi
             return []
         documents: list[dict[str, Any]] = []
         for path in sorted(raw_root.rglob("*")):
-            if not path.is_file() or not path.name.lower().endswith(SUPPORTED_LOCAL_EXTENSIONS):
+            if not path.is_file() or not path.name.lower().endswith(SUPPORTED_RAW_EXTENSIONS):
                 continue
             key = path.relative_to(self.local_data_dir).as_posix()
             documents.append({"key": key, "body": path.read_bytes()})
         return documents
+
+    def _ingest_lookup_csv(self, key: str, data: bytes) -> Any:
+        if self.deterministic_lookup is None or not hasattr(self.deterministic_lookup, "ingest_uploaded_csv"):
+            raise RuntimeError("Deterministic table lookup service is not configured for CSV sync.")
+        filename = key.rsplit("/", 1)[-1]
+        return self.deterministic_lookup.ingest_uploaded_csv(filename, data)
 
     def _load_manifest(self) -> dict[str, Any]:
         path = self._path_for_key(self.settings.s3_manifest_key)

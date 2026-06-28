@@ -186,6 +186,12 @@ def get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any] 
     return response.json()
 
 
+def delete_json(path: str) -> dict[str, Any]:
+    response = requests.delete(f"{BACKEND_URL}{path}", headers=api_headers(), timeout=30)
+    raise_for_api_error(response)
+    return response.json()
+
+
 @st.cache_data(ttl=NEWS_REFRESH_SECONDS, show_spinner=False)
 def fetch_news_payload() -> dict[str, Any]:
     response = requests.get(f"{BACKEND_URL}/news", timeout=20)
@@ -1465,93 +1471,231 @@ def render_admin_dashboard() -> None:
         st.info("No chat queries found yet.")
 
 
-def patient_detail_table_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    table_rows = []
-    for row in rows:
-        appointment_parts = [
-            str(row.get("appointment_date") or ""),
-            str(row.get("appointment_time") or ""),
-        ]
-        appointment = " ".join(part for part in appointment_parts if part).strip()
-        table_rows.append(
-            {
-                "Table": row.get("table", ""),
-                "Patient ID": row.get("patient_id", ""),
-                "MRN": row.get("mrn", ""),
-                "Name": row.get("patient_name", ""),
-                "DOB": row.get("date_of_birth", ""),
-                "Department": row.get("department_name", ""),
-                "Ward": row.get("ward_code", ""),
-                "Care status": row.get("care_status", ""),
-                "Risk flags": row.get("risk_flags", ""),
-                "Appointment": appointment,
-                "Clinic": row.get("clinic_name", ""),
-                "Clinician": row.get("clinician_name") or row.get("named_consultant", ""),
-                "Status": row.get("status", ""),
-            }
-        )
-    return table_rows
+CRM_SECTION_LABELS = {
+    "patients": "Patients",
+    "doctors": "Doctors",
+    "departments": "Departments",
+    "schedule": "Schedule",
+    "appointments": "Appointments",
+    "finance": "Finance",
+    "wards": "Wards",
+    "contacts": "Contacts",
+    "formulary": "Formulary",
+    "clinic_sessions": "Clinic Sessions",
+    "equipment": "Equipment",
+    "compliance_audits": "Compliance Audits",
+    "training": "Training",
+}
+
+CRM_PRIMARY_SECTIONS = (
+    "patients",
+    "doctors",
+    "departments",
+    "schedule",
+    "appointments",
+    "finance",
+)
 
 
-def render_patient_details_dashboard() -> None:
-    render_page_title("Patient Details")
-    with st.form("patient-details-filters"):
-        first_row = st.columns([2, 1, 1])
-        query = first_row[0].text_input("Search", placeholder="Name, MRN, NHS number, consultant, clinic")
-        patient_identifier = first_row[1].text_input("Patient ID / MRN / NHS")
-        limit = first_row[2].number_input("Limit", min_value=1, max_value=250, value=50, step=10)
+CRM_FIELD_LABELS = {
+    "access_level": "Access level",
+    "account_type": "Account type",
+    "amount_due": "Amount due",
+    "amount_paid": "Amount paid",
+    "appointment_date": "Appointment date",
+    "appointment_id": "Appointment ID",
+    "appointment_time": "Appointment time",
+    "balance": "Balance",
+    "bleep": "Bleep",
+    "care_status": "Care status",
+    "clinic_date": "Clinic date",
+    "clinic_name": "Clinic",
+    "clinic_id": "Clinic ID",
+    "clinician_name": "Clinician",
+    "clinical_engineering_contact": "Clinical engineering contact",
+    "completion_date": "Completion date",
+    "contact": "Contact",
+    "contact_id": "Contact ID",
+    "contact_name": "Contact name",
+    "contact_type": "Contact type",
+    "date_of_birth": "Date of birth",
+    "department_id": "Department ID",
+    "department_name": "Department",
+    "doctor_id": "Doctor ID",
+    "email": "Email",
+    "equipment_type": "Equipment type",
+    "escalation_level": "Escalation level",
+    "finance_id": "Finance ID",
+    "full_name": "Name",
+    "grade": "Grade",
+    "invoice_status": "Invoice status",
+    "last_score_percent": "Last score",
+    "last_service_date": "Last service date",
+    "lead": "Lead",
+    "last_invoice_date": "Last invoice date",
+    "main_phone": "Main phone",
+    "max_adult_dose": "Max adult dose",
+    "medicine_id": "Medicine ID",
+    "medicine_name": "Medicine",
+    "training_module": "Training module",
+    "next_service_due": "Next service due",
+    "mrn": "MRN",
+    "named_consultant": "Named consultant",
+    "nhs_number": "NHS number",
+    "on_call_today": "On call today",
+    "on_call": "On call",
+    "patient_id": "Patient ID",
+    "patient_mrn": "Patient MRN",
+    "patient_name": "Patient name",
+    "payer_type": "Payer type",
+    "phone": "Phone",
+    "referral_priority": "Referral priority",
+    "restricted": "Restricted",
+    "risk_flags": "Risk flags",
+    "role": "Role",
+    "schedule_id": "Schedule ID",
+    "service_lead": "Service lead",
+    "expiry_date": "Expiry date",
+    "shift_date": "Shift date",
+    "shift_end": "Shift end",
+    "shift_start": "Shift start",
+    "slots_available": "Slots available",
+    "slots_total": "Slots total",
+    "specialty": "Specialty",
+    "specialty_group": "Specialty group",
+    "staff_name": "Staff name",
+    "status": "Status",
+    "topic": "Topic",
+    "training_id": "Training ID",
+    "ward_code": "Ward",
+    "ward_name": "Ward name",
+}
 
-        second_row = st.columns([1, 1, 1, 1])
-        department = second_row[0].text_input("Department")
-        ward = second_row[1].text_input("Ward")
-        care_status = second_row[2].text_input("Care status")
-        selected_tables = second_row[3].multiselect(
-            "Tables",
-            ["patients", "appointments"],
-            default=["patients", "appointments"],
-        )
-        submitted = st.form_submit_button("Apply filters")
 
-    if submitted or "patient_details_payload" not in st.session_state:
-        params = {
-            "q": query,
-            "patient_identifier": patient_identifier,
-            "department": department,
-            "ward": ward,
-            "care_status": care_status,
-            "tables": selected_tables,
-            "limit": int(limit),
-        }
-        try:
-            payload = get_json("/admin/patient-details", params=params)
-            st.session_state.patient_details_payload = payload if isinstance(payload, dict) else {}
-            st.session_state.patient_details_error = None
-        except Exception as exc:
-            st.session_state.patient_details_payload = {}
-            st.session_state.patient_details_error = str(exc)
+def crm_label(value: str) -> str:
+    return CRM_FIELD_LABELS.get(value, value.replace("_", " ").title())
 
-    if st.session_state.get("patient_details_error"):
-        st.error(f"Unable to load patient details: {st.session_state.patient_details_error}")
+
+def crm_filter_controls(section: str, filters: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not filters:
+        return values
+    columns = st.columns(min(len(filters), 4))
+    for index, field in enumerate(filters):
+        values[field] = columns[index % len(columns)].text_input(crm_label(field), key=f"crm-filter-{section}-{field}")
+    return values
+
+
+def crm_payload_form(section: str, columns: list[str], defaults: dict[str, Any] | None = None, *, disabled_pk: str = "") -> dict[str, Any]:
+    defaults = defaults or {}
+    payload: dict[str, Any] = {}
+    field_columns = st.columns(3)
+    for index, column in enumerate(columns):
+        value = defaults.get(column, "")
+        label = crm_label(column)
+        disabled = bool(disabled_pk and column == disabled_pk)
+        if column in {"on_call", "on_call_today", "restricted"}:
+            payload[column] = field_columns[index % 3].checkbox(label, value=bool(value), disabled=disabled)
+        else:
+            payload[column] = field_columns[index % 3].text_input(
+                label,
+                value="" if value is None else str(value),
+                disabled=disabled,
+                key=f"crm-{section}-{column}-{disabled_pk or 'new'}",
+            )
+    return payload
+
+
+def render_hospital_crm_dashboard(section: str) -> None:
+    label = CRM_SECTION_LABELS.get(section, section.title())
+    render_page_title(f"Hospital CRM - {label}")
+    try:
+        sections = get_json("/admin/crm/sections")
+        section_meta = dict(sections).get(section, {}) if isinstance(sections, dict) else {}
+    except Exception as exc:
+        st.error(f"Unable to load CRM metadata: {exc}")
         return
 
-    payload = st.session_state.get("patient_details_payload") or {}
+    columns = list(section_meta.get("columns") or [])
+    primary_key = str(section_meta.get("primary_key") or (columns[0] if columns else "id"))
+    filters = list(section_meta.get("filters") or [])
+
+    with st.form(f"crm-filters-{section}"):
+        top = st.columns([3, 1])
+        search = top[0].text_input("Search", placeholder=f"Search {label.lower()}")
+        limit = top[1].number_input("Limit", min_value=1, max_value=500, value=100, step=25)
+        filter_values = crm_filter_controls(section, filters)
+        submitted = st.form_submit_button("Apply filters")
+
+    cache_key = f"crm_payload_{section}"
+    error_key = f"crm_error_{section}"
+    if submitted or cache_key not in st.session_state:
+        params = {"q": search, "limit": int(limit)}
+        params.update({key: value for key, value in filter_values.items() if value})
+        try:
+            payload = get_json(f"/admin/crm/{section}", params=params)
+            st.session_state[cache_key] = payload if isinstance(payload, dict) else {}
+            st.session_state[error_key] = None
+        except Exception as exc:
+            st.session_state[cache_key] = {}
+            st.session_state[error_key] = str(exc)
+
+    if st.session_state.get(error_key):
+        st.error(f"Unable to load {label.lower()}: {st.session_state[error_key]}")
+        return
+
+    payload = st.session_state.get(cache_key) or {}
+    rows = list(payload.get("rows") or [])
     summary = payload.get("summary") or {}
-    rows = payload.get("rows") or []
-    metric_columns = st.columns(4)
-    metric_columns[0].metric("Rows", summary.get("row_count", 0))
-    metric_columns[1].metric("Patients", summary.get("unique_patients", 0))
-    metric_columns[2].metric("Patient records", (summary.get("table_counts") or {}).get("patients", 0))
-    metric_columns[3].metric("Appointments", (summary.get("table_counts") or {}).get("appointments", 0))
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("Rows", summary.get("row_count", len(rows)))
+    metric_columns[1].metric("Section", label)
+    metric_columns[2].metric("Primary key", primary_key)
 
-    st.caption(f"Access scopes applied: {', '.join(payload.get('access_scopes_applied') or [])}")
-    table_rows = patient_detail_table_rows(rows)
-    if table_rows:
-        st.dataframe(table_rows, hide_index=True, use_container_width=True)
+    if rows:
+        st.dataframe(rows, hide_index=True, use_container_width=True)
     else:
-        st.info(summary.get("message") or "No matching patient rows found.")
+        st.info(summary.get("message") or f"No {label.lower()} records found.")
 
-    with st.expander("Raw database rows"):
-        st.json(rows)
+    with st.expander(f"Create {label[:-1] if label.endswith('s') else label}"):
+        with st.form(f"crm-create-{section}"):
+            create_payload = crm_payload_form(section, columns)
+            create_submitted = st.form_submit_button("Create / upsert")
+        if create_submitted:
+            try:
+                post_json(f"/admin/crm/{section}", create_payload)
+                st.session_state.pop(cache_key, None)
+                st.success("Record saved")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Create failed: {exc}")
+
+    if rows:
+        options = [str(row.get(primary_key) or "") for row in rows if row.get(primary_key)]
+        selected_id = st.selectbox("Select record to manage", options, key=f"crm-selected-{section}")
+        selected_row = next((row for row in rows if str(row.get(primary_key) or "") == selected_id), {})
+        with st.expander("Update selected record", expanded=False):
+            with st.form(f"crm-update-{section}"):
+                update_payload = crm_payload_form(section, columns, selected_row, disabled_pk=primary_key)
+                update_submitted = st.form_submit_button("Save changes")
+            if update_submitted:
+                try:
+                    patch_json(f"/admin/crm/{section}/{selected_id}", update_payload)
+                    st.session_state.pop(cache_key, None)
+                    st.success("Record updated")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Update failed: {exc}")
+        with st.expander("Delete selected record", expanded=False):
+            st.warning(f"Delete {selected_id} from {label}.")
+            if st.button("Delete selected record", key=f"crm-delete-{section}-{selected_id}"):
+                try:
+                    delete_json(f"/admin/crm/{section}/{selected_id}")
+                    st.session_state.pop(cache_key, None)
+                    st.success("Record deleted")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Delete failed: {exc}")
 
 
 def document_table_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1802,6 +1946,27 @@ def submit_chat_query(query: str) -> None:
     st.session_state.messages.append({"role": "assistant", "content": data["answer"]})
 
 
+def chat_progress_messages(query: str) -> list[str]:
+    lowered = query.lower()
+    messages = ["Supervisor is reading the question and splitting any sub-questions."]
+    planned: list[str] = []
+    if any(marker in lowered for marker in ["on call", "on-call", "oncall", "rota", "shift", "appointment", "patient", "ward", "equipment", "ventilator", "medicine", "drug", "formulary"]):
+        planned.append("DeterministicLookupAgent is checking Postgres/CSV rows for exact operational facts.")
+    if any(marker in lowered for marker in ["policy", "sop", "guideline", "pathway", "retention", "stored", "records management", "privacy", "governance", "confidentiality"]):
+        planned.append("PolicyAgent is searching indexed policy and governance chunks.")
+    if any(marker in lowered for marker in ["document", "catalog", "catalogue", "uploaded", "indexed"]):
+        planned.append("CatalogAgent is checking the document inventory and metadata.")
+    if any(marker in lowered for marker in ["urgent", "quick", "emergency", "unsafe", "escalate", "risk"]):
+        planned.append("SafetyAgent is checking whether escalation guidance is needed.")
+    if not planned:
+        planned.append("RAGAgent is searching indexed knowledge chunks for relevant context.")
+    messages.extend(planned)
+    if any("PolicyAgent" in item for item in planned):
+        messages.append("If focused policy search has no matching chunks, the graph will try a broader document search before final synthesis.")
+    messages.append("SynthesisAgent is combining specialist evidence into the final answer.")
+    return messages
+
+
 def _chat_request_worker(
     query: str,
     session_id: str | None,
@@ -1846,13 +2011,14 @@ def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> No
     worker.start()
 
     step_index = 0
-    render_chat_progress(progress_placeholder, CHAT_PROGRESS_MESSAGES[step_index])
+    progress_messages = chat_progress_messages(query)
+    render_chat_progress(progress_placeholder, progress_messages[step_index])
     while worker.is_alive():
         worker.join(timeout=0.75)
         if not worker.is_alive():
             break
-        step_index = min(step_index + 1, len(CHAT_PROGRESS_MESSAGES) - 1)
-        render_chat_progress(progress_placeholder, CHAT_PROGRESS_MESSAGES[step_index])
+        step_index = min(step_index + 1, len(progress_messages) - 1)
+        render_chat_progress(progress_placeholder, progress_messages[step_index])
     render_chat_progress(
         progress_placeholder,
         "Answer ready.",
@@ -2067,7 +2233,35 @@ def render_dashboard_app_page() -> None:
 def render_patient_details_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
-    render_patient_details_dashboard()
+        st.divider()
+        primary_labels = [CRM_SECTION_LABELS[key] for key in CRM_PRIMARY_SECTIONS]
+        crm_section_label = st.radio(
+            "CRM sections",
+            primary_labels,
+            index=0,
+        )
+        radio_section = next(
+            key for key, value in CRM_SECTION_LABELS.items() if value == crm_section_label
+        )
+        try:
+            available_sections = get_json("/admin/crm/sections")
+        except Exception:
+            available_sections = {}
+        table_keys = [key for key in CRM_SECTION_LABELS if key in available_sections]
+        if not table_keys:
+            st.error("Unable to load CRM tables.")
+            return
+        if radio_section in table_keys:
+            default_table_index = table_keys.index(radio_section)
+        else:
+            default_table_index = 0
+        table_label = st.selectbox(
+            "All tables",
+            [CRM_SECTION_LABELS[key] for key in table_keys],
+            index=default_table_index,
+        )
+    section = next(key for key in table_keys if CRM_SECTION_LABELS[key] == table_label)
+    render_hospital_crm_dashboard(section)
 
 
 def render_users_app_page() -> None:
@@ -2113,7 +2307,7 @@ elif "admin" in st.session_state.get("roles", []):
                 st.Page(render_dashboard_app_page, title="Dashboard", icon=":material/dashboard:"),
                 st.Page(
                     render_patient_details_app_page,
-                    title="Patient Details",
+                    title="Hospital CRM",
                     icon=":material/patient_list:",
                 ),
                 st.Page(render_users_app_page, title="Users", icon=":material/group:"),
