@@ -70,9 +70,8 @@ class AppSettings:
     deterministic_lookup_enabled: bool = True
     deterministic_lookup_multipart_first_enabled: bool = False
     tool_execution_mode: str = "local"
-    mcp_server_url: str = "http://mcp-tools:8000/sse"
+    mcp_server_url: str = "http://host.docker.internal:9000/sse"
     mcp_project_id: str = "dstrmaysam-healthcare-knowledge-multi-agent"
-    mcp_tool_name: str = "execute_project_tool"
     mcp_tool_timeout_seconds: int = 30
     mcp_tool_fallback_to_local: bool = False
     guardian_api_key: str = ""
@@ -157,9 +156,8 @@ class AppSettings:
                 "DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED", False
             ),
             tool_execution_mode=_env("TOOL_EXECUTION_MODE", "local").strip().lower(),
-            mcp_server_url=_env("MCP_SERVER_URL", "http://mcp-tools:8000/sse"),
+            mcp_server_url=_env("MCP_SERVER_URL", "http://host.docker.internal:9000/sse"),
             mcp_project_id=_env("MCP_PROJECT_ID", "dstrmaysam-healthcare-knowledge-multi-agent"),
-            mcp_tool_name=_env("MCP_TOOL_NAME", "execute_project_tool"),
             mcp_tool_timeout_seconds=int(_env("MCP_TOOL_TIMEOUT_SECONDS", "30")),
             mcp_tool_fallback_to_local=_env_bool("MCP_TOOL_FALLBACK_TO_LOCAL", False),
             guardian_api_key=_env("GUARDIAN_API_KEY", ""),
@@ -217,7 +215,6 @@ class AppSettings:
             "tool_execution_mode": self.tool_execution_mode,
             "mcp_server_url": self.mcp_server_url,
             "mcp_project_id": self.mcp_project_id,
-            "mcp_tool_name": self.mcp_tool_name,
             "mcp_tool_timeout_seconds": self.mcp_tool_timeout_seconds,
             "mcp_tool_fallback_to_local": str(self.mcp_tool_fallback_to_local),
             "guardian_api_configured": str(bool(self.guardian_api_key)),

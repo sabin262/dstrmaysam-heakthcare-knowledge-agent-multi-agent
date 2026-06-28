@@ -73,12 +73,11 @@ class McpToolClient:
         timeout = max(1, int(self.settings.mcp_tool_timeout_seconds or 30))
         args = {
             "project_id": self.settings.mcp_project_id,
-            "tool_name": tool_name,
             "payload": payload,
         }
         async with Client(self.settings.mcp_server_url) as client:
             return await asyncio.wait_for(
-                self._call_tool_and_extract_text(client, self.settings.mcp_tool_name, args),
+                self._call_tool_and_extract_text(client, tool_name, args),
                 timeout=timeout,
             )
 

@@ -102,7 +102,7 @@ Docker Compose starts:
 - Backend API at `http://localhost:8000`
 - Frontend UI at `http://localhost:8501`
 - Postgres at `localhost:5432`
-- Optional MCP tools server at `http://localhost:8001/sse`
+- Optional external MCP tools server from `../MCP-Tools` at `http://localhost:9000/sse`
 
 For local testing only, Compose enables a seeded admin overlay:
 
@@ -146,12 +146,11 @@ To execute selected tool calls on the MCP server while keeping supervisor and sp
 
 ```env
 TOOL_EXECUTION_MODE=mcp
-MCP_SERVER_URL=http://mcp-tools:8000/sse
+MCP_SERVER_URL=http://host.docker.internal:9000/sse
 MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
-MCP_TOOL_NAME=execute_project_tool
 ```
 
-The MCP server lives in `../MCP-Tools` for local Compose and is intended to be hosted as its own AWS service later. Keep `TOOL_EXECUTION_MODE=local` for the current in-process behavior.
+The MCP server lives in `../MCP-Tools` and must be run as an external service. This project's Compose file does not start an MCP container. Keep `TOOL_EXECUTION_MODE=local` for the current in-process behavior.
 
 If `LOCAL_APP_SECRET_FILE` does not exist, the backend creates it with a generated session secret and the configured local username/password.
 
