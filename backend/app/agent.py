@@ -145,6 +145,15 @@ POLICY_QUERY_MARKERS = {
     "research data",
     "research governance",
     "research information",
+    "approval",
+    "approvals",
+    "approval required",
+    "report an incident",
+    "report incident",
+    "incident reporting",
+    "incident report",
+    "data breach",
+    "breach reporting",
 }
 DETERMINISTIC_QUERY_MARKERS = {
     "bleep",
@@ -157,21 +166,29 @@ DETERMINISTIC_QUERY_MARKERS = {
     "on-call",
     "oncall",
     "contact",
+    "contacts",
     "phone",
     "email",
     "department",
+    "departments",
     "ward",
+    "wards",
     "ipd",
     "inpatient",
     "location",
     "located",
     "patient",
+    "patients",
     "mrn",
     "nhs",
     "appointment",
+    "appointments",
     "clinic",
+    "clinics",
     "medicine",
+    "medicines",
     "drug",
+    "drugs",
     "formulary",
     "restricted",
     "role",
@@ -260,34 +277,60 @@ CATALOG_QUERY_MARKERS = {
     "available policies",
     "catalog",
     "catalogue",
+    "compliance documents",
+    "do we have a document",
+    "document about",
     "document inventory",
     "document list",
+    "documents available",
     "documents exist",
+    "documents related",
+    "indexed documents",
     "list documents",
     "list policies",
+    "lookup assets",
+    "metadata only",
     "policy inventory",
+    "policy documents",
+    "show documents",
+    "table assets",
+    "available for lookup",
     "what documents",
     "what policies",
 }
 SAFETY_QUERY_MARKERS = {
     "anaphylaxis",
+    "breach",
     "cardiac arrest",
     "chest pain",
+    "clinical deterioration",
+    "data breach",
+    "deteriorating",
+    "diagnose",
+    "diagnosis",
     "emergency",
     "escalate",
     "escalation",
+    "gave the wrong",
+    "medication error",
     "not breathing",
     "overdose",
+    "patient identifier",
     "safeguarding",
+    "safeguarding concern",
     "self harm",
+    "share this patient",
+    "share patient",
     "sepsis",
     "stroke",
+    "symptoms",
     "suicide",
     "urgent",
     "unsafe",
+    "wrong medication",
 }
 MULTIPART_QUERY_PATTERN = re.compile(
-    r"\b(?:and also|also|as well as|plus)\b|\band\s+(?=(?:who|which|what|where|when|how|show|list|tell|does|do|is|are)\b)|[?]\s+(?=\w)",
+    r"\b(?:and also|also|as well as|plus)\b|\band\s+(?=(?:who|which|what|where|when|how|show|list|tell|does|do|is|are|explain|summarise|summarize|contact)\b)|[?]\s+(?=\w)",
     flags=re.IGNORECASE,
 )
 
@@ -543,11 +586,19 @@ def _query_parts(query: str) -> list[str]:
 
 def _contains_marker(text: str, markers: set[str]) -> bool:
     lowered = text.lower()
-    return any(marker in lowered for marker in markers)
+    for marker in markers:
+        normalized = marker.lower().strip()
+        if not normalized:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", lowered):
+            return True
+    return False
 
 
 def _has_policy_intent(text: str) -> bool:
     lowered = text.lower()
+    if _has_catalog_intent(lowered):
+        return False
     if _contains_marker(lowered, POLICY_QUERY_MARKERS):
         return True
     if _has_research_data_policy_intent(lowered):
@@ -576,8 +627,13 @@ def _has_retention_policy_intent(text: str) -> bool:
 
 
 def _has_deterministic_intent(text: str) -> bool:
+    if _has_catalog_intent(text):
+        return False
+    if _safety_should_suppress_deterministic(text):
+        return False
     return (
         _contains_marker(text, DETERMINISTIC_QUERY_MARKERS)
+        or _has_known_structured_entity_info_intent(text)
         or _has_structured_row_value_intent(text)
         or _has_list_lookup_intent(text)
         or _has_equipment_availability_intent(text)
@@ -591,7 +647,7 @@ def _has_deterministic_intent(text: str) -> bool:
 
 def _has_patient_location_lookup_intent(text: str) -> bool:
     lowered = text.lower()
-    location_marker = any(marker in lowered for marker in ["ward", "bed", "ipd", "inpatient", "location", "located", "where"])
+    location_marker = _contains_marker(text, {"ward", "bed", "ipd", "inpatient", "location", "located", "where"})
     terms = [
         term
         for term in re.findall(r"[A-Za-z0-9@._+-]+", lowered)
@@ -605,8 +661,8 @@ def _has_patient_location_lookup_intent(text: str) -> bool:
 
 def _has_patient_appointment_lookup_intent(text: str) -> bool:
     lowered = text.lower()
-    appointment_marker = any(marker in lowered for marker in ["appointment", "appointments", "clinic", "slot", "referral"])
-    patient_marker = any(marker in lowered for marker in ["patient", "mrn", "nhs"]) or len(
+    appointment_marker = _contains_marker(text, {"appointment", "appointments", "clinic", "slot", "referral"})
+    patient_marker = _contains_marker(text, {"patient", "mrn", "nhs"}) or len(
         [
             term
             for term in re.findall(r"[A-Za-z0-9@._+-]+", lowered)
@@ -721,6 +777,73 @@ def _has_generic_info_intent(text: str) -> bool:
     return any(marker in lowered for marker in ENTITY_LOOKUP_MARKERS)
 
 
+KNOWN_STRUCTURED_ENTITY_TERMS = {
+    "adalimumab",
+    "amikacin",
+    "apixaban",
+    "atropine",
+    "chemotherapy",
+    "dapagliflozin",
+    "defibrillator",
+    "diazepam",
+    "diclofenac",
+    "dopamine",
+    "ecg",
+    "fentanyl",
+    "gentamicin",
+    "heparin",
+    "infusion",
+    "insulin",
+    "levetiracetam",
+    "meropenem",
+    "methotrexate",
+    "morphine",
+    "noradrenaline",
+    "omeprazole",
+    "oxycodone",
+    "paracetamol",
+    "prednisolone",
+    "salbutamol",
+    "tamsulosin",
+    "tranexamic",
+    "vancomycin",
+    "ventilator",
+    "warfarin",
+}
+
+
+GENERIC_DOCUMENT_INFO_TERMS = {
+    "iot",
+    "internet",
+    "policy",
+    "procedure",
+    "sop",
+    "guidance",
+    "guideline",
+    "governance",
+    "research",
+    "retention",
+    "documentation",
+    "incident",
+}
+
+
+def _generic_info_terms(text: str) -> list[str]:
+    if not _has_generic_info_intent(text):
+        return []
+    ignored = ENTITY_LOOKUP_MARKERS | {"on", "about", "for", "the", "a", "an", "please", "me"}
+    return [
+        term
+        for term in re.findall(r"[A-Za-z0-9@._+-]+", text.lower())
+        if len(term) >= 3 and term not in ignored
+    ]
+
+
+def _has_known_structured_entity_info_intent(text: str) -> bool:
+    terms = set(_generic_info_terms(text))
+    return bool(terms & KNOWN_STRUCTURED_ENTITY_TERMS) and not bool(terms & GENERIC_DOCUMENT_INFO_TERMS)
+
+
 def _has_list_lookup_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_policy_intent(text):
@@ -754,11 +877,47 @@ def _has_catalog_intent(text: str) -> bool:
 
 def _has_safety_intent(text: str) -> bool:
     lowered = text.lower()
-    if _has_policy_intent(text):
+    if _has_policy_intent(text) and not _has_active_safety_or_privacy_intent(text):
+        return False
+    if _has_equipment_availability_intent(text):
+        return any(marker in lowered for marker in ("urgent", "urgently", "quick", "quickly", "emergency"))
+    return any(marker in lowered for marker in SAFETY_QUERY_MARKERS)
+
+
+def _has_active_safety_or_privacy_intent(text: str) -> bool:
+    lowered = text.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "deteriorating",
+            "clinical deterioration",
+            "wrong medication",
+            "medication error",
+            "gave the wrong",
+            "data breach",
+            "diagnose",
+            "diagnosis",
+            "symptoms",
+            "patient identifier",
+            "nhs number",
+            "share this patient",
+            "share patient",
+            "safeguarding concern",
+            "concern involving a child",
+        )
+    ):
+        return True
+    return False
+
+
+def _safety_should_suppress_deterministic(text: str) -> bool:
+    if not _has_safety_intent(text):
         return False
     if _has_equipment_availability_intent(text):
         return False
-    return any(marker in lowered for marker in SAFETY_QUERY_MARKERS)
+    if _has_contact_intent(text) or _has_staff_rota_lookup_intent(text) or _has_patient_appointment_lookup_intent(text):
+        return False
+    return True
 
 
 def _needs_deterministic_specialist(text: str) -> bool:
@@ -1002,8 +1161,7 @@ def _format_count_detail(payload: dict[str, Any]) -> str:
 
 
 def _has_contact_intent(query: str) -> bool:
-    lowered = query.lower()
-    return any(marker in lowered for marker in ("contact", "phone", "email", "bleep", "call", "reach"))
+    return _contains_marker(query, {"contact", "phone", "email", "bleep", "call", "reach"})
 
 
 def _has_on_call_intent(query: str) -> bool:
@@ -1429,16 +1587,36 @@ def _planned_tool_names(query: str) -> list[str]:
     return _unique_route_tools(_planned_tool_routes(query))
 
 
-def _tool_for_query_part(part: str) -> str:
-    if _has_safety_intent(part):
-        return "safety_guard"
+def _tools_for_query_part(part: str) -> list[str]:
     if _has_catalog_intent(part):
-        return "catalogue_search"
-    if _has_policy_intent(part):
-        return "policy_search"
-    if _has_deterministic_intent(part):
-        return "postgres_deterministic_lookup"
-    return "rag_search"
+        return ["catalogue_search"]
+
+    tools: list[str] = []
+    deterministic = _has_deterministic_intent(part)
+    policy = _has_policy_intent(part)
+    safety = _has_safety_intent(part)
+    deterministic_can_coexist_with_policy = (
+        _has_equipment_availability_intent(part)
+        or _has_contact_intent(part)
+        or _has_staff_rota_lookup_intent(part)
+        or _has_list_lookup_intent(part)
+        or _has_patient_appointment_lookup_intent(part)
+        or _has_known_structured_entity_info_intent(part)
+    )
+
+    if deterministic and (not policy or deterministic_can_coexist_with_policy):
+        tools.append("postgres_deterministic_lookup")
+    if safety:
+        tools.append("safety_guard")
+    if policy:
+        tools.append("policy_search")
+    if deterministic and not policy and "postgres_deterministic_lookup" not in tools:
+        tools.append("postgres_deterministic_lookup")
+    return tools or ["rag_search"]
+
+
+def _tool_for_query_part(part: str) -> str:
+    return _tools_for_query_part(part)[0]
 
 
 def _unique_route_tools(routes: list[dict[str, str]]) -> list[str]:
@@ -1454,17 +1632,31 @@ def _planned_tool_routes(query: str) -> list[dict[str, str]]:
     routes: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for part in _query_parts(query):
-        tool = _tool_for_query_part(part)
-        key = (tool, " ".join(part.lower().split()))
-        if key not in seen:
-            seen.add(key)
-            routes.append({"tool": tool, "query": part, "reason": "supervisor_rule_plan"})
+        for tool in _tools_for_query_part(part):
+            key = (tool, " ".join(part.lower().split()))
+            if key not in seen:
+                seen.add(key)
+                routes.append({"tool": tool, "query": part, "reason": "supervisor_rule_plan"})
 
-    if _has_policy_intent(query) and not any(route["tool"] == "policy_search" for route in routes):
+    if (
+        _has_policy_intent(query)
+        and not _has_catalog_intent(query)
+        and not any(route["tool"] == "policy_search" for route in routes)
+    ):
         routes.insert(0, {"tool": "policy_search", "query": query, "reason": "supervisor_rule_plan"})
     if (
         _has_deterministic_intent(query)
-        and not _has_policy_intent(query)
+        and not _has_catalog_intent(query)
+        and not _safety_should_suppress_deterministic(query)
+        and (
+            not _has_policy_intent(query)
+            or _has_equipment_availability_intent(query)
+            or _has_contact_intent(query)
+            or _has_staff_rota_lookup_intent(query)
+            or _has_list_lookup_intent(query)
+            or _has_patient_appointment_lookup_intent(query)
+            or _has_known_structured_entity_info_intent(query)
+        )
         and not any(route["tool"] == "postgres_deterministic_lookup" for route in routes)
     ):
         routes.append({"tool": "postgres_deterministic_lookup", "query": query, "reason": "supervisor_rule_plan"})
@@ -1479,9 +1671,9 @@ def _supervisor_guard_routes(query: str) -> list[dict[str, str]]:
         route_query = str(route.get("query") or "")
         if tool == "postgres_deterministic_lookup":
             routes.append(route)
-        elif tool == "policy_search" and (len(parts) > 1 or _has_retention_policy_intent(route_query)):
+        elif tool == "policy_search":
             routes.append(route)
-        elif tool in {"catalogue_search", "safety_guard"} and len(parts) > 1:
+        elif tool in {"catalogue_search", "safety_guard"}:
             routes.append(route)
     return routes
 
