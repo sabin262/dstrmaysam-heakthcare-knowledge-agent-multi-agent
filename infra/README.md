@@ -14,6 +14,8 @@ The foundation stack creates shared AWS resources and the isolated private netwo
 |---|---|
 | `aws-foundation.yml` | CloudFormation template for S3, S3 Gateway Endpoint, Secrets Manager, RDS Postgres, OpenSearch Serverless, ECR, ECS/ALB dev services, CodePipeline, CodeBuild, CodeDeploy, IAM roles, and log groups. |
 | `aws-foundation-parameters.example.json` | Example CloudFormation parameter file for the stack-created VPC, private RDS subnets, database, and OpenSearch names. |
+| `db-init/Dockerfile` | Pipeline image that runs RDS schema and seed SQL through `psql`. |
+| `db-init/run-db-init.sh` | DB initialization entrypoint used by the one-off ECS task. |
 | `ecs-backend-task-definition.json` | Backend ECS task definition example that uses RDS/Postgres and the single ECR repo with `backend-latest`. |
 | `ecs-frontend-task-definition.json` | Frontend ECS task definition example that uses the single ECR repo with `frontend-latest`. |
 | `iam-backend-task-policy.json` | Standalone backend task policy reference; the main CloudFormation template creates equivalent permissions. |

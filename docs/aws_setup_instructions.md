@@ -28,6 +28,7 @@ The CloudFormation template `infra/aws-foundation.yml` creates:
 - Optional CodePipeline source/build/deploy pipeline:
   - CodeStar Connections GitHub source
   - CodeBuild Docker image build and ECR push
+  - One-off ECS database initialization task for schema and seed SQL
   - ECS backend deploy
   - CodeDeploy blue/green frontend deploy
 - CloudWatch log groups for backend/frontend ECS tasks
@@ -242,7 +243,19 @@ aws secretsmanager put-secret-value `
   --secret-string $langfuseSecret
 ```
 
-## 5. Initialize RDS Postgres Schema And Seed Data
+## 5. RDS Postgres Schema And Seed Data
+
+When `CicdEnabled=true`, the pipeline handles schema and seed data automatically:
+
+1. CodeBuild builds a small `db-init` image from `infra/db-init/Dockerfile`.
+2. The image contains `database/init/01_schema.sql` and `database/init/02_seed.sql`.
+3. CodeBuild starts a one-off ECS Fargate task inside the VPC.
+4. The task connects to private RDS and runs the SQL files.
+5. If the SQL task exits non-zero, the build fails and backend/frontend deployment does not continue.
+
+The SQL files are idempotent: tables use `CREATE TABLE IF NOT EXISTS`, and seed inserts use `ON CONFLICT DO NOTHING`. That makes repeated pipeline runs safe for the seeded records.
+
+The manual steps below are only needed when you want to diagnose RDS connectivity or run SQL outside the pipeline.
 
 Get RDS outputs:
 
@@ -432,7 +445,8 @@ The database image is for local Docker Compose only and is not required for RDS.
 When `CicdEnabled=true`, the stack creates:
 
 - CodePipeline source stage from GitHub through CodeStar Connections.
-- CodeBuild project that builds `backend` and `frontend` Docker images and pushes them to the single ECR repository.
+- CodeBuild project that builds `backend`, `frontend`, and `db-init` Docker images and pushes them to the single ECR repository.
+- One-off ECS `db-init` Fargate task that applies schema and seed SQL to RDS before app deployment.
 - ECS deploy action for the backend service.
 - CodeDeploy blue/green deployment for the frontend service.
 
@@ -443,7 +457,7 @@ $env:BACKEND_DESIRED_COUNT = "0"
 $env:FRONTEND_DESIRED_COUNT = "0"
 ```
 
-This avoids ECS trying to start from `backend-latest` and `frontend-latest` before those images exist. The first pipeline execution may still fail in the deploy stage after CodeBuild has pushed images; that is acceptable during bootstrap. After images exist in ECR, redeploy the stack with:
+This avoids ECS trying to start from `backend-latest` and `frontend-latest` before those images exist. The first pipeline execution builds images and runs database initialization. If the first deployment stage fails during bootstrap, rerun after images exist in ECR and redeploy the stack with:
 
 ```powershell
 $env:BACKEND_DESIRED_COUNT = "1"
@@ -585,6 +599,8 @@ After switching from local to AWS mode:
 | `infra/aws-foundation-parameters.example.json` | Example stack parameters. |
 | `infra/ecs-backend-task-definition.json` | Backend ECS task definition example for future service deployment. |
 | `infra/ecs-frontend-task-definition.json` | Frontend ECS task definition example for future service deployment. |
+| `infra/db-init/Dockerfile` | Pipeline database initialization image with `psql`. |
+| `infra/db-init/run-db-init.sh` | Entrypoint that runs schema and seed SQL with `ON_ERROR_STOP`. |
 | `infra/iam-backend-task-policy.json` | Standalone backend IAM policy reference. |
 | `infra/opensearch-index.json` | OpenSearch index mapping reference. |
 | `database/init/01_schema.sql` | RDS schema initialization. |

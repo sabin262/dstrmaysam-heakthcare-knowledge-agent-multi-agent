@@ -1099,6 +1099,43 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
 
+  DbInitTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: CreateCicd
+    Properties:
+      Family: !Sub "${BaseName}-db-init"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt BackendTaskRole.Arn
+      ContainerDefinitions:
+        - Name: db-init
+          Image: !Join [":", [!GetAtt ImageRepository.RepositoryUri, "db-init-latest"]]
+          Essential: true
+          Environment:
+            - Name: POSTGRES_HOST
+              Value: !GetAtt Database.Endpoint.Address
+            - Name: POSTGRES_PORT
+              Value: "5432"
+            - Name: POSTGRES_DB
+              Value: !Ref DatabaseName
+            - Name: POSTGRES_USER
+              Value: !Ref DatabaseUsername
+            - Name: POSTGRES_SSLMODE
+              Value: require
+          Secrets:
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Join ["", [!GetAtt Database.MasterUserSecret.SecretArn, ":password::"]]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: db-init
+
   BackendService:
     Type: AWS::ECS::Service
     Condition: CreateCicd
@@ -1303,6 +1340,19 @@ Resources:
                 Action:
                   - ecs:DescribeTaskDefinition
                 Resource: "*"
+              - Sid: RunDatabaseInitTask
+                Effect: Allow
+                Action:
+                  - ecs:DescribeTasks
+                  - ecs:RunTask
+                Resource: "*"
+              - Sid: PassDatabaseInitRoles
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt EcsExecutionRole.Arn
+                  - !GetAtt BackendTaskRole.Arn
               - Sid: PipelineArtifacts
                 Effect: Allow
                 Action:
@@ -1345,10 +1395,20 @@ Resources:
               commands:
                 - docker build -t $ECR_REPOSITORY_URI:backend-$IMAGE_TAG backend
                 - docker build -t $ECR_REPOSITORY_URI:frontend-$IMAGE_TAG frontend
+                - docker build -t $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG -f infra/db-init/Dockerfile .
             post_build:
               commands:
                 - docker push $ECR_REPOSITORY_URI:backend-$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:frontend-$IMAGE_TAG
+                - docker push $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG
+                - docker tag $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG $ECR_REPOSITORY_URI:db-init-latest
+                - docker push $ECR_REPOSITORY_URI:db-init-latest
+                - DB_INIT_NETWORK="awsvpcConfiguration={subnets=[$DB_INIT_SUBNET_ONE,$DB_INIT_SUBNET_TWO],securityGroups=[$DB_INIT_SECURITY_GROUP],assignPublicIp=ENABLED}"
+                - DB_INIT_TASK_ARN=$(aws ecs run-task --cluster "$ECS_CLUSTER_NAME" --task-definition "$DB_INIT_TASK_DEFINITION" --launch-type FARGATE --network-configuration "$DB_INIT_NETWORK" --query 'tasks[0].taskArn' --output text)
+                - test "$DB_INIT_TASK_ARN" != "None"
+                - aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER_NAME" --tasks "$DB_INIT_TASK_ARN"
+                - DB_INIT_EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER_NAME" --tasks "$DB_INIT_TASK_ARN" --query 'tasks[0].containers[?name==`db-init`].exitCode | [0]' --output text)
+                - test "$DB_INIT_EXIT_CODE" = "0"
                 - printf '[{"name":"backend","imageUri":"%s"}]' "$ECR_REPOSITORY_URI:backend-$IMAGE_TAG" > backend-imagedefinitions.json
                 - printf '{"ImageURI":"%s"}' "$ECR_REPOSITORY_URI:frontend-$IMAGE_TAG" > imageDetail.json
                 - aws ecs describe-task-definition --task-definition "$FRONTEND_TASK_DEFINITION" --query taskDefinition > current-frontend-taskdef.json
@@ -1413,6 +1473,16 @@ Resources:
             Value: !GetAtt ImageRepository.RepositoryUri
           - Name: FRONTEND_TASK_DEFINITION
             Value: !Ref FrontendTaskDefinition
+          - Name: ECS_CLUSTER_NAME
+            Value: !Ref EcsCluster
+          - Name: DB_INIT_TASK_DEFINITION
+            Value: !Ref DbInitTaskDefinition
+          - Name: DB_INIT_SUBNET_ONE
+            Value: !Ref PublicSubnetOne
+          - Name: DB_INIT_SUBNET_TWO
+            Value: !Ref PublicSubnetTwo
+          - Name: DB_INIT_SECURITY_GROUP
+            Value: !Ref AppTaskSecurityGroup
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
