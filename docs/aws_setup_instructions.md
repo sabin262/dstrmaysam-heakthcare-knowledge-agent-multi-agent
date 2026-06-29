@@ -515,6 +515,8 @@ LOCAL_TEST_ADMIN_ENABLED=false
 
 APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/app
 AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai
+AZURE_OPENAI_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_GENERATION_API=chat_completions
 LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse
 
 S3_BUCKET=dstrmaysam-healthcare-knowledge-multi-agent-dev
@@ -531,7 +533,38 @@ POSTGRES_DB=healthcare_agent
 POSTGRES_USER=healthcare_agent
 POSTGRES_PASSWORD=<inject from DatabaseMasterSecretArn password>
 POSTGRES_SSLMODE=require
+
+DOCUMENT_MANIFEST_CACHE_TTL_SECONDS=300
+LANGFUSE_PROMPT_CACHE_TTL_SECONDS=300
+CHAT_FAST_RAG_ENABLED=false
+CHAT_FAST_PLANNED_EXECUTION_ENABLED=true
+CHAT_FAST_RAG_MIN_QUERY_TERMS=3
+MAX_GRAPH_LLM_CALLS=10
+RAG_TOP_K=10
+RAG_NEIGHBOR_CHUNKS=1
+INGESTION_CHUNK_SIZE=1500
+INGESTION_CHUNK_OVERLAP=250
+RAG_PARALLEL_SEARCH_ENABLED=true
+CHAT_BACKGROUND_HISTORY_SAVE_ENABLED=true
+LANGFUSE_BACKGROUND_TRACE_UPDATE_ENABLED=true
+CHAT_WARMUP_ENABLED=true
+CHAT_WARMUP_LLM_CALL_ENABLED=true
+CHAT_WARMUP_RETRIEVAL_ENABLED=true
+DETERMINISTIC_LOOKUP_ENABLED=true
+DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED=false
+
+TOOL_EXECUTION_MODE=local
+MCP_SERVER_URL=http://host.docker.internal:9000/sse
+MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
+MCP_TOOL_NAME=execute_project_tool
+MCP_TOOL_TIMEOUT_SECONDS=30
+MCP_TOOL_FALLBACK_TO_LOCAL=false
+
+GUARDIAN_NEWS_REFRESH_SECONDS=300
+GUARDIAN_NEWS_PAGE_SIZE=10
 ```
+
+Do not put raw Azure OpenAI, Langfuse, Guardian, or database passwords in plain ECS environment variables. Store secret values in Secrets Manager or ECS secret injection. The local `.env` may contain developer-only secrets, but the AWS deployment should use managed secrets.
 
 Frontend ECS task/service environment uses the dev ALB backend listener:
 

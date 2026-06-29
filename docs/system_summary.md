@@ -100,10 +100,10 @@ Docker Compose defaults to:
 
 ```env
 APP_ENV=local
-LOCAL_TEST_ADMIN_ENABLED=true
+LOCAL_TEST_ADMIN_ENABLED=false
 ```
 
-In current code, `AppSettings.use_local_resources()` returns `LOCAL_TEST_ADMIN_ENABLED`, so local resource implementations are selected when that flag is true.
+In current code, `AppSettings.use_local_resources()` returns `LOCAL_TEST_ADMIN_ENABLED`. With the current `.env` value of `false`, the app runs in local containers but uses the AWS-style secret/provider path unless overridden. Set `LOCAL_TEST_ADMIN_ENABLED=true` only when you intentionally want fully local secret/resource fallbacks.
 
 Local profile uses:
 
@@ -435,13 +435,14 @@ CSV upload flow:
 
 ```mermaid
 flowchart TD
-    Upload["Admin uploads CSV"] --> Rows["Insert rows into uploaded_lookup_rows"]
-    Rows --> Metadata["Build semantic metadata"]
+    Upload["Admin uploads supported CSV"] --> Validate["Detect supported table mapping"]
+    Validate --> Upsert["Upsert rows into controlled Postgres table"]
+    Upsert --> Metadata["Build table asset metadata"]
     Metadata --> Manifest["Write metadata-only manifest record"]
     Manifest --> Lookup["Available to deterministic lookup"]
 ```
 
-CSV rows are not indexed as vector chunks by default. They are searched exactly through Postgres.
+CSV files are retained only after successful validation/sync. Chat lookup uses controlled Postgres tables rather than arbitrary CSV row blobs.
 
 Ingestion is incremental:
 
@@ -493,7 +494,7 @@ Defined in `database/init/01_schema.sql`.
 | `organization_contacts` | Escalation contacts and organization directory |
 | `appointments` | Appointment lookup by patient, clinic, date, clinician, status |
 | `formulary` | Medicine facts, restrictions, approval, dose, monitoring |
-| `uploaded_lookup_rows` | Uploaded CSV rows as JSONB plus searchable text |
+| Operational lookup tables | Supported CSV uploads upsert into controlled tables such as staff schedule, clinic sessions, equipment assets, finance, compliance, training, contacts, wards, and formulary |
 
 ### Chat History Tables
 
@@ -651,7 +652,7 @@ Warmup settings:
 
 ```env
 CHAT_WARMUP_ENABLED=true
-CHAT_WARMUP_LLM_CALL_ENABLED=false
+CHAT_WARMUP_LLM_CALL_ENABLED=true
 CHAT_WARMUP_RETRIEVAL_ENABLED=true
 ```
 
@@ -800,11 +801,11 @@ python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN
 ## 25. Operational Notes
 
 - If chat says Azure OpenAI deployment is missing, check `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_API_KEY`.
-- If local mode unexpectedly calls AWS, check that `LOCAL_TEST_ADMIN_ENABLED=true` is reaching the backend.
+- If local mode unexpectedly calls AWS, check `LOCAL_TEST_ADMIN_ENABLED`; current `.env` sets it to `false`, which selects the AWS-style provider path.
 - If AWS mode still uses local files or `.env` secrets, check that `LOCAL_TEST_ADMIN_ENABLED=false` is reaching the backend container.
 - If OpenSearch authorization fails, check IAM permissions and OpenSearch Serverless data access policy.
 - If documents do not appear in RAG results, confirm ingestion completed and the manifest contains nonzero `chunk_count`.
 - If RAGAS scores are weak, inspect whether returned sources contain meaningful `snippet` values.
-- If deterministic lookup misses uploaded CSV facts, confirm rows exist in `uploaded_lookup_rows` and that the CSV manifest record has `asset_source=postgres_uploaded_lookup`.
+- If deterministic lookup misses structured facts, confirm rows exist in the relevant Postgres operational table and that manifest metadata points to the table asset.
 - If ingestion skips a document, compare its checksum in the manifest; unchanged files are intentionally skipped.
 - If changing the OpenSearch index or Chroma collection, run ingestion again so chunks are created in the new target.
