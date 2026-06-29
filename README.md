@@ -169,7 +169,7 @@ AWS mode uses:
 - AWS Secrets Manager for app, Azure OpenAI, and Langfuse secrets
 - S3 for raw documents and the document manifest
 - OpenSearch Serverless for vector and keyword retrieval
-- DynamoDB, Postgres, or DynamoDB with Postgres fallback for chat history
+- RDS Postgres for chat history and deterministic lookup tables
 - ECS task roles for AWS credentials
 
 Do not provide static AWS access keys to ECS tasks. Let the task role provide AWS credentials.
@@ -181,9 +181,9 @@ Do not put API keys, passwords, token signing secrets, or Langfuse credentials i
 Expected AWS secret names:
 
 ```text
-/dstrmaysam-healthcare-knowledge-agent/dev/app
-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/app
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse
 ```
 
 App secret shape:
@@ -336,9 +336,9 @@ Example questions:
 
 Set `CHAT_HISTORY_BACKEND` to choose persistence:
 
-- `dynamodb_postgres`: DynamoDB primary, Postgres fallback
-- `dynamodb`: DynamoDB only
 - `postgres`: Postgres only
+- `dynamodb_postgres`: legacy DynamoDB primary, Postgres fallback
+- `dynamodb`: legacy DynamoDB only
 - `memory`: process memory only, not durable
 
 If Langfuse trace updates fail, the backend writes pending trace payloads to the Postgres `langfuse_trace_outbox` table for later retry. Chat message persistence is independent of Langfuse availability.
@@ -385,12 +385,12 @@ python evals/stress_test.py --api-url http://localhost:8000 --token YOUR_TOKEN
 
 High-level steps:
 
-1. Create S3 bucket, DynamoDB table, OpenSearch Serverless collection/index, ECR repositories, Secrets Manager entries, CloudWatch log groups, and ECS Fargate services.
-2. Build and push backend, frontend, and database images to ECR.
-3. Fill in task definition and IAM policy templates in `infra/`.
-4. Attach least-privilege task roles for Secrets Manager, S3, DynamoDB, OpenSearch, and CloudWatch.
-5. Deploy the backend and frontend behind an Application Load Balancer.
-6. Set `LOCAL_TEST_ADMIN_ENABLED=false` in ECS.
+1. Deploy the foundation stack in `infra/aws-foundation.yml` to create S3, Secrets Manager, RDS Postgres, OpenSearch Serverless, ECR, ECS cluster, IAM roles, and log groups.
+2. Populate the app, Azure OpenAI, and Langfuse secrets.
+3. Initialize RDS with `database/init/01_schema.sql` and `database/init/02_seed.sql`.
+4. Build and push backend/frontend images to the single ECR repository using `backend-latest` and `frontend-latest` tags.
+5. Use the task definition examples in `infra/` when the future networking/CICD phase creates ECS services.
+6. Set `LOCAL_TEST_ADMIN_ENABLED=false` and `CHAT_HISTORY_BACKEND=postgres` in ECS.
 
 See [infra/README.md](infra/README.md) and [docs/aws_setup_instructions.md](docs/aws_setup_instructions.md).
 

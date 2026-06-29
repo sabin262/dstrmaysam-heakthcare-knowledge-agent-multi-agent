@@ -1,0 +1,58 @@
+[
+  {
+    "ParameterKey": "BaseName",
+    "ParameterValue": "dstrmaysam-healthcare-knowledge-multi-agent-dev"
+  },
+  {
+    "ParameterKey": "ShortName",
+    "ParameterValue": "dstrmaysam-hkm-dev"
+  },
+  {
+    "ParameterKey": "ProjectTag",
+    "ParameterValue": "dstrmaysam-healthcare-knowledge-multi-agent"
+  },
+  {
+    "ParameterKey": "ApplicationTag",
+    "ParameterValue": "dstrmaysam"
+  },
+  {
+    "ParameterKey": "OwnerTag",
+    "ParameterValue": "Sabin"
+  },
+  {
+    "ParameterKey": "VpcCidr",
+    "ParameterValue": "10.40.0.0/16"
+  },
+  {
+    "ParameterKey": "PrivateSubnetOneCidr",
+    "ParameterValue": "10.40.1.0/24"
+  },
+  {
+    "ParameterKey": "PrivateSubnetTwoCidr",
+    "ParameterValue": "10.40.2.0/24"
+  },
+  {
+    "ParameterKey": "DatabaseIngressCidr",
+    "ParameterValue": "10.40.0.0/16"
+  },
+  {
+    "ParameterKey": "DatabaseName",
+    "ParameterValue": "healthcare_agent"
+  },
+  {
+    "ParameterKey": "DatabaseUsername",
+    "ParameterValue": "healthcare_agent"
+  },
+  {
+    "ParameterKey": "DatabaseInstanceClass",
+    "ParameterValue": "db.t4g.micro"
+  },
+  {
+    "ParameterKey": "DatabaseAllocatedStorage",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "OpenSearchCollectionName",
+    "ParameterValue": "dstrmaysam-hkm-dev"
+  }
+]

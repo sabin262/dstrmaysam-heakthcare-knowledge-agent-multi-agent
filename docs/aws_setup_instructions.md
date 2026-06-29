@@ -1,568 +1,378 @@
-# AWS Setup Instructions: Healthcare Knowledge Agent
+# AWS Foundation Setup: Healthcare Knowledge Multi-Agent
 
-Version: 1.0  
-Last updated: 2026-06-19  
+Version: 2.0  
 Target stage: `dev`  
-Default AWS region: `eu-west-2`
+Default region: `eu-west-2`  
+Base name: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
 
-This runbook lists the AWS resources to create, the config values to use, and the values that must be replaced during deployment.
+This runbook creates the AWS foundation resources required by AWS mode. The foundation stack now creates a small isolated VPC and two private subnets for RDS. ALB HTTPS, ECS service creation, and CICD are intentionally left for the future CICD pipeline phase.
 
-## 1. Naming And Base Values
+## 1. Resources Created
 
-Use these names consistently across AWS resources and ECS environment variables.
+The CloudFormation template `infra/aws-foundation.yml` creates:
 
-| Item | Value |
-|---|---|
-| Project slug | `dstrmaysam-healthcare-knowledge-agent` |
-| AWS region | `eu-west-2` |
-| AWS dev stage | `dev` |
-| S3 bucket | `dstrmaysam-healthcare-knowledge-agent-dev` |
-| S3 raw document prefix | `raw/` |
-| S3 manifest key | `manifests/documents.json` |
-| OpenSearch index | `dstrmaysam-healthcare-knowledge-agent` |
-| DynamoDB table | `dstrmaysam-healthcare-knowledge-agent-dev` |
-| Backend ECR repo | `dstrmaysam-healthcare-knowledge-agent-backend` |
-| Frontend ECR repo | `dstrmaysam-healthcare-knowledge-agent-frontend` |
-| Backend ECS task family | `dstrmaysam-healthcare-knowledge-agent-backend` |
-| Frontend ECS task family | `dstrmaysam-healthcare-knowledge-agent-frontend` |
-| ECS execution role | `dstrmaysam-healthcare-knowledge-agent-ecs-execution-role` |
-| Backend task role | `dstrmaysam-healthcare-knowledge-agent-backend-task-role` |
-| Frontend task role | `dstrmaysam-healthcare-knowledge-agent-frontend-task-role` |
-| Backend log group | `/ecs/dstrmaysam-healthcare-knowledge-agent/backend` |
-| Frontend log group | `/ecs/dstrmaysam-healthcare-knowledge-agent/frontend` |
+- S3 bucket: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
+- Secrets Manager secrets:
+  - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/app`
+  - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai`
+  - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse`
+- Isolated VPC and two private subnets for RDS networking
+- RDS Postgres instance with generated master password secret
+- OpenSearch Serverless vector collection and access policies
+- ECR repository: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
+- ECS cluster: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
+- ECS execution, backend task, and frontend task IAM roles
+- CloudWatch log groups for future backend/frontend ECS tasks
 
-Replace these placeholders before deploying:
-
-| Placeholder | Replace With |
-|---|---|
-| `<account-id>` | Your AWS account ID |
-| `<region>` | `eu-west-2`, unless deploying elsewhere |
-| `<collection-id>` | OpenSearch Serverless collection ID |
-| `<backend-service-discovery-name>` | ECS Cloud Map or Service Connect DNS name for the backend service |
-| `<frontend-url>` | Final HTTPS URL for the Streamlit frontend |
-| `<backend-url>` | Internal backend URL, or public API URL if you expose the backend |
-
-## 2. Network And Security Baseline
-
-Create or reuse a VPC with:
-
-- At least two Availability Zones.
-- Public subnets for the Application Load Balancer.
-- Private subnets for ECS Fargate tasks.
-- NAT Gateway or equivalent outbound route so backend tasks can reach Azure OpenAI and Langfuse.
-- Security group for the ALB:
-  - inbound `443` from allowed users or corporate network
-  - optional inbound `80` only for redirect to HTTPS
-- Security group for the frontend ECS service:
-  - inbound `8501` from the ALB security group
-  - outbound to the backend service on `8000`
-- Security group for the backend ECS service:
-  - inbound `8000` from the frontend service security group or internal ALB
-  - outbound HTTPS to AWS APIs, Azure OpenAI, and Langfuse
-
-Recommended private networking additions:
-
-- S3 Gateway Endpoint.
-- DynamoDB Gateway Endpoint.
-- Interface endpoints for Secrets Manager, ECR API, ECR Docker, CloudWatch Logs, and STS.
-- NAT or controlled egress for Azure OpenAI and Langfuse, unless those services are reachable through private networking in your environment.
-
-## 3. S3 Bucket
-
-Create the AWS dev document bucket:
-
-```bash
-aws s3api create-bucket \
-  --bucket dstrmaysam-healthcare-knowledge-agent-dev \
-  --region eu-west-2 \
-  --create-bucket-configuration LocationConstraint=eu-west-2
-```
-
-Recommended bucket controls:
-
-```bash
-aws s3api put-public-access-block \
-  --bucket dstrmaysam-healthcare-knowledge-agent-dev \
-  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-
-aws s3api put-bucket-encryption \
-  --bucket dstrmaysam-healthcare-knowledge-agent-dev \
-  --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-```
-
-Expected object layout:
+All supported resources are tagged:
 
 ```text
-s3://dstrmaysam-healthcare-knowledge-agent-dev/raw/
-s3://dstrmaysam-healthcare-knowledge-agent-dev/manifests/documents.json
+Project=dstrmaysam-healthcare-knowledge-multi-agent
+Application=dstrmaysam
+Owner=Sabin
 ```
 
-Upload source documents into `raw/`. The ingestion job writes `manifests/documents.json`.
+OpenSearch Serverless and IAM role physical names use the short name `dstrmaysam-hkm-dev` where AWS limits prevent the full base name.
 
-## 4. DynamoDB Chat History Table
+## 2. Prerequisites
 
-Create the table using the shape in `infra/dynamodb-chat-history-table.json`.
+Install/configure:
 
-Config values:
+- AWS CLI v2
+- Docker
+- `psql`
+- `jq`
+- AWS credentials with permission to create CloudFormation, S3, Secrets Manager, RDS, OpenSearch Serverless, ECR, ECS, IAM, and CloudWatch Logs resources
 
-| Field | Value |
-|---|---|
-| Table name | `dstrmaysam-healthcare-knowledge-agent-dev` |
-| Billing mode | `PAY_PER_REQUEST` |
-| Partition key | `user_id` string |
-| Sort key | `sort_key` string |
-
-CLI example:
+Set local shell variables:
 
 ```bash
-aws dynamodb create-table \
-  --region eu-west-2 \
-  --table-name dstrmaysam-healthcare-knowledge-agent-dev \
-  --billing-mode PAY_PER_REQUEST \
-  --attribute-definitions AttributeName=user_id,AttributeType=S AttributeName=sort_key,AttributeType=S \
-  --key-schema AttributeName=user_id,KeyType=HASH AttributeName=sort_key,KeyType=RANGE
+export AWS_REGION=eu-west-2
+export STACK_NAME=dstrmaysam-healthcare-knowledge-multi-agent-dev
+export BASE_NAME=dstrmaysam-healthcare-knowledge-multi-agent-dev
+export VPC_CIDR=10.40.0.0/16
+export PRIVATE_SUBNET_ONE_CIDR=10.40.1.0/24
+export PRIVATE_SUBNET_TWO_CIDR=10.40.2.0/24
+export DATABASE_INGRESS_CIDR=10.40.0.0/16
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ```
 
-## 5. AWS Secrets Manager
+## 3. Validate And Deploy Foundation Stack
 
-Create three AWS dev secrets. Secret values must be JSON strings.
+Validate:
 
-### App Secret
-
-Secret name:
-
-```text
-/dstrmaysam-healthcare-knowledge-agent/dev/app
+```bash
+aws cloudformation validate-template \
+  --template-body file://infra/aws-foundation.yml \
+  --region "$AWS_REGION"
 ```
 
-JSON shape:
+Preview a changeset without executing:
 
-```json
-{
-  "session_secret": "replace-with-long-random-value",
-  "auth_users": {
-    "admin": "pbkdf2_sha256$200000$salt_hex$hash_hex"
-  },
-  "user_profiles": {
-    "admin": {
-      "roles": ["admin", "doctor"],
-      "departments": ["clinical_governance"]
-    }
-  }
-}
+```bash
+aws cloudformation deploy \
+  --stack-name "$STACK_NAME" \
+  --template-file infra/aws-foundation.yml \
+  --region "$AWS_REGION" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --no-execute-changeset \
+  --parameter-overrides \
+    VpcCidr="$VPC_CIDR" \
+    PrivateSubnetOneCidr="$PRIVATE_SUBNET_ONE_CIDR" \
+    PrivateSubnetTwoCidr="$PRIVATE_SUBNET_TWO_CIDR" \
+    DatabaseIngressCidr="$DATABASE_INGRESS_CIDR"
 ```
 
-Generate password hashes before creating the secret:
+Create/update:
+
+```bash
+aws cloudformation deploy \
+  --stack-name "$STACK_NAME" \
+  --template-file infra/aws-foundation.yml \
+  --region "$AWS_REGION" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    VpcCidr="$VPC_CIDR" \
+    PrivateSubnetOneCidr="$PRIVATE_SUBNET_ONE_CIDR" \
+    PrivateSubnetTwoCidr="$PRIVATE_SUBNET_TWO_CIDR" \
+    DatabaseIngressCidr="$DATABASE_INGRESS_CIDR"
+```
+
+Capture outputs:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs" \
+  --output table
+```
+
+Important outputs:
+
+- `VpcId`
+- `PrivateSubnetOneId`
+- `PrivateSubnetTwoId`
+- `DatabaseSecurityGroupId`
+- `DatabaseEndpoint`
+- `DatabaseMasterSecretArn`
+- `OpenSearchCollectionEndpoint`
+- `EcrRepositoryUri`
+- `EcsClusterName`
+- `BackendTaskRoleArn`
+- `FrontendTaskRoleArn`
+- `EcsExecutionRoleArn`
+
+## 4. Populate Secrets Manager Values
+
+The template creates placeholder secrets. Replace them before starting the backend.
+
+Generate an app password hash:
 
 ```bash
 python -m backend.app.auth hash-password
 ```
 
-Inside the backend container, use:
+Update the app secret:
 
 ```bash
-python -m app.auth hash-password
+aws secretsmanager put-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "/$BASE_NAME/app" \
+  --secret-string '{
+    "session_secret": "replace-with-long-random-value",
+    "auth_users": {
+      "admin": "replace-with-generated-password-hash"
+    },
+    "user_profiles": {
+      "admin": {
+        "roles": ["admin", "doctor"],
+        "departments": ["clinical_governance"]
+      }
+    }
+  }'
 ```
 
-Do not use the local testing password in AWS dev. AWS dev ECS sets `LOCAL_TEST_ADMIN_ENABLED=false`.
-
-### Azure OpenAI Secret
-
-Secret name:
-
-```text
-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-```
-
-JSON shape:
-
-```json
-{
-  "endpoint": "https://YOUR-RESOURCE.openai.azure.com/",
-  "api_key": "replace-with-azure-openai-key",
-  "api_version": "2025-04-01-preview",
-  "chat_deployment": "replace-with-chat-deployment-name",
-  "embedding_deployment": "replace-with-embedding-deployment-name"
-}
-```
-
-The OpenSearch vector dimension must match the Azure embedding deployment. The current index template uses `1536`.
-
-### Langfuse Secret
-
-Secret name:
-
-```text
-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
-```
-
-JSON shape:
-
-```json
-{
-  "public_key": "pk-lf-...",
-  "secret_key": "sk-lf-...",
-  "base_url": "https://cloud.langfuse.com"
-}
-```
-
-## 6. OpenSearch Serverless
-
-Create an OpenSearch Serverless collection for vector search.
-
-Recommended values:
-
-| Item | Value |
-|---|---|
-| Collection name | `dstrmaysam-healthcare-knowledge-agent` |
-| Collection type | Vector search |
-| Index name | `dstrmaysam-healthcare-knowledge-agent` |
-| Vector field | `embedding` |
-| Vector dimension | `1536` |
-| Similarity | `cosinesimil` |
-
-Create the index using `infra/opensearch-index.json` after the collection endpoint exists.
-
-The backend ECS environment must receive:
-
-```env
-OPENSEARCH_ENDPOINT=https://<collection-id>.eu-west-2.aoss.amazonaws.com
-OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-agent
-```
-
-Access requirements:
-
-- IAM policy on the backend task role must allow `aoss:APIAccessAll` for the collection ARN.
-- OpenSearch Serverless data access policy must include the backend task role principal.
-- The collection network policy must allow access from the backend task networking path.
-
-## 7. ECR Repositories
-
-Create repositories:
+Update Azure OpenAI:
 
 ```bash
-aws ecr create-repository \
-  --region eu-west-2 \
-  --repository-name dstrmaysam-healthcare-knowledge-agent-backend
-
-aws ecr create-repository \
-  --region eu-west-2 \
-  --repository-name dstrmaysam-healthcare-knowledge-agent-frontend
+aws secretsmanager put-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "/$BASE_NAME/azure-openai" \
+  --secret-string '{
+    "endpoint": "https://YOUR-RESOURCE.openai.azure.com/",
+    "api_key": "replace-with-azure-openai-key",
+    "api_version": "2025-04-01-preview",
+    "chat_deployment": "gpt-4.1-mini",
+    "fast_chat_deployment": "gpt-4.1-mini",
+    "embedding_deployment": "text-embedding-3-small"
+  }'
 ```
 
-Images expected by the ECS templates:
-
-```text
-<account-id>.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-backend:latest
-<account-id>.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-frontend:latest
-```
-
-Build and push from the repo root:
+Update Langfuse:
 
 ```bash
-aws ecr get-login-password --region eu-west-2 \
-  | docker login --username AWS --password-stdin <account-id>.dkr.ecr.eu-west-2.amazonaws.com
-
-docker build -t dstrmaysam-healthcare-knowledge-agent-backend:latest backend
-docker tag dstrmaysam-healthcare-knowledge-agent-backend:latest <account-id>.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-backend:latest
-docker push <account-id>.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-backend:latest
-
-docker build -t dstrmaysam-healthcare-knowledge-agent-frontend:latest frontend
-docker tag dstrmaysam-healthcare-knowledge-agent-frontend:latest <account-id>.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-frontend:latest
-docker push <account-id>.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-frontend:latest
+aws secretsmanager put-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "/$BASE_NAME/langfuse" \
+  --secret-string '{
+    "public_key": "pk-lf-...",
+    "secret_key": "sk-lf-...",
+    "base_url": "https://cloud.langfuse.com"
+  }'
 ```
 
-## 8. IAM Roles And Policies
+## 5. Initialize RDS Postgres Schema And Seed Data
 
-### ECS Execution Role
-
-Create:
-
-```text
-dstrmaysam-healthcare-knowledge-agent-ecs-execution-role
-```
-
-Attach the AWS managed policy:
-
-```text
-AmazonECSTaskExecutionRolePolicy
-```
-
-This role lets ECS pull ECR images and write container logs.
-
-### Backend Task Role
-
-Create:
-
-```text
-dstrmaysam-healthcare-knowledge-agent-backend-task-role
-```
-
-Attach the policy in `infra/iam-backend-task-policy.json` after replacing:
-
-- `<account-id>`
-- `<region>` with `eu-west-2`
-- `<collection-id>` with the OpenSearch Serverless collection ID
-
-Required permissions:
-
-| Service | Permissions |
-|---|---|
-| Secrets Manager | `secretsmanager:GetSecretValue` on the three AWS dev secrets |
-| S3 | `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on the document bucket |
-| DynamoDB | `GetItem`, `PutItem`, `Query`, `UpdateItem` on the chat history table |
-| OpenSearch Serverless | `aoss:APIAccessAll` on the vector collection |
-
-### Frontend Task Role
-
-Create:
-
-```text
-dstrmaysam-healthcare-knowledge-agent-frontend-task-role
-```
-
-The frontend does not need direct access to Secrets Manager, S3, DynamoDB, OpenSearch, Azure OpenAI, or Langfuse. Keep this role minimal unless you add frontend-side AWS integrations later.
-
-## 9. CloudWatch Logs
-
-Create log groups:
+Get RDS outputs:
 
 ```bash
-aws logs create-log-group \
-  --region eu-west-2 \
-  --log-group-name /ecs/dstrmaysam-healthcare-knowledge-agent/backend
+export POSTGRES_HOST=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='DatabaseEndpoint'].OutputValue" \
+  --output text)
 
-aws logs create-log-group \
-  --region eu-west-2 \
-  --log-group-name /ecs/dstrmaysam-healthcare-knowledge-agent/frontend
+export DB_SECRET_ARN=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='DatabaseMasterSecretArn'].OutputValue" \
+  --output text)
+
+export POSTGRES_PASSWORD=$(aws secretsmanager get-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "$DB_SECRET_ARN" \
+  --query SecretString \
+  --output text | jq -r .password)
 ```
 
-Recommended:
+Run schema and seed SQL from a network location allowed by `DatabaseIngressCidr`. The RDS instance is private inside the stack-created VPC, so a local laptop will not connect directly unless you provide a network path such as VPN, peering, an admin host, or a future ECS task in the VPC.
 
 ```bash
-aws logs put-retention-policy \
-  --region eu-west-2 \
-  --log-group-name /ecs/dstrmaysam-healthcare-knowledge-agent/backend \
-  --retention-in-days 30
+export PGSSLMODE=require
+export PGPASSWORD="$POSTGRES_PASSWORD"
 
-aws logs put-retention-policy \
-  --region eu-west-2 \
-  --log-group-name /ecs/dstrmaysam-healthcare-knowledge-agent/frontend \
-  --retention-in-days 30
+psql \
+  --host "$POSTGRES_HOST" \
+  --port 5432 \
+  --username healthcare_agent \
+  --dbname healthcare_agent \
+  --file database/init/01_schema.sql
+
+psql \
+  --host "$POSTGRES_HOST" \
+  --port 5432 \
+  --username healthcare_agent \
+  --dbname healthcare_agent \
+  --file database/init/02_seed.sql
 ```
 
-## 10. ECS Fargate Task Definitions
+## 6. Build And Push Images To One ECR Repository
 
-Use these templates:
+The foundation stack creates one ECR repository. Use different image tags for backend and frontend.
 
-- `infra/ecs-backend-task-definition.json`
-- `infra/ecs-frontend-task-definition.json`
+```bash
+export ECR_REPOSITORY_URI=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='EcrRepositoryUri'].OutputValue" \
+  --output text)
 
-### Backend Container
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-Container:
+docker build -t "$BASE_NAME:backend-latest" backend
+docker tag "$BASE_NAME:backend-latest" "$ECR_REPOSITORY_URI:backend-latest"
+docker push "$ECR_REPOSITORY_URI:backend-latest"
 
-| Setting | Value |
-|---|---|
-| Container name | `backend` |
-| Port | `8000` |
-| CPU | `1024` |
-| Memory | `2048` |
-| Health check path | `/health` |
+docker build -t "$BASE_NAME:frontend-latest" frontend
+docker tag "$BASE_NAME:frontend-latest" "$ECR_REPOSITORY_URI:frontend-latest"
+docker push "$ECR_REPOSITORY_URI:frontend-latest"
+```
 
-Environment variables:
+The database image is for local Docker Compose only and is not required for RDS.
+
+## 7. AWS Mode Runtime Environment
+
+Backend ECS task/service environment should use:
 
 ```env
 APP_ENV=dev
 AWS_REGION=eu-west-2
 SECRETS_STAGE=dev
-APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/app
-AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
-S3_BUCKET=dstrmaysam-healthcare-knowledge-agent-dev
+LOCAL_TEST_ADMIN_ENABLED=false
+
+APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/app
+AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai
+LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse
+
+S3_BUCKET=dstrmaysam-healthcare-knowledge-multi-agent-dev
 S3_RAW_PREFIX=raw/
 S3_MANIFEST_KEY=manifests/documents.json
-OPENSEARCH_ENDPOINT=https://<collection-id>.eu-west-2.aoss.amazonaws.com
-OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-agent
-DYNAMODB_CHAT_TABLE=dstrmaysam-healthcare-knowledge-agent-dev
-CHAT_HISTORY_BACKEND=dynamodb
-LOCAL_TEST_ADMIN_ENABLED=false
+
+OPENSEARCH_ENDPOINT=<OpenSearchCollectionEndpoint output>
+OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-multi-agent-dev
+
+CHAT_HISTORY_BACKEND=postgres
+POSTGRES_HOST=<DatabaseEndpoint output>
+POSTGRES_PORT=5432
+POSTGRES_DB=healthcare_agent
+POSTGRES_USER=healthcare_agent
+POSTGRES_PASSWORD=<inject from DatabaseMasterSecretArn password>
+POSTGRES_SSLMODE=require
 ```
 
-Optional if exposing the backend directly to browsers:
-
-```env
-CORS_ORIGINS=https://<frontend-url>
-```
-
-### Frontend Container
-
-Container:
-
-| Setting | Value |
-|---|---|
-| Container name | `frontend` |
-| Port | `8501` |
-| CPU | `512` |
-| Memory | `1024` |
-| Health check path | `/_stcore/health` |
-
-Environment variables:
+Frontend ECS task/service environment should use:
 
 ```env
 BACKEND_URL=http://<backend-service-discovery-name>:8000
 ```
 
-Use ECS Service Connect, AWS Cloud Map, or an internal ALB so the frontend can resolve the backend service name privately.
+The example task definitions in `infra/` use these values as placeholders. The future CICD/networking phase should substitute stack outputs into ECS task definitions and services.
 
-## 11. ECS Cluster And Services
+## 8. OpenSearch Index Creation And Verification
 
-Create one ECS cluster:
+The backend ingestion path calls the application index bootstrap logic and uses `infra/opensearch-index.json` shape internally. After the backend is running with AWS mode values:
 
-```text
-dstrmaysam-healthcare-knowledge-agent
-```
-
-Create two Fargate services:
-
-| Service | Task Definition | Desired Count | Network |
-|---|---|---|---|
-| `dstrmaysam-healthcare-knowledge-agent-backend` | backend task definition | `1` or more | private subnets |
-| `dstrmaysam-healthcare-knowledge-agent-frontend` | frontend task definition | `1` or more | private subnets |
-
-Recommended service setup:
-
-- Enable ECS Service Connect or Cloud Map for backend discovery.
-- Use rolling deployments.
-- Enable deployment circuit breaker with rollback.
-- Use the backend service discovery name in `BACKEND_URL`.
-- Do not expose backend publicly unless you need direct API access.
-
-## 12. Application Load Balancer
-
-Create one public Application Load Balancer.
-
-Recommended listener setup:
-
-| Listener | Target |
-|---|---|
-| HTTPS `443` | Frontend target group on port `8501` |
-| HTTP `80` | Redirect to HTTPS |
-
-Frontend target group:
-
-| Setting | Value |
-|---|---|
-| Target type | `ip` |
-| Protocol | `HTTP` |
-| Port | `8501` |
-| Health path | `/_stcore/health` |
-
-Optional backend target group, only if exposing API directly:
-
-| Setting | Value |
-|---|---|
-| Target type | `ip` |
-| Protocol | `HTTP` |
-| Port | `8000` |
-| Health path | `/health` |
-
-If using a custom domain, create an ACM certificate in `eu-west-2`, attach it to the HTTPS listener, and point Route 53 or your DNS provider to the ALB.
-
-## 13. Document Ingestion
-
-After the backend has access to S3, OpenSearch, and Azure OpenAI:
-
-1. Upload approved source documents to:
+1. Upload source documents to:
 
 ```text
-s3://dstrmaysam-healthcare-knowledge-agent-dev/raw/
+s3://dstrmaysam-healthcare-knowledge-multi-agent-dev/raw/
 ```
 
-2. Run ingestion as a one-off ECS task using the backend image, backend task role, and the same backend environment variables.
+2. Run ingestion from the admin UI or as a one-off backend task.
 
-Command override:
+3. Verify documents and the manifest:
 
 ```bash
-python -m app.ingest
+aws s3 ls "s3://$BASE_NAME/raw/" --region "$AWS_REGION"
+aws s3 cp "s3://$BASE_NAME/manifests/documents.json" - --region "$AWS_REGION"
 ```
 
-The ingestion job:
+If OpenSearch permissions fail, confirm:
 
-- Reads files from `S3_BUCKET` and `S3_RAW_PREFIX`.
-- Extracts text from supported documents.
-- Creates Azure OpenAI embeddings.
-- Writes chunks into the OpenSearch index.
-- Writes the S3 manifest to `manifests/documents.json`.
+- Backend task role has `aoss:APIAccessAll`.
+- OpenSearch data access policy includes the backend task role ARN.
+- Network policy allows the backend networking path.
 
-## 14. RAGAS And Langfuse Evaluation
+## 9. Delete Resources
 
-After the API is deployed and you can log in:
-
-1. Get a bearer token by calling `/auth/login`.
-2. Run the eval script from a machine with AWS credentials that can read the Langfuse secret.
-
-Example:
+Before deleting the stack, empty mutable resources:
 
 ```bash
-python evals/run_ragas_eval.py \
-  --api-url https://<backend-url> \
-  --token <bearer-token> \
-  --publish-langfuse \
-  --aws-region eu-west-2 \
-  --secrets-stage dev \
-  --eval-run-name dstrmaysam-healthcare-knowledge-agent-ragas-eval
+aws s3 rm "s3://$BASE_NAME" --recursive --region "$AWS_REGION"
+
+aws ecr list-images \
+  --region "$AWS_REGION" \
+  --repository-name "$BASE_NAME" \
+  --query 'imageIds' \
+  --output json > /tmp/dstrmaysam-hkm-ecr-images.json
+
+aws ecr batch-delete-image \
+  --region "$AWS_REGION" \
+  --repository-name "$BASE_NAME" \
+  --image-ids file:///tmp/dstrmaysam-hkm-ecr-images.json
 ```
 
-The eval script reads:
+Delete the stack:
 
-```text
-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+```bash
+aws cloudformation delete-stack \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION"
+
+aws cloudformation wait stack-delete-complete \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION"
 ```
 
-It writes local JSON reports and publishes per-question plus summary scores to Langfuse.
+If deletion fails:
 
-## 15. Deployment Checklist
+- Ensure the S3 bucket is empty, including versions/delete markers if versioning was used.
+- Ensure ECR has no remaining images.
+- Check whether RDS produced a final snapshot because of replacement/deletion behavior.
 
-Before first AWS dev deploy:
+## 10. Compatibility Checklist
 
-- Create or confirm VPC, subnets, route tables, NAT or endpoints, and security groups.
-- Create S3 bucket `dstrmaysam-healthcare-knowledge-agent-dev`.
-- Create DynamoDB table `dstrmaysam-healthcare-knowledge-agent-dev`.
-- Create Secrets Manager secrets under `/dstrmaysam-healthcare-knowledge-agent/dev/...`.
-- Create OpenSearch Serverless vector collection and index.
-- Add backend task role to OpenSearch Serverless data access policy.
-- Create ECR repositories and push backend/frontend images.
-- Create IAM execution role, backend task role, and frontend task role.
-- Create CloudWatch log groups.
-- Register ECS task definitions with replaced account, region, collection, and image values.
-- Create ECS backend service in private subnets.
-- Create ECS frontend service in private subnets.
-- Configure frontend `BACKEND_URL` to use private backend service discovery.
-- Create public ALB and route HTTPS traffic to frontend.
-- Upload documents to S3 `raw/`.
-- Run ingestion once.
-- Log in through the frontend and test `/chat`.
-- Run RAGAS evals and confirm Langfuse traces and scores appear.
+After switching from local to AWS mode:
 
-## 16. Files To Use In This Repo
+- Backend starts with `APP_ENV=dev`.
+- App auth loads from `/dstrmaysam-healthcare-knowledge-multi-agent-dev/app`.
+- Chat history writes to RDS Postgres.
+- Deterministic lookup uses RDS Postgres tables.
+- Documents upload to S3.
+- Ingestion writes chunks to OpenSearch Serverless.
+- Langfuse tracing loads from the new Langfuse secret.
+
+## 11. Files
 
 | File | Purpose |
 |---|---|
-| `.env.example` | Local non-secret config defaults |
-| `infra/dynamodb-chat-history-table.json` | DynamoDB table definition |
-| `infra/opensearch-index.json` | OpenSearch index mapping |
-| `infra/iam-backend-task-policy.json` | Backend task role permissions |
-| `infra/ecs-backend-task-definition.json` | Backend ECS task template |
-| `infra/ecs-frontend-task-definition.json` | Frontend ECS task template |
-| `README.md` | Secret model and local run commands |
-
-## 17. AWS Dev Deployment Notes
-
-- Keep secret values only in AWS Secrets Manager.
-- Keep `LOCAL_TEST_ADMIN_ENABLED=false` in AWS dev.
-- Rotate Azure OpenAI, Langfuse, and app secrets on a regular schedule.
-- Use least-privilege IAM policies and scoped OpenSearch Serverless data access policies.
-- Review uploaded healthcare documents before ingestion.
-- Confirm the embedding dimension in `infra/opensearch-index.json` before indexing AWS dev documents.
-- Keep backend tasks private unless direct API access is explicitly required.
+| `infra/aws-foundation.yml` | Foundation CloudFormation stack. |
+| `infra/aws-foundation-parameters.example.json` | Example stack parameters. |
+| `infra/ecs-backend-task-definition.json` | Backend ECS task definition example for future service deployment. |
+| `infra/ecs-frontend-task-definition.json` | Frontend ECS task definition example for future service deployment. |
+| `infra/iam-backend-task-policy.json` | Standalone backend IAM policy reference. |
+| `infra/opensearch-index.json` | OpenSearch index mapping reference. |
+| `database/init/01_schema.sql` | RDS schema initialization. |
+| `database/init/02_seed.sql` | RDS seed data initialization. |

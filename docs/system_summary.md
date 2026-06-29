@@ -132,18 +132,18 @@ AWS profile uses:
 - AWS Secrets Manager for app, Azure OpenAI, and Langfuse secrets.
 - S3 for raw documents and the document manifest.
 - OpenSearch Serverless for indexed chunks.
-- DynamoDB, Postgres, or DynamoDB with Postgres fallback depending on `CHAT_HISTORY_BACKEND`.
+- RDS Postgres for chat history and deterministic lookup tables.
 - ECS task role credentials for AWS API calls.
 
 Important AWS names used by defaults and docs:
 
 ```env
-S3_BUCKET=dstrmaysam-healthcare-knowledge-agent-dev
-DYNAMODB_CHAT_TABLE=dstrmaysam-healthcare-knowledge-agent-dev
-OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-agent-dev
-APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/app
-AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+S3_BUCKET=dstrmaysam-healthcare-knowledge-multi-agent-dev
+OPENSEARCH_INDEX=dstrmaysam-healthcare-knowledge-multi-agent-dev
+CHAT_HISTORY_BACKEND=postgres
+APP_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/app
+AZURE_OPENAI_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai
+LANGFUSE_SECRET_NAME=/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse
 ```
 
 ## 6. Frontend Workflow
@@ -727,16 +727,18 @@ Postgres: localhost:5432
 
 At a high level:
 
-1. Build and push backend, frontend, and database images to ECR.
-2. Create or confirm the S3 bucket.
-3. Create or confirm the DynamoDB table if DynamoDB history is used.
-4. Create or confirm the OpenSearch Serverless collection and index.
-5. Create Secrets Manager secrets:
+1. Deploy `infra/aws-foundation.yml`.
+2. Populate Secrets Manager values.
+3. Initialize RDS Postgres with `database/init/01_schema.sql` and `database/init/02_seed.sql`.
+4. Build and push backend/frontend images to the single ECR repository.
+5. Confirm OpenSearch Serverless collection output and run ingestion to create/index chunks.
+
+Secrets Manager entries:
 
 ```text
-/dstrmaysam-healthcare-knowledge-agent/dev/app
-/dstrmaysam-healthcare-knowledge-agent/dev/azure-openai
-/dstrmaysam-healthcare-knowledge-agent/dev/langfuse
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/app
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse
 ```
 
 6. Deploy ECS services with:
@@ -751,7 +753,7 @@ SECRETS_STAGE=dev
 
 - app, Azure OpenAI, and Langfuse secrets
 - S3 bucket and manifest object
-- DynamoDB table when enabled
+- RDS Postgres access through networking and injected database secret
 - OpenSearch Serverless collection/index
 - CloudWatch logs
 
