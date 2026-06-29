@@ -28,6 +28,6 @@ aws cloudformation deploy `
     RepositoryId=sabin262/dstrmaysam-heakthcare-knowledge-agent-multi-agent `
     RepositoryBranch=master `
     PublicIngressCidr=0.0.0.0/0 `
-    BackendDesiredCount=0 `
-    FrontendDesiredCount=0 `
+    BackendDesiredCount=1 `
+    FrontendDesiredCount=1 `
     DatabaseIngressCidr=10.40.0.0/16

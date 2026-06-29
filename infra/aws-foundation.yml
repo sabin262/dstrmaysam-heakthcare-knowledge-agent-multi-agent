@@ -1243,8 +1243,6 @@ Resources:
   FrontendCodeDeployDeploymentGroup:
     Type: AWS::CodeDeploy::DeploymentGroup
     Condition: CreateCicd
-    DependsOn:
-      - FrontendService
     Properties:
       ApplicationName: !Ref FrontendCodeDeployApplication
       DeploymentGroupName: !Sub "${BaseName}-frontend"
@@ -1385,7 +1383,7 @@ Resources:
         Type: CODEPIPELINE
       Source:
         Type: CODEPIPELINE
-        BuildSpec: !Sub |
+        BuildSpec: |
           version: 0.2
           phases:
             pre_build:
@@ -1402,10 +1400,14 @@ Resources:
                 - docker build -t $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG -f infra/db-init/Dockerfile .
             post_build:
               commands:
-                - docker push $ECR_REPOSITORY_URI:backend-$IMAGE_TAG
-                - docker push $ECR_REPOSITORY_URI:frontend-$IMAGE_TAG
-                - docker push $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG
+                - docker tag $ECR_REPOSITORY_URI:backend-$IMAGE_TAG $ECR_REPOSITORY_URI:backend-latest
+                - docker tag $ECR_REPOSITORY_URI:frontend-$IMAGE_TAG $ECR_REPOSITORY_URI:frontend-latest
                 - docker tag $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG $ECR_REPOSITORY_URI:db-init-latest
+                - docker push $ECR_REPOSITORY_URI:backend-$IMAGE_TAG
+                - docker push $ECR_REPOSITORY_URI:backend-latest
+                - docker push $ECR_REPOSITORY_URI:frontend-$IMAGE_TAG
+                - docker push $ECR_REPOSITORY_URI:frontend-latest
+                - docker push $ECR_REPOSITORY_URI:db-init-$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:db-init-latest
                 - DB_INIT_NETWORK="awsvpcConfiguration={subnets=[$DB_INIT_SUBNET_ONE,$DB_INIT_SUBNET_TWO],securityGroups=[$DB_INIT_SECURITY_GROUP],assignPublicIp=ENABLED}"
                 - DB_INIT_TASK_ARN=$(aws ecs run-task --cluster "$ECS_CLUSTER_NAME" --task-definition "$DB_INIT_TASK_DEFINITION" --launch-type FARGATE --network-configuration "$DB_INIT_NETWORK" --query 'tasks[0].taskArn' --output text)

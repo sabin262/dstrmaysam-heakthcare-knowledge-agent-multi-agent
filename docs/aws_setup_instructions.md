@@ -80,7 +80,7 @@ $env:AWS_ACCOUNT_ID = aws sts get-caller-identity --query Account --output text
 
 Use `DB_ADMIN_ACCESS_ENABLED=false` in your current account because an AWS Organizations service control policy denied `ec2:RunInstances`. Use CloudShell VPC for the SQL step instead.
 
-Keep `BACKEND_DESIRED_COUNT` and `FRONTEND_DESIRED_COUNT` at `0` on the first deploy unless you have already pushed `backend-latest` and `frontend-latest` images to ECR. After the first pipeline run builds images, update both values to `1`.
+Keep `BACKEND_DESIRED_COUNT` and `FRONTEND_DESIRED_COUNT` at `0` on the first deploy unless you have already pushed `backend-latest` and `frontend-latest` images to ECR. The pipeline publishes immutable commit tags and refreshes the `backend-latest` and `frontend-latest` bootstrap tags on every run. After the first successful pipeline run builds images, update both values to `1`.
 
 ## 3. Validate And Deploy Foundation Stack
 
@@ -477,7 +477,7 @@ $env:BACKEND_DESIRED_COUNT = "0"
 $env:FRONTEND_DESIRED_COUNT = "0"
 ```
 
-This avoids ECS trying to start from `backend-latest` and `frontend-latest` before those images exist. The first pipeline execution builds images and runs database initialization. If the first deployment stage fails during bootstrap, rerun after images exist in ECR and redeploy the stack with:
+This avoids ECS trying to start from `backend-latest` and `frontend-latest` before those images exist. The first pipeline execution builds images, pushes the `backend-latest` and `frontend-latest` tags, and runs database initialization. If the first deployment stage fails during bootstrap, rerun after images exist in ECR and redeploy the stack with:
 
 ```powershell
 $env:BACKEND_DESIRED_COUNT = "1"
