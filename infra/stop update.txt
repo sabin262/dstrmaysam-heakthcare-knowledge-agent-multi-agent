@@ -1,0 +1,3 @@
+aws cloudformation cancel-update-stack `
+  --stack-name dstrmaysam-healthcare-knowledge-multi-agent-dev `
+  --region eu-west-2
