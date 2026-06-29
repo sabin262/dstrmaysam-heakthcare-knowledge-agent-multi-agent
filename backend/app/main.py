@@ -248,6 +248,21 @@ def _sync_table_metadata_manifest() -> dict[str, object]:
         return dict(MANIFEST_SYNC_STATUS)
 
 
+def _refresh_table_metadata_after_crm_mutation() -> dict[str, object]:
+    sync_status = _sync_table_metadata_manifest()
+    try:
+        document_store = get_document_store()
+        if hasattr(document_store, "invalidate_manifest_cache"):
+            document_store.invalidate_manifest_cache()
+    except Exception:
+        pass
+    try:
+        get_agent().invalidate_caches()
+    except Exception:
+        pass
+    return sync_status
+
+
 def _run_backend_warmup() -> None:
     try:
         get_agent().warm_up()
@@ -1308,7 +1323,9 @@ def admin_crm_create(
     user: HealthcareUserContext = Depends(admin_user_context),
 ) -> dict[str, object]:
     try:
-        return get_deterministic_lookup_service().crm_create(section, payload)
+        result = get_deterministic_lookup_service().crm_create(section, payload)
+        result["metadata_sync"] = _refresh_table_metadata_after_crm_mutation()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
@@ -1323,7 +1340,9 @@ def admin_crm_update(
     user: HealthcareUserContext = Depends(admin_user_context),
 ) -> dict[str, object]:
     try:
-        return get_deterministic_lookup_service().crm_update(section, record_id, payload)
+        result = get_deterministic_lookup_service().crm_update(section, record_id, payload)
+        result["metadata_sync"] = _refresh_table_metadata_after_crm_mutation()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except Exception as exc:
@@ -1337,7 +1356,9 @@ def admin_crm_delete(
     user: HealthcareUserContext = Depends(admin_user_context),
 ) -> dict[str, object]:
     try:
-        return get_deterministic_lookup_service().crm_delete(section, record_id)
+        result = get_deterministic_lookup_service().crm_delete(section, record_id)
+        result["metadata_sync"] = _refresh_table_metadata_after_crm_mutation()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except Exception as exc:
