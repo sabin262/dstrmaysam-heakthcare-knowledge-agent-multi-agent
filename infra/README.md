@@ -80,9 +80,9 @@ aws cloudformation deploy `
     PublicSubnetTwoCidr=10.40.11.0/24 `
     DbAdminAccessEnabled=false `
     CicdEnabled=true `
-    CodeStarConnectionArn=arn:aws:codestar-connections:eu-west-2:666127452756:connection/replace-me `
+    CodeStarConnectionArn=arn:aws:codeconnections:eu-west-2:666127452756:connection/1cc25a96-45f6-418a-bfd0-e73ca9c818c7 `
     RepositoryId=github-owner/github-repo `
-    RepositoryBranch=main `
+    RepositoryBranch=master `
     PublicIngressCidr=0.0.0.0/0 `
     BackendDesiredCount=0 `
     FrontendDesiredCount=0 `
