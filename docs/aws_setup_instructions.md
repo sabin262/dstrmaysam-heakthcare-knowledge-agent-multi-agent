@@ -60,6 +60,7 @@ Set local shell variables:
 $env:AWS_REGION = "eu-west-2"
 $env:STACK_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-dev"
 $env:BASE_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-dev"
+$env:CFN_ARTIFACT_BUCKET = "$($env:BASE_NAME)-cfn-artifacts"
 $env:VPC_CIDR = "10.40.0.0/16"
 $env:PRIVATE_SUBNET_ONE_CIDR = "10.40.1.0/24"
 $env:PRIVATE_SUBNET_TWO_CIDR = "10.40.2.0/24"
@@ -83,20 +84,35 @@ Keep `BACKEND_DESIRED_COUNT` and `FRONTEND_DESIRED_COUNT` at `0` on the first de
 
 ## 3. Validate And Deploy Foundation Stack
 
-Validate:
+Create the CloudFormation artifact bucket before the first deploy. The foundation template is larger than the direct CloudFormation body limit, so `aws cloudformation deploy` must upload it to S3.
 
 ```powershell
-aws cloudformation validate-template `
-  --template-body file://infra/aws-foundation.yml `
-  --region $env:AWS_REGION
+aws s3api head-bucket --bucket $env:CFN_ARTIFACT_BUCKET 2>$null
+
+if ($LASTEXITCODE -ne 0) {
+  aws s3api create-bucket `
+    --bucket $env:CFN_ARTIFACT_BUCKET `
+    --region $env:AWS_REGION `
+    --create-bucket-configuration LocationConstraint=$env:AWS_REGION
+
+  aws s3api put-public-access-block `
+    --bucket $env:CFN_ARTIFACT_BUCKET `
+    --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+  aws s3api put-bucket-encryption `
+    --bucket $env:CFN_ARTIFACT_BUCKET `
+    --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+}
 ```
 
-Preview a changeset without executing:
+Preview a changeset without executing. This is the practical validation path for this large template:
 
 ```powershell
 aws cloudformation deploy `
   --stack-name $env:STACK_NAME `
   --template-file infra/aws-foundation.yml `
+  --s3-bucket $env:CFN_ARTIFACT_BUCKET `
+  --s3-prefix cloudformation `
   --region $env:AWS_REGION `
   --capabilities CAPABILITY_NAMED_IAM `
   --no-execute-changeset `
@@ -123,6 +139,8 @@ Create/update:
 aws cloudformation deploy `
   --stack-name $env:STACK_NAME `
   --template-file infra/aws-foundation.yml `
+  --s3-bucket $env:CFN_ARTIFACT_BUCKET `
+  --s3-prefix cloudformation `
   --region $env:AWS_REGION `
   --capabilities CAPABILITY_NAMED_IAM `
   --parameter-overrides `
@@ -396,6 +414,8 @@ $env:DB_ADMIN_ACCESS_ENABLED = "false"
 aws cloudformation deploy `
   --stack-name $env:STACK_NAME `
   --template-file infra/aws-foundation.yml `
+  --s3-bucket $env:CFN_ARTIFACT_BUCKET `
+  --s3-prefix cloudformation `
   --region $env:AWS_REGION `
   --capabilities CAPABILITY_NAMED_IAM `
   --parameter-overrides `
