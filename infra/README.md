@@ -81,7 +81,7 @@ aws cloudformation deploy `
     DbAdminAccessEnabled=false `
     CicdEnabled=true `
     CodeStarConnectionArn=arn:aws:codeconnections:eu-west-2:666127452756:connection/1cc25a96-45f6-418a-bfd0-e73ca9c818c7 `
-    RepositoryId=github-owner/github-repo `
+    RepositoryId=sabin262/dstrmaysam-heakthcare-knowledge-agent-multi-agent `
     RepositoryBranch=master `
     PublicIngressCidr=0.0.0.0/0 `
     BackendDesiredCount=0 `
