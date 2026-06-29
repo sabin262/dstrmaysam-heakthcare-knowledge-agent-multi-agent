@@ -192,7 +192,9 @@ Important outputs:
 
 ## 4. Populate Secrets Manager Values
 
-The template creates placeholder secrets. Replace them before starting the backend.
+The template creates the Secrets Manager secret resources but does not manage their secret values. This prevents stack updates from replacing real credentials with placeholders. Populate or update the values with `aws secretsmanager put-secret-value` before starting the backend.
+
+The app, Azure OpenAI, and Langfuse secrets use `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`, so deleting or replacing the stack will not intentionally delete the stored secret resources. If you need to remove them, delete them manually after confirming you no longer need the values.
 
 Generate an app password hash:
 
@@ -206,6 +208,7 @@ Update the app secret:
 $appSecret = @'
 {
   "session_secret": "replace-with-long-random-value",
+  "guardian_api_key": "replace-with-guardian-content-api-key",
   "auth_users": {
     "admin": "pbkdf2_sha256$1000$436e10a3455a383cd122f9fee62bb2d9$55a52972c1069e44b24076f738daa09c01dbfd9a44a6356c50809d3008a1eae3"
   },
@@ -223,6 +226,8 @@ aws secretsmanager put-secret-value `
   --secret-id "/$($env:BASE_NAME)/app" `
   --secret-string $appSecret
 ```
+
+The `guardian_api_key` value is optional for login, but required for the NHS news carousel/page in AWS mode. The backend reads it from the app secret when `GUARDIAN_API_KEY` is not set as an environment variable.
 
 Update Azure OpenAI:
 

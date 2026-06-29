@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+import logging
 from pathlib import PurePath
 import re
 import threading
@@ -55,6 +56,7 @@ from .storage import DocumentStore, LocalDocumentStore
 
 
 SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
+logger = logging.getLogger(__name__)
 DOCUMENT_METADATA_VALUE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_:-]{0,63}$")
 DASHBOARD_RANGE_WINDOWS = {
     "30m": timedelta(minutes=30),
@@ -136,7 +138,7 @@ def get_observability() -> ObservabilityClient:
 
 @lru_cache
 def get_news_service() -> GuardianNewsService:
-    return GuardianNewsService(get_settings())
+    return GuardianNewsService(get_settings(), get_secret_provider())
 
 
 def create_ingestion_job():
@@ -712,9 +714,14 @@ def current_user(user: HealthcareUserContext = Depends(active_user_context)) -> 
 @app.get("/health")
 def health() -> dict[str, object]:
     agent = get_agent()
+    settings_summary = get_settings().public_summary()
+    try:
+        settings_summary["guardian_api_configured"] = str(get_news_service().api_key_configured())
+    except Exception:
+        pass
     return {
         "status": "ok",
-        "settings": get_settings().public_summary(),
+        "settings": settings_summary,
         "registered_tools": agent.registered_tool_names(),
         "warmup": agent.warmup_status(),
     }
@@ -739,6 +746,7 @@ def login(request: LoginRequest) -> LoginResponse:
     except AuthenticationError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("Document ingestion failed")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 

@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .config import AppSettings
+from .secrets import SecretProvider
 
 
 GUARDIAN_SEARCH_URL = "https://content.guardianapis.com/search"
@@ -27,11 +28,15 @@ class GuardianNewsCache:
 
 
 class GuardianNewsService:
-    def __init__(self, settings: AppSettings) -> None:
+    def __init__(self, settings: AppSettings, secret_provider: SecretProvider | None = None) -> None:
         self.settings = settings
+        self.secret_provider = secret_provider
         self._cache = GuardianNewsCache(articles=[])
         self._last_fetch_monotonic = 0.0
         self._lock = threading.Lock()
+
+    def api_key_configured(self) -> bool:
+        return bool(self._resolve_api_key())
 
     def get_payload(self, *, force_refresh: bool = False) -> dict[str, Any]:
         refresh_seconds = max(60, int(self.settings.guardian_news_refresh_seconds))
@@ -65,7 +70,7 @@ class GuardianNewsService:
         }
 
     def _fetch_articles(self) -> list[dict[str, Any]]:
-        api_key = self.settings.guardian_api_key.strip()
+        api_key = self._resolve_api_key()
         if not api_key:
             raise RuntimeError("GUARDIAN_API_KEY is not configured")
 
@@ -112,6 +117,15 @@ class GuardianNewsService:
                 }
             )
         return articles
+
+    def _resolve_api_key(self) -> str:
+        api_key = self.settings.guardian_api_key.strip()
+        if api_key or self.secret_provider is None:
+            return api_key
+        try:
+            return self.secret_provider.load_app().guardian_api_key.strip()
+        except Exception:
+            return ""
 
 
 def _clean_text(value: str) -> str:

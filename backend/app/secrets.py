@@ -21,6 +21,7 @@ class AppSecrets:
     session_secret: str
     auth_users: dict[str, str]
     user_profiles: dict[str, dict[str, Any]]
+    guardian_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,7 @@ class SecretProvider:
             user_profiles={
                 str(username): dict(profile) for username, profile in user_profiles.items() if isinstance(profile, dict)
             },
+            guardian_api_key=str(data.get("guardian_api_key") or ""),
         )
 
     def load_azure_openai(self) -> AzureOpenAISecrets:
