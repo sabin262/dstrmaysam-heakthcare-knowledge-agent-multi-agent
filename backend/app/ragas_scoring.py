@@ -21,20 +21,55 @@ RAGAS_SCORE_NAMES = {
     "context_recall": "ragas_context_recall",
 }
 
+MAX_RAGAS_CONTEXTS = 10
+MAX_RAGAS_SOURCE_CONTEXTS_BEFORE_EXTRA = 5
+MAX_RAGAS_CONTEXT_CHARS = 3000
+MAX_RAGAS_EXTRA_CONTEXT_CHARS = 12000
 
-def source_contexts(sources: list[dict[str, Any]]) -> list[str]:
-    contexts = [
-        str(source.get("snippet") or "").strip()
+
+def source_contexts(
+    sources: list[dict[str, Any]],
+    additional_contexts: list[str] | None = None,
+) -> list[str]:
+    contexts: list[str] = []
+    seen: set[str] = set()
+
+    def add_context(value: str) -> None:
+        normalized = _normalize_context(value)
+        if not normalized:
+            return
+        identity = normalized[:500]
+        if identity in seen:
+            return
+        seen.add(identity)
+        contexts.append(normalized[:MAX_RAGAS_CONTEXT_CHARS])
+
+    source_snippets = [
+        str(source.get("snippet") or "")
         for source in sources
         if str(source.get("snippet") or "").strip()
     ]
+    for snippet in source_snippets[:MAX_RAGAS_SOURCE_CONTEXTS_BEFORE_EXTRA]:
+        add_context(snippet)
+
+    for context in additional_contexts or []:
+        for chunk in _split_context(str(context or "")[:MAX_RAGAS_EXTRA_CONTEXT_CHARS]):
+            add_context(chunk)
+
+    for snippet in source_snippets[MAX_RAGAS_SOURCE_CONTEXTS_BEFORE_EXTRA:]:
+        if len(contexts) >= MAX_RAGAS_CONTEXTS:
+            break
+        add_context(snippet)
+
     if contexts:
-        return contexts
-    return [
+        return contexts[:MAX_RAGAS_CONTEXTS]
+
+    contexts = [
         str(source.get("uri") or "").strip()
         for source in sources
         if str(source.get("uri") or "").strip()
     ]
+    return contexts[:MAX_RAGAS_CONTEXTS]
 
 
 def compute_live_ragas_scores(
@@ -42,10 +77,11 @@ def compute_live_ragas_scores(
     question: str,
     answer: str,
     sources: list[dict[str, Any]],
+    additional_contexts: list[str] | None = None,
     settings: "AppSettings | None" = None,
     secret_provider: "SecretProvider | None" = None,
 ) -> dict[str, Any]:
-    contexts = source_contexts(sources)
+    contexts = source_contexts(sources, additional_contexts=additional_contexts)
     if not answer.strip() or not contexts:
         return {
             "scores": {},
@@ -68,6 +104,8 @@ def compute_live_ragas_scores(
                 "status": "scored",
                 "provider": "ragas_azure_openai" if settings and secret_provider else "ragas",
                 "error": None,
+                "context_count": len(contexts),
+                "context_chars": sum(len(context) for context in contexts),
             }
     except Exception as exc:
         fallback = _lexical_fallback_scores(question=question, answer=answer, contexts=contexts)
@@ -76,6 +114,8 @@ def compute_live_ragas_scores(
             "status": "fallback_scored",
             "provider": "lexical_fallback",
             "error": f"{type(exc).__name__}: {exc}",
+            "context_count": len(contexts),
+            "context_chars": sum(len(context) for context in contexts),
         }
 
     fallback = _lexical_fallback_scores(question=question, answer=answer, contexts=contexts)
@@ -84,6 +124,8 @@ def compute_live_ragas_scores(
         "status": "fallback_scored",
         "provider": "lexical_fallback",
         "error": "RAGAS returned no numeric scores.",
+        "context_count": len(contexts),
+        "context_chars": sum(len(context) for context in contexts),
     }
 
 
@@ -242,6 +284,36 @@ def _terms(text: str) -> set[str]:
         for term in re.findall(r"[A-Za-z0-9]+", text)
         if len(term) > 3
     }
+
+
+def _normalize_context(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _split_context(value: str) -> list[str]:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return []
+    chunks: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+    for part in re.split(r"\n{2,}", normalized):
+        paragraph = part.strip()
+        if not paragraph:
+            continue
+        if current and current_chars + len(paragraph) > MAX_RAGAS_CONTEXT_CHARS:
+            chunks.append("\n\n".join(current))
+            current = []
+            current_chars = 0
+        while len(paragraph) > MAX_RAGAS_CONTEXT_CHARS:
+            chunks.append(paragraph[:MAX_RAGAS_CONTEXT_CHARS])
+            paragraph = paragraph[MAX_RAGAS_CONTEXT_CHARS:].strip()
+        if paragraph:
+            current.append(paragraph)
+            current_chars += len(paragraph)
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks or [normalized[:MAX_RAGAS_CONTEXT_CHARS]]
 
 
 def _overlap(left: set[str], right: set[str]) -> float:
