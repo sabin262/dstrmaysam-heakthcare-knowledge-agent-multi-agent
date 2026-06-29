@@ -86,7 +86,7 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
-    Description: Create dev ECS services plus CodePipeline, CodeBuild, and CodeDeploy resources.
+    Description: Create dev ECS services plus CodePipeline and CodeBuild resources.
   CodeStarConnectionArn:
     Type: String
     Default: ""
@@ -879,6 +879,9 @@ Resources:
       Subnets:
         - !Ref PublicSubnetOne
         - !Ref PublicSubnetTwo
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "300"
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -909,31 +912,11 @@ Resources:
         - Key: Owner
           Value: !Ref OwnerTag
 
-  FrontendBlueTargetGroup:
+  FrontendTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Condition: CreateCicd
     Properties:
-      Name: !Sub "${ShortName}-fe-blue"
-      VpcId: !Ref FoundationVpc
-      TargetType: ip
-      Protocol: HTTP
-      Port: 8501
-      HealthCheckPath: /_stcore/health
-      Matcher:
-        HttpCode: "200-399"
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectTag
-        - Key: Application
-          Value: !Ref ApplicationTag
-        - Key: Owner
-          Value: !Ref OwnerTag
-
-  FrontendGreenTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Condition: CreateCicd
-    Properties:
-      Name: !Sub "${ShortName}-fe-green"
+      Name: !Sub "${ShortName}-fe"
       VpcId: !Ref FoundationVpc
       TargetType: ip
       Protocol: HTTP
@@ -958,18 +941,7 @@ Resources:
       Protocol: HTTP
       DefaultActions:
         - Type: forward
-          TargetGroupArn: !Ref FrontendBlueTargetGroup
-
-  FrontendTestListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: CreateCicd
-    Properties:
-      LoadBalancerArn: !Ref DevApplicationLoadBalancer
-      Port: 9000
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref FrontendGreenTargetGroup
+          TargetGroupArn: !Ref FrontendTargetGroup
 
   BackendListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -1149,19 +1121,17 @@ Resources:
         - Key: Owner
           Value: !Ref OwnerTag
 
-  FrontendService:
+  FrontendRollingService:
     Type: AWS::ECS::Service
     Condition: CreateCicd
     DependsOn:
       - FrontendProdListener
     Properties:
-      ServiceName: !Sub "${BaseName}-frontend"
+      ServiceName: !Sub "${BaseName}-frontend-rolling"
       Cluster: !Ref EcsCluster
       TaskDefinition: !Ref FrontendTaskDefinition
       DesiredCount: !Ref FrontendDesiredCount
       LaunchType: FARGATE
-      DeploymentController:
-        Type: CODE_DEPLOY
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
@@ -1173,82 +1143,7 @@ Resources:
       LoadBalancers:
         - ContainerName: frontend
           ContainerPort: 8501
-          TargetGroupArn: !Ref FrontendBlueTargetGroup
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectTag
-        - Key: Application
-          Value: !Ref ApplicationTag
-        - Key: Owner
-          Value: !Ref OwnerTag
-
-  CodeDeployServiceRole:
-    Type: AWS::IAM::Role
-    Condition: CreateCicd
-    Properties:
-      RoleName: !Sub "${ShortName}-codedeploy-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codedeploy.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectTag
-        - Key: Application
-          Value: !Ref ApplicationTag
-        - Key: Owner
-          Value: !Ref OwnerTag
-
-  FrontendCodeDeployApplication:
-    Type: AWS::CodeDeploy::Application
-    Condition: CreateCicd
-    Properties:
-      ApplicationName: !Sub "${BaseName}-frontend"
-      ComputePlatform: ECS
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectTag
-        - Key: Application
-          Value: !Ref ApplicationTag
-        - Key: Owner
-          Value: !Ref OwnerTag
-
-  FrontendCodeDeployDeploymentGroup:
-    Type: AWS::CodeDeploy::DeploymentGroup
-    Condition: CreateCicd
-    Properties:
-      ApplicationName: !Ref FrontendCodeDeployApplication
-      DeploymentGroupName: !Sub "${BaseName}-frontend"
-      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
-      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
-      DeploymentStyle:
-        DeploymentType: BLUE_GREEN
-        DeploymentOption: WITH_TRAFFIC_CONTROL
-      BlueGreenDeploymentConfiguration:
-        DeploymentReadyOption:
-          ActionOnTimeout: CONTINUE_DEPLOYMENT
-        TerminateBlueInstancesOnDeploymentSuccess:
-          Action: TERMINATE
-          TerminationWaitTimeInMinutes: 5
-      ECSServices:
-        - ClusterName: !Ref EcsCluster
-          ServiceName: !GetAtt FrontendService.Name
-      LoadBalancerInfo:
-        TargetGroupPairInfoList:
-          - TargetGroups:
-              - Name: !GetAtt FrontendBlueTargetGroup.TargetGroupName
-              - Name: !GetAtt FrontendGreenTargetGroup.TargetGroupName
-            ProdTrafficRoute:
-              ListenerArns:
-                - !Ref FrontendProdListener
-            TestTrafficRoute:
-              ListenerArns:
-                - !Ref FrontendTestListener
+          TargetGroupArn: !Ref FrontendTargetGroup
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1394,59 +1289,11 @@ Resources:
                 - DB_INIT_EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER_NAME" --tasks "$DB_INIT_TASK_ARN" --query 'tasks[0].containers[?name==`db-init`].exitCode | [0]' --output text)
                 - test "$DB_INIT_EXIT_CODE" = "0"
                 - printf '[{"name":"backend","imageUri":"%s"}]' "$ECR_REPOSITORY_URI:backend-$IMAGE_TAG" > backend-imagedefinitions.json
-                - printf '{"ImageURI":"%s"}' "$ECR_REPOSITORY_URI:frontend-$IMAGE_TAG" > imageDetail.json
-                - aws ecs describe-task-definition --task-definition "$FRONTEND_TASK_DEFINITION" --query taskDefinition > current-frontend-taskdef.json
-                - |
-                  python - <<'PY'
-                  import json
-
-                  with open("current-frontend-taskdef.json", "r", encoding="utf-8") as handle:
-                      task_definition = json.load(handle)
-
-                  for key in (
-                      "taskDefinitionArn",
-                      "revision",
-                      "status",
-                      "requiresAttributes",
-                      "compatibilities",
-                      "registeredAt",
-                      "registeredBy",
-                  ):
-                      task_definition.pop(key, None)
-
-                  for container in task_definition.get("containerDefinitions", []):
-                      if container.get("name") == "frontend":
-                          container["image"] = "<IMAGE1_NAME>"
-
-                  with open("frontend-taskdef.json", "w", encoding="utf-8") as handle:
-                      json.dump(task_definition, handle)
-
-                  appspec = {
-                      "version": 1,
-                      "Resources": [
-                          {
-                              "TargetService": {
-                                  "Type": "AWS::ECS::Service",
-                                  "Properties": {
-                                      "TaskDefinition": "<TASK_DEFINITION>",
-                                      "LoadBalancerInfo": {
-                                          "ContainerName": "frontend",
-                                          "ContainerPort": 8501,
-                                      },
-                                  },
-                              }
-                          }
-                      ],
-                  }
-                  with open("frontend-appspec.yaml", "w", encoding="utf-8") as handle:
-                      json.dump(appspec, handle)
-                  PY
+                - printf '[{"name":"frontend","imageUri":"%s"}]' "$ECR_REPOSITORY_URI:frontend-$IMAGE_TAG" > frontend-imagedefinitions.json
           artifacts:
             files:
               - backend-imagedefinitions.json
-              - imageDetail.json
-              - frontend-taskdef.json
-              - frontend-appspec.yaml
+              - frontend-imagedefinitions.json
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_MEDIUM
@@ -1455,8 +1302,6 @@ Resources:
         EnvironmentVariables:
           - Name: ECR_REPOSITORY_URI
             Value: !GetAtt ImageRepository.RepositoryUri
-          - Name: FRONTEND_TASK_DEFINITION
-            Value: !Ref FrontendTaskDefinition
           - Name: ECS_CLUSTER_NAME
             Value: !Ref EcsCluster
           - Name: DB_INIT_TASK_DEFINITION
@@ -1514,7 +1359,7 @@ Resources:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
                 Resource: !GetAtt PipelineBuildProject.Arn
-              - Sid: EcsBackendDeploy
+              - Sid: EcsServiceDeploy
                 Effect: Allow
                 Action:
                   - ecs:DescribeServices
@@ -1532,17 +1377,6 @@ Resources:
                   - !GetAtt EcsExecutionRole.Arn
                   - !GetAtt BackendTaskRole.Arn
                   - !GetAtt FrontendTaskRole.Arn
-              - Sid: CodeDeployFrontend
-                Effect: Allow
-                Action:
-                  - codedeploy:CreateDeployment
-                  - codedeploy:GetApplication
-                  - codedeploy:GetApplicationRevision
-                  - codedeploy:GetDeployment
-                  - codedeploy:GetDeploymentConfig
-                  - codedeploy:GetDeploymentGroup
-                  - codedeploy:RegisterApplicationRevision
-                Resource: "*"
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1611,20 +1445,15 @@ Resources:
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
-                Provider: CodeDeployToECS
+                Provider: ECS
                 Version: "1"
               Configuration:
-                ApplicationName: !Ref FrontendCodeDeployApplication
-                DeploymentGroupName: !Ref FrontendCodeDeployDeploymentGroup
-                TaskDefinitionTemplateArtifact: BuildOutput
-                TaskDefinitionTemplatePath: frontend-taskdef.json
-                AppSpecTemplateArtifact: BuildOutput
-                AppSpecTemplatePath: frontend-appspec.yaml
-                Image1ArtifactName: BuildOutput
-                Image1ContainerName: IMAGE1_NAME
+                ClusterName: !Ref EcsCluster
+                ServiceName: !GetAtt FrontendRollingService.Name
+                FileName: frontend-imagedefinitions.json
               InputArtifacts:
                 - Name: BuildOutput
-              RunOrder: 2
+              RunOrder: 1
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1690,7 +1519,7 @@ Outputs:
     Value: !GetAtt BackendService.Name
   FrontendServiceName:
     Condition: CreateCicd
-    Value: !GetAtt FrontendService.Name
+    Value: !GetAtt FrontendRollingService.Name
   DevApplicationUrl:
     Condition: CreateCicd
     Value: !Sub "http://${DevApplicationLoadBalancer.DNSName}"
@@ -1700,12 +1529,6 @@ Outputs:
   DevLoadBalancerDnsName:
     Condition: CreateCicd
     Value: !GetAtt DevApplicationLoadBalancer.DNSName
-  FrontendCodeDeployApplicationName:
-    Condition: CreateCicd
-    Value: !Ref FrontendCodeDeployApplication
-  FrontendCodeDeployDeploymentGroupName:
-    Condition: CreateCicd
-    Value: !Ref FrontendCodeDeployDeploymentGroup
   DevCodePipelineName:
     Condition: CreatePipeline
     Value: !Ref DevCodePipeline
