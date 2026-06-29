@@ -1,0 +1,102 @@
+[
+  {
+    "ParameterKey": "BaseName",
+    "ParameterValue": "dstrmaysam-healthcare-knowledge-multi-agent-dev"
+  },
+  {
+    "ParameterKey": "ShortName",
+    "ParameterValue": "dstrmaysam-hkm-dev"
+  },
+  {
+    "ParameterKey": "ProjectTag",
+    "ParameterValue": "dstrmaysam-healthcare-knowledge-multi-agent"
+  },
+  {
+    "ParameterKey": "ApplicationTag",
+    "ParameterValue": "dstrmaysam"
+  },
+  {
+    "ParameterKey": "OwnerTag",
+    "ParameterValue": "Sabin"
+  },
+  {
+    "ParameterKey": "VpcCidr",
+    "ParameterValue": "10.40.0.0/16"
+  },
+  {
+    "ParameterKey": "PrivateSubnetOneCidr",
+    "ParameterValue": "10.40.1.0/24"
+  },
+  {
+    "ParameterKey": "PrivateSubnetTwoCidr",
+    "ParameterValue": "10.40.2.0/24"
+  },
+  {
+    "ParameterKey": "PublicSubnetOneCidr",
+    "ParameterValue": "10.40.10.0/24"
+  },
+  {
+    "ParameterKey": "PublicSubnetTwoCidr",
+    "ParameterValue": "10.40.11.0/24"
+  },
+  {
+    "ParameterKey": "DbAdminAccessEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "AdminInstanceType",
+    "ParameterValue": "t3.micro"
+  },
+  {
+    "ParameterKey": "DatabaseIngressCidr",
+    "ParameterValue": "10.40.0.0/16"
+  },
+  {
+    "ParameterKey": "DatabaseName",
+    "ParameterValue": "healthcare_agent"
+  },
+  {
+    "ParameterKey": "DatabaseUsername",
+    "ParameterValue": "healthcare_agent"
+  },
+  {
+    "ParameterKey": "DatabaseInstanceClass",
+    "ParameterValue": "db.t4g.micro"
+  },
+  {
+    "ParameterKey": "DatabaseAllocatedStorage",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "OpenSearchCollectionName",
+    "ParameterValue": "dstrmaysam-hkm-dev"
+  },
+  {
+    "ParameterKey": "CicdEnabled",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "CodeStarConnectionArn",
+    "ParameterValue": "arn:aws:codestar-connections:eu-west-2:666127452756:connection/replace-me"
+  },
+  {
+    "ParameterKey": "RepositoryId",
+    "ParameterValue": "github-owner/github-repo"
+  },
+  {
+    "ParameterKey": "RepositoryBranch",
+    "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "PublicIngressCidr",
+    "ParameterValue": "0.0.0.0/0"
+  },
+  {
+    "ParameterKey": "BackendDesiredCount",
+    "ParameterValue": "0"
+  },
+  {
+    "ParameterKey": "FrontendDesiredCount",
+    "ParameterValue": "0"
+  }
+]

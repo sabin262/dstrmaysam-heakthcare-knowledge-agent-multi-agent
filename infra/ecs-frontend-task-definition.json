@@ -1,15 +1,15 @@
 {
-  "family": "dstrmaysam-healthcare-knowledge-agent-frontend",
+  "family": "dstrmaysam-healthcare-knowledge-multi-agent-dev-frontend",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
   "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-healthcare-knowledge-agent-ecs-execution-role",
-  "taskRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-healthcare-knowledge-agent-frontend-task-role",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-hkm-dev-ecs-exec-role",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/dstrmaysam-hkm-dev-frontend-task-role",
   "containerDefinitions": [
     {
       "name": "frontend",
-      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/dstrmaysam-healthcare-knowledge-agent-frontend:latest",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/dstrmaysam-healthcare-knowledge-multi-agent-dev:frontend-latest",
       "essential": true,
       "portMappings": [
         {
@@ -23,7 +23,7 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/dstrmaysam-healthcare-knowledge-agent/frontend",
+          "awslogs-group": "/ecs/dstrmaysam-healthcare-knowledge-multi-agent-dev/frontend",
           "awslogs-region": "<region>",
           "awslogs-stream-prefix": "ecs"
         }
