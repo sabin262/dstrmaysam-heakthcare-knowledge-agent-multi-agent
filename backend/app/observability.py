@@ -11,6 +11,9 @@ from .config import AppSettings
 from .secrets import SecretProvider
 
 
+LANGFUSE_SYSTEM_PROMPT_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-system"
+
+
 DEFAULT_SYSTEM_PROMPT = """You are the Healthcare Knowledge Agent.
 Answer only from provided knowledge context when available.
 If the answer is not supported by retrieved sources, say what is missing.
@@ -181,7 +184,7 @@ class ObservabilityClient:
         try:
             client = self._get_langfuse_client()
             prompt = client.get_prompt(
-                "dstrmaysam-healthcare-knowledge-agent-system",
+                LANGFUSE_SYSTEM_PROMPT_NAME,
                 type="text",
                 label=self.settings.prompt_label,
             )
