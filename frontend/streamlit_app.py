@@ -1476,6 +1476,16 @@ def render_admin_dashboard() -> None:
                 "Guardrail",
             ],
             chip_columns={"Guardrail"},
+            column_widths={
+                "Time": "minmax(12rem, 1.35fr)",
+                "User": "minmax(5.5rem, 0.55fr)",
+                "Query": "minmax(22rem, 2.6fr)",
+                "Model": "minmax(7rem, 0.65fr)",
+                "Sources": "minmax(4.8rem, 0.42fr)",
+                "Tokens": "minmax(5rem, 0.42fr)",
+                "Latency ms": "minmax(6rem, 0.5fr)",
+                "Guardrail": "minmax(5.6rem, 0.48fr)",
+            },
             max_height=430,
         )
         if selected_query_id:
@@ -1735,6 +1745,7 @@ def render_clickable_table(
     columns: list[str] | None = None,
     labels: dict[str, str] | None = None,
     chip_columns: set[str] | None = None,
+    column_widths: dict[str, str] | None = None,
     max_height: int | None = None,
 ) -> str:
     if not rows:
@@ -1743,8 +1754,9 @@ def render_clickable_table(
     columns = columns or list(rows[0].keys())
     labels = labels or {}
     chip_columns = chip_columns or set()
-    min_width = max(760, len(columns) * 148)
-    grid_template = " ".join("minmax(8.5rem, 1fr)" for _ in columns)
+    column_widths = column_widths or {}
+    min_width = max(760, len(columns) * 124)
+    grid_template = " ".join(column_widths.get(column, "minmax(6.5rem, 1fr)") for column in columns)
     header_cells = "".join(
         f'<div class="hka-click-table-cell">{html.escape(labels.get(column, column))}</div>'
         for column in columns
@@ -1760,7 +1772,7 @@ def render_clickable_table(
                 escaped_value = f'<span class="hka-table-chip">{escaped_value}</span>'
             cells.append(f'<div class="hka-click-table-cell">{escaped_value}</div>')
         row_html.append(
-            f'<a class="hka-click-table-row" role="row" href="{href}" '
+            f'<a class="hka-click-table-row" role="row" href="{href}" target="_self" '
             f'style="grid-template-columns:{grid_template}">'
             f'{"".join(cells)}</a>'
         )
@@ -2153,6 +2165,15 @@ def render_documents_table(documents: list[dict[str, Any]]) -> None:
         query_key="hka_document_row",
         columns=["File", "Chunks", "Category", "Type", "Access roles", "Status", "URI"],
         chip_columns={"Category", "Type", "Status"},
+        column_widths={
+            "File": "minmax(20rem, 2.3fr)",
+            "Chunks": "minmax(4.2rem, 0.35fr)",
+            "Category": "minmax(9rem, 0.8fr)",
+            "Type": "minmax(8rem, 0.72fr)",
+            "Access roles": "minmax(13rem, 1.35fr)",
+            "Status": "minmax(8rem, 0.7fr)",
+            "URI": "minmax(13rem, 1.2fr)",
+        },
         max_height=560,
     )
     if selected_document_id:
