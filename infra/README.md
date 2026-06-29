@@ -6,13 +6,13 @@ This folder contains AWS foundation infrastructure documents for the dev deploym
 dstrmaysam-healthcare-knowledge-multi-agent-dev
 ```
 
-The foundation stack creates shared AWS resources and the isolated private networking required by RDS. It also creates an S3 Gateway Endpoint on the private route table so CloudShell VPC environments can copy SQL files from the project bucket. When `CicdEnabled=true`, it creates dev ALB/Fargate services plus CodePipeline, CodeBuild, and CodeDeploy resources so changes can be tested directly on AWS.
+The foundation stack creates shared AWS resources and the isolated private networking required by RDS. It also creates an S3 Gateway Endpoint on the private route table so CloudShell VPC environments can copy SQL files from the project bucket. When `CicdEnabled=true`, it creates dev ALB/Fargate services plus CodePipeline, CodeBuild, and ECS deploy resources so changes can be tested directly on AWS.
 
 ## Primary Files
 
 | File | Purpose |
 |---|---|
-| `aws-foundation.yml` | CloudFormation template for S3, S3 Gateway Endpoint, Secrets Manager, RDS Postgres, OpenSearch Serverless, ECR, ECS/ALB dev services, CodePipeline, CodeBuild, CodeDeploy, IAM roles, and log groups. |
+| `aws-foundation.yml` | CloudFormation template for S3, S3 Gateway Endpoint, Secrets Manager, RDS Postgres, OpenSearch Serverless, ECR, ECS/ALB dev services, CodePipeline, CodeBuild, IAM roles, and log groups. |
 | `aws-foundation-parameters.example.json` | Example CloudFormation parameter file for the stack-created VPC, private RDS subnets, database, and OpenSearch names. |
 | `db-init/Dockerfile` | Pipeline image that runs RDS schema and seed SQL through `psql`. |
 | `db-init/run-db-init.sh` | DB initialization entrypoint used by the one-off ECS task. |

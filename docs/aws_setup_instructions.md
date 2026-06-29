@@ -5,7 +5,7 @@ Target stage: `dev`
 Default region: `eu-west-2`  
 Base name: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
 
-This runbook creates the AWS foundation resources required by AWS mode. The foundation stack creates a small VPC, private subnets for RDS, optional public ALB/Fargate dev services, and an optional CodePipeline/CodeBuild/CodeDeploy flow so changes can be tested directly on AWS. For local PowerShell administration, it can also create an optional SSM-managed admin instance, but your AWS Organizations SCP may block EC2 instance creation.
+This runbook creates the AWS foundation resources required by AWS mode. The foundation stack creates a small VPC, private subnets for RDS, optional public ALB/Fargate dev services, and an optional CodePipeline/CodeBuild/ECS deploy flow so changes can be tested directly on AWS. For local PowerShell administration, it can also create an optional SSM-managed admin instance, but your AWS Organizations SCP may block EC2 instance creation.
 
 ## 1. Resources Created
 
@@ -30,7 +30,7 @@ The CloudFormation template `infra/aws-foundation.yml` creates:
   - CodeBuild Docker image build and ECR push
   - One-off ECS database initialization task for schema and seed SQL
   - ECS backend deploy
-  - CodeDeploy blue/green frontend deploy
+  - ECS frontend deploy
 - CloudWatch log groups for backend/frontend ECS tasks
 
 All supported resources are tagged:
@@ -51,7 +51,7 @@ Install/configure:
 - AWS Session Manager plugin support for `aws ssm start-session`
 - Docker
 - `psql`
-- AWS credentials with permission to create CloudFormation, S3, Secrets Manager, RDS, OpenSearch Serverless, ECR, ECS, ELBv2, IAM, CodePipeline, CodeBuild, CodeDeploy, CodeStar Connections, and CloudWatch Logs resources
+- AWS credentials with permission to create CloudFormation, S3, Secrets Manager, RDS, OpenSearch Serverless, ECR, ECS, ELBv2, IAM, CodePipeline, CodeBuild, CodeStar Connections, and CloudWatch Logs resources
 - A CodeStar Connections connection to GitHub if `CicdEnabled=true`
 
 Set local shell variables:
@@ -473,7 +473,9 @@ When `CicdEnabled=true`, the stack creates:
 - CodeBuild project that builds `backend`, `frontend`, and `db-init` Docker images and pushes them to the single ECR repository.
 - One-off ECS `db-init` Fargate task that applies schema and seed SQL to RDS before app deployment.
 - ECS deploy action for the backend service.
-- CodeDeploy blue/green deployment for the frontend service.
+- ECS deploy action for the frontend service.
+
+The dev pipeline uses regular ECS rolling deployments for both backend and frontend. It does not use CodeDeploy blue/green deployment, a frontend test listener, or a traffic-test phase. If you are updating an older stack version that created the frontend service with a CodeDeploy deployment controller, the stack creates a new rolling frontend ECS service and target group, then points the existing ALB listener at it. The ALB URL remains the same.
 
 First deploy should normally use:
 
