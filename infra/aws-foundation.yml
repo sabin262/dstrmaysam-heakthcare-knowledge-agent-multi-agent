@@ -986,6 +986,8 @@ Resources:
               Value: !Sub "/${BaseName}/azure-openai"
             - Name: AZURE_OPENAI_DEPLOYMENT
               Value: gpt-4.1-mini
+            - Name: AZURE_OPENAI_GENERATION_API
+              Value: chat_completions
             - Name: LANGFUSE_SECRET_NAME
               Value: !Sub "/${BaseName}/langfuse"
             - Name: S3_BUCKET
@@ -1012,8 +1014,58 @@ Resources:
               Value: require
             - Name: LOCAL_TEST_ADMIN_ENABLED
               Value: "false"
+            - Name: DOCUMENT_MANIFEST_CACHE_TTL_SECONDS
+              Value: "300"
+            - Name: LANGFUSE_PROMPT_CACHE_TTL_SECONDS
+              Value: "300"
+            - Name: CHAT_FAST_RAG_ENABLED
+              Value: "false"
+            - Name: CHAT_FAST_PLANNED_EXECUTION_ENABLED
+              Value: "true"
+            - Name: CHAT_FAST_RAG_MIN_QUERY_TERMS
+              Value: "3"
+            - Name: MAX_GRAPH_LLM_CALLS
+              Value: "10"
+            - Name: RAG_TOP_K
+              Value: "10"
+            - Name: RAG_NEIGHBOR_CHUNKS
+              Value: "1"
+            - Name: INGESTION_CHUNK_SIZE
+              Value: "1500"
+            - Name: INGESTION_CHUNK_OVERLAP
+              Value: "250"
+            - Name: RAG_PARALLEL_SEARCH_ENABLED
+              Value: "true"
+            - Name: CHAT_BACKGROUND_HISTORY_SAVE_ENABLED
+              Value: "true"
+            - Name: LANGFUSE_BACKGROUND_TRACE_UPDATE_ENABLED
+              Value: "true"
+            - Name: CHAT_WARMUP_ENABLED
+              Value: "true"
+            - Name: CHAT_WARMUP_LLM_CALL_ENABLED
+              Value: "true"
+            - Name: CHAT_WARMUP_RETRIEVAL_ENABLED
+              Value: "true"
+            - Name: DETERMINISTIC_LOOKUP_ENABLED
+              Value: "true"
+            - Name: DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED
+              Value: "false"
             - Name: TOOL_EXECUTION_MODE
               Value: local
+            - Name: MCP_SERVER_URL
+              Value: http://host.docker.internal:9000/sse
+            - Name: MCP_PROJECT_ID
+              Value: dstrmaysam-healthcare-knowledge-multi-agent
+            - Name: MCP_TOOL_NAME
+              Value: execute_project_tool
+            - Name: MCP_TOOL_TIMEOUT_SECONDS
+              Value: "30"
+            - Name: MCP_TOOL_FALLBACK_TO_LOCAL
+              Value: "false"
+            - Name: GUARDIAN_NEWS_REFRESH_SECONDS
+              Value: "300"
+            - Name: GUARDIAN_NEWS_PAGE_SIZE
+              Value: "10"
           Secrets:
             - Name: POSTGRES_PASSWORD
               ValueFrom: !Join ["", [!GetAtt Database.MasterUserSecret.SecretArn, ":password::"]]
