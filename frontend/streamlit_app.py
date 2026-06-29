@@ -1,6 +1,7 @@
 import json
 import os
 import html
+import hashlib
 import queue
 import re
 import textwrap
@@ -1437,7 +1438,20 @@ def render_admin_dashboard() -> None:
     st.divider()
     st.subheader("Per-query details")
     query_rows = []
-    for item in queries:
+    query_row_ids = []
+    for index, item in enumerate(queries):
+        query_row_ids.append(
+            stable_table_row_id(
+                [
+                    item.get("query_id") or item.get("id") or "",
+                    item.get("session_id") or "",
+                    item.get("created_at") or "",
+                    item.get("user_id") or "",
+                    item.get("query") or "",
+                    index,
+                ]
+            )
+        )
         query_rows.append(
             {
                 "Time": item.get("created_at", ""),
@@ -1447,19 +1461,16 @@ def render_admin_dashboard() -> None:
                 "Sources": item.get("source_count", 0),
                 "Tokens": item.get("total_tokens", 0),
                 "Latency ms": item.get("latency_ms", 0),
-                "Guardrail": item.get("guardrail_applied", False),
+                "Guardrail": "Yes" if item.get("guardrail_applied") else "No",
             }
         )
     if query_rows:
-        st.caption("Select a row to open query details.")
-        table_event = st.dataframe(
+        st.caption("Click a row to open query details.")
+        selected_query_id = render_clickable_table(
             query_rows,
-            hide_index=True,
-            use_container_width=True,
-            height=430,
-            on_select="rerun",
-            selection_mode="single-row",
-            column_order=[
+            row_ids=query_row_ids,
+            query_key="hka_query_row",
+            columns=[
                 "Time",
                 "User",
                 "Query",
@@ -1469,24 +1480,11 @@ def render_admin_dashboard() -> None:
                 "Latency ms",
                 "Guardrail",
             ],
-            column_config={
-                "Time": st.column_config.TextColumn("Time", width="medium"),
-                "User": st.column_config.TextColumn("User", width="small"),
-                "Query": st.column_config.TextColumn("Query", width="large"),
-                "Model": st.column_config.TextColumn("Model", width="medium"),
-                "Sources": st.column_config.NumberColumn("Sources", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", width="small"),
-                "Latency ms": st.column_config.NumberColumn("Latency ms", width="small"),
-                "Guardrail": st.column_config.CheckboxColumn("Guardrail", width="small"),
-            },
+            chip_columns={"Guardrail"},
+            max_height=430,
         )
-        selected_rows = []
-        try:
-            selected_rows = list(table_event.selection.rows)
-        except Exception:
-            selected_rows = []
-        if selected_rows:
-            selected_index = int(selected_rows[0])
+        if selected_query_id:
+            selected_index = query_row_ids.index(selected_query_id)
             if 0 <= selected_index < len(queries):
                 selected_item = queries[selected_index]
                 if hasattr(st, "dialog"):
@@ -1624,6 +1622,170 @@ def render_record_details(record: dict[str, Any], *, labeler=crm_label) -> None:
         st.caption("No details available for this record.")
 
 
+CLICKABLE_TABLE_QUERY_KEYS = ("hka_query_row", "hka_crm_row", "hka_document_row")
+
+
+def _query_param_value(key: str) -> str:
+    try:
+        value = st.query_params.get(key, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "")
+
+
+def _clear_query_param(key: str) -> None:
+    try:
+        if key in st.query_params:
+            del st.query_params[key]
+    except Exception:
+        return
+
+
+def consume_clickable_table_selection(query_key: str, valid_ids: set[str]) -> str:
+    pending_key = f"{query_key}_pending_selection"
+    raw_selection = _query_param_value(query_key)
+    if raw_selection:
+        if raw_selection in valid_ids:
+            st.session_state[pending_key] = raw_selection
+        for stale_key in CLICKABLE_TABLE_QUERY_KEYS:
+            _clear_query_param(stale_key)
+    selected = str(st.session_state.pop(pending_key, "") or "")
+    return selected if selected in valid_ids else ""
+
+
+def stable_table_row_id(parts: list[Any]) -> str:
+    payload = json.dumps([str(part or "") for part in parts], sort_keys=True)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def inject_clickable_table_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .hka-table-wrap {
+            width: 100%;
+            overflow-x: auto;
+            border: 1px solid var(--hka-border);
+            border-radius: 8px;
+            background: var(--hka-surface);
+        }
+        .hka-click-table {
+            display: grid;
+            width: 100%;
+        }
+        .hka-click-table-header,
+        .hka-click-table-row {
+            display: grid;
+            align-items: stretch;
+            text-decoration: none !important;
+        }
+        .hka-click-table-header {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: color-mix(in srgb, var(--hka-surface-soft), var(--hka-surface) 35%);
+            border-bottom: 1px solid var(--hka-border);
+            color: var(--hka-muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .hka-click-table-row {
+            color: var(--hka-text) !important;
+            border-bottom: 1px solid color-mix(in srgb, var(--hka-border), transparent 45%);
+            cursor: pointer;
+            transition: background 120ms ease, box-shadow 120ms ease;
+        }
+        .hka-click-table-row:last-child {
+            border-bottom: 0;
+        }
+        .hka-click-table-row:hover {
+            background: color-mix(in srgb, var(--hka-surface-soft), var(--hka-accent) 7%);
+            box-shadow: inset 3px 0 0 var(--hka-accent-strong);
+        }
+        .hka-click-table-cell {
+            min-width: 0;
+            padding: 0.72rem 0.85rem;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+        .hka-click-table-header .hka-click-table-cell {
+            padding: 0.62rem 0.85rem;
+        }
+        .hka-table-chip {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            padding: 0.18rem 0.48rem;
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--hka-accent), transparent 84%);
+            color: var(--hka-text);
+            border: 1px solid color-mix(in srgb, var(--hka-accent), transparent 70%);
+            font-size: 0.78rem;
+            font-weight: 650;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_clickable_table(
+    rows: list[dict[str, Any]],
+    *,
+    row_ids: list[str],
+    query_key: str,
+    columns: list[str] | None = None,
+    labels: dict[str, str] | None = None,
+    chip_columns: set[str] | None = None,
+    max_height: int | None = None,
+) -> str:
+    if not rows:
+        return ""
+    inject_clickable_table_css()
+    columns = columns or list(rows[0].keys())
+    labels = labels or {}
+    chip_columns = chip_columns or set()
+    min_width = max(760, len(columns) * 148)
+    grid_template = " ".join("minmax(8.5rem, 1fr)" for _ in columns)
+    header_cells = "".join(
+        f'<div class="hka-click-table-cell">{html.escape(labels.get(column, column))}</div>'
+        for column in columns
+    )
+    row_html = []
+    for row, row_id in zip(rows, row_ids):
+        href = f"?{quote(query_key, safe='')}={quote(str(row_id), safe='')}"
+        cells = []
+        for column in columns:
+            value = "" if row.get(column) is None else str(row.get(column))
+            escaped_value = html.escape(value)
+            if column in chip_columns and value:
+                escaped_value = f'<span class="hka-table-chip">{escaped_value}</span>'
+            cells.append(f'<div class="hka-click-table-cell">{escaped_value}</div>')
+        row_html.append(
+            f'<a class="hka-click-table-row" role="row" href="{href}" '
+            f'style="grid-template-columns:{grid_template}">'
+            f'{"".join(cells)}</a>'
+        )
+    wrapper_style = f"max-height:{int(max_height)}px; overflow:auto;" if max_height else ""
+    st.markdown(
+        f"""
+        <div class="hka-table-wrap" style="{wrapper_style}">
+            <div class="hka-click-table" role="table" style="min-width:{min_width}px">
+                <div class="hka-click-table-header" role="row" style="grid-template-columns:{grid_template}">
+                    {header_cells}
+                </div>
+                {''.join(row_html)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    return consume_clickable_table_selection(query_key, set(row_ids))
+
+
 def crm_filter_controls(section: str, filters: list[str]) -> dict[str, str]:
     values: dict[str, str] = {}
     if not filters:
@@ -1755,21 +1917,31 @@ def render_hospital_crm_dashboard(section: str) -> None:
                     st.error(f"Delete failed: {exc}")
 
     if rows:
-        st.caption("Select a row to view, edit, or delete the record.")
-        table_event = st.dataframe(
+        st.caption("Click a row to view, edit, or delete the record.")
+        row_ids = [
+            str(row.get(primary_key) or stable_table_row_id([section, index, row]))
+            for index, row in enumerate(rows)
+        ]
+        selected_row_id = render_clickable_table(
             rows,
-            hide_index=True,
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="single-row",
+            row_ids=row_ids,
+            query_key="hka_crm_row",
+            columns=columns,
+            labels={column: crm_label(column) for column in columns},
+            chip_columns={
+                "care_status",
+                "invoice_status",
+                "on_call",
+                "on_call_today",
+                "restricted",
+                "status",
+                "category",
+                "department_name",
+            },
+            max_height=620,
         )
-        selected_rows = []
-        try:
-            selected_rows = list(table_event.selection.rows)
-        except Exception:
-            selected_rows = []
-        if selected_rows:
-            selected_index = int(selected_rows[0])
+        if selected_row_id:
+            selected_index = row_ids.index(selected_row_id)
             if 0 <= selected_index < len(rows):
                 selected_row = rows[selected_index]
                 selected_title = str(selected_row.get(primary_key) or label)
@@ -1975,21 +2147,21 @@ def render_documents_table(documents: list[dict[str, Any]]) -> None:
         "Categories",
         len({str(row.get("Category") or "general") for row in rows}),
     )
-    st.caption("Select a row to view, edit, or delete the document.")
-    table_event = st.dataframe(
+    st.caption("Click a row to view, edit, or delete the document.")
+    row_ids = [
+        str(document.get("key") or document.get("uri") or stable_table_row_id([index, document]))
+        for index, document in enumerate(documents)
+    ]
+    selected_document_id = render_clickable_table(
         rows,
-        hide_index=True,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="single-row",
+        row_ids=row_ids,
+        query_key="hka_document_row",
+        columns=["File", "Chunks", "Category", "Type", "Access roles", "Status", "URI"],
+        chip_columns={"Category", "Type", "Status"},
+        max_height=560,
     )
-    selected_rows = []
-    try:
-        selected_rows = list(table_event.selection.rows)
-    except Exception:
-        selected_rows = []
-    if selected_rows:
-        selected_index = int(selected_rows[0])
+    if selected_document_id:
+        selected_index = row_ids.index(selected_document_id)
         if 0 <= selected_index < len(documents):
             selected_document = documents[selected_index]
             selected_title = str(selected_document.get("title") or selected_document.get("key") or "Document")
