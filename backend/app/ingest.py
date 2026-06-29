@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import io
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,7 @@ LOOKUP_TABLE_ASSET_SOURCE = "postgres_table_lookup"
 LOOKUP_TABLE_URI_PREFIX = "postgres://table"
 LEGACY_LOOKUP_CSV_ASSET_SOURCE = "postgres_uploaded_lookup"
 SUPPORTED_RAW_EXTENSIONS = (".pdf", ".docx", ".txt", ".md", ".csv")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -342,6 +344,7 @@ class IngestionJob:
         self.s3 = boto3_client(settings, "s3")
         self.deterministic_lookup = deterministic_lookup
         self._embeddings: Any | None = None
+        self._embedding_disabled = False
         self._opensearch: Any | None = None
         self._opensearch_index_checked = False
 
@@ -519,6 +522,8 @@ class IngestionJob:
             return 0
 
     def _embed(self, text: str) -> list[float] | None:
+        if self._embedding_disabled:
+            return None
         try:
             if self._embeddings is None:
                 from langchain_openai import AzureOpenAIEmbeddings
@@ -531,7 +536,9 @@ class IngestionJob:
                     azure_deployment=secrets.embedding_deployment,
                 )
             return list(self._embeddings.embed_query(text))
-        except Exception:
+        except Exception as exc:
+            self._embedding_disabled = True
+            logger.warning("Embedding failed during ingestion; continuing with keyword-only indexing: %s", exc)
             return None
 
     def _get_opensearch(self) -> Any:

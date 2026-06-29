@@ -2,6 +2,7 @@ import json
 import os
 import html
 import queue
+import re
 import textwrap
 import threading
 from typing import Any
@@ -143,6 +144,10 @@ def raise_for_api_error(response: requests.Response) -> None:
         detail = response.json().get("detail")
     except Exception:
         detail = response.text
+        title_match = re.search(r"<title>(.*?)</title>", detail or "", flags=re.IGNORECASE | re.DOTALL)
+        heading_match = re.search(r"<h1>(.*?)</h1>", detail or "", flags=re.IGNORECASE | re.DOTALL)
+        if title_match or heading_match:
+            detail = html.unescape((heading_match or title_match).group(1)).strip()
     if isinstance(detail, list):
         detail = "; ".join(str(item.get("msg", item)) if isinstance(item, dict) else str(item) for item in detail)
     raise RuntimeError(f"{response.status_code}: {detail or response.reason}")

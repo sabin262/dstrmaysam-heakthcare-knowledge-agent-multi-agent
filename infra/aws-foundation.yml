@@ -879,6 +879,9 @@ Resources:
       Subnets:
         - !Ref PublicSubnetOne
         - !Ref PublicSubnetTwo
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "300"
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
