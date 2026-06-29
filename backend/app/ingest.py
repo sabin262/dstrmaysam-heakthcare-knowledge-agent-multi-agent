@@ -490,7 +490,6 @@ class IngestionJob:
         client = self._get_opensearch()
         self._ensure_index(client)
         embedding = self._embed(chunk)
-        doc_id = hashlib.sha256(f"{document.key}:{chunk_index}:{document.checksum}".encode()).hexdigest()
         body = {
             "key": document.key,
             "title": document.title,
@@ -503,7 +502,7 @@ class IngestionJob:
         }
         if embedding is not None:
             body["embedding"] = embedding
-        client.index(index=self.settings.opensearch_index, id=doc_id, body=body, refresh=False)
+        client.index(index=self.settings.opensearch_index, body=body, refresh=False)
 
     def _delete_document_chunks(self, key: str) -> int:
         client = self._get_opensearch()
