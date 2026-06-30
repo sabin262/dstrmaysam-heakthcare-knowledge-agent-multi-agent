@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .config import AppSettings
@@ -2094,6 +2094,43 @@ class KnowledgeAgent:
         self._llm_error: str | None = None
         self._catalog_candidate_cache: dict[tuple[Any, ...], list[str]] = {}
         self._warmup_status: dict[str, Any] = {"status": "not_started"}
+        self._runtime_settings_lock = threading.Lock()
+
+    def _refresh_tool_execution_settings(self) -> tuple[AppSettings, dict[str, Any]]:
+        if self.settings.use_local_resources():
+            return self.settings, {
+                "tool_execution_secret_refreshed": False,
+                "tool_execution_secret_refresh_reason": "local_resources",
+            }
+        started = time.perf_counter()
+        try:
+            if hasattr(self.secret_provider, "invalidate"):
+                self.secret_provider.invalidate(self.settings.app_secret_name)
+            tool_execution = self.secret_provider.load_tool_execution()
+            refreshed_settings = replace(
+                self.settings,
+                tool_execution_mode=tool_execution.tool_execution_mode,
+                mcp_server_url=tool_execution.mcp_server_url,
+                mcp_project_id=tool_execution.mcp_project_id,
+                mcp_tool_timeout_seconds=tool_execution.mcp_tool_timeout_seconds,
+                mcp_tool_fallback_to_local=tool_execution.mcp_tool_fallback_to_local,
+            )
+            with self._runtime_settings_lock:
+                changed = refreshed_settings != self.settings
+                self.settings = refreshed_settings
+                if changed:
+                    self.tools = build_agent_tools(self.retrieval, self.documents, settings=refreshed_settings)
+            return refreshed_settings, {
+                "tool_execution_secret_refreshed": True,
+                "tool_execution_secret_refresh_ms": _elapsed_ms(started),
+                "tool_execution_secret_changed": changed,
+            }
+        except Exception as exc:
+            return self.settings, {
+                "tool_execution_secret_refreshed": False,
+                "tool_execution_secret_refresh_ms": _elapsed_ms(started),
+                "tool_execution_secret_refresh_error": f"{type(exc).__name__}: {exc}",
+            }
 
     def warm_up(self) -> dict[str, Any]:
         status: dict[str, Any] = {
@@ -2190,6 +2227,8 @@ class KnowledgeAgent:
         execution_mode_label = _chat_execution_mode_label(execution_mode)
         performance["chat_execution_mode"] = execution_mode
         performance["chat_execution_mode_label"] = execution_mode_label
+        runtime_settings, tool_execution_refresh = self._refresh_tool_execution_settings()
+        performance.update(tool_execution_refresh)
         redaction = self.redactor.redact(query)
         safe_query = redaction.redacted_text
         history_started = time.perf_counter()
@@ -2221,7 +2260,7 @@ class KnowledgeAgent:
                 access=self.access,
                 safety=self.safety,
                 deterministic_lookup=self.deterministic_lookup,
-                settings=self.settings,
+                settings=runtime_settings,
             )
             original_tools = self.tools
             try:
@@ -2273,15 +2312,15 @@ class KnowledgeAgent:
                 safety_assessment = self.safety.assess(safe_query, sources)
                 performance["final_safety_ms"] = _elapsed_ms(final_safety_started)
                 trace_metadata = {
-                    "app_env": self.settings.app_env,
-                    "model": self.settings.azure_openai_deployment or "unknown",
-                    "prompt_label": self.settings.prompt_label,
-                    "tool_execution_mode": self.settings.tool_execution_mode,
+                    "app_env": runtime_settings.app_env,
+                    "model": runtime_settings.azure_openai_deployment or "unknown",
+                    "prompt_label": runtime_settings.prompt_label,
+                    "tool_execution_mode": runtime_settings.tool_execution_mode,
                     "tool_execution_location": (
-                        "MCP server" if self.settings.tool_execution_mode == "mcp" else "Backend local tools"
+                        "MCP server" if runtime_settings.tool_execution_mode == "mcp" else "Backend local tools"
                     ),
-                    "mcp_server_url": self.settings.mcp_server_url if self.settings.tool_execution_mode == "mcp" else "",
-                    "mcp_project_id": self.settings.mcp_project_id if self.settings.tool_execution_mode == "mcp" else "",
+                    "mcp_server_url": runtime_settings.mcp_server_url if runtime_settings.tool_execution_mode == "mcp" else "",
+                    "mcp_project_id": runtime_settings.mcp_project_id if runtime_settings.tool_execution_mode == "mcp" else "",
                     "tools_used": tools_used,
                     "tool_flow": tool_flow,
                     "tool_count": len(tools_used),
@@ -2338,9 +2377,9 @@ class KnowledgeAgent:
                         "audit_event": audit_event,
                         "catalog_guidance": catalog_guidance,
                         "llm_error": self._llm_error,
-                        "app_env": self.settings.app_env,
-                        "model": self.settings.azure_openai_deployment or "unknown",
-                        "prompt_label": self.settings.prompt_label,
+                        "app_env": runtime_settings.app_env,
+                        "model": runtime_settings.azure_openai_deployment or "unknown",
+                        "prompt_label": runtime_settings.prompt_label,
                         "tool_execution_mode": trace_metadata["tool_execution_mode"],
                         "tool_execution_location": trace_metadata["tool_execution_location"],
                         "mcp_server_url": trace_metadata["mcp_server_url"],

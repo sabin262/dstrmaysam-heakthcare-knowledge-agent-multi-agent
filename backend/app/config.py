@@ -120,10 +120,10 @@ class AppSettings:
             langfuse_prompt_cache_ttl_seconds=int(
                 _env("LANGFUSE_PROMPT_CACHE_TTL_SECONDS", "300")
             ),
-            chat_fast_rag_enabled=_env_bool("CHAT_FAST_RAG_ENABLED", True),
+            chat_fast_rag_enabled=_env_bool("CHAT_FAST_RAG_ENABLED", False),
             chat_fast_planned_execution_enabled=_env_bool("CHAT_FAST_PLANNED_EXECUTION_ENABLED", True),
             chat_fast_rag_min_query_terms=int(_env("CHAT_FAST_RAG_MIN_QUERY_TERMS", "3")),
-            max_graph_llm_calls=int(_env("MAX_GRAPH_LLM_CALLS", "2")),
+            max_graph_llm_calls=int(_env("MAX_GRAPH_LLM_CALLS", "10")),
             rag_top_k=int(_env("RAG_TOP_K", "10")),
             rag_neighbor_chunks=int(_env("RAG_NEIGHBOR_CHUNKS", "1")),
             rag_query_cache_ttl_seconds=int(_env("RAG_QUERY_CACHE_TTL_SECONDS", "60")),

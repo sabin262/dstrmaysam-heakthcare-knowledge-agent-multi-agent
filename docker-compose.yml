@@ -25,18 +25,18 @@ services:
       GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
       GUARDIAN_NEWS_REFRESH_SECONDS: ${GUARDIAN_NEWS_REFRESH_SECONDS:-300}
       GUARDIAN_NEWS_PAGE_SIZE: ${GUARDIAN_NEWS_PAGE_SIZE:-10}
-      S3_BUCKET: ${S3_BUCKET:-dstrmaysam-healthcare-knowledge-multi-agent-dev}
-      S3_RAW_PREFIX: ${S3_RAW_PREFIX:-raw/}
-      S3_MANIFEST_KEY: ${S3_MANIFEST_KEY:-manifests/documents.json}
-      OPENSEARCH_ENDPOINT: ${OPENSEARCH_ENDPOINT:-}
-      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-dstrmaysam-healthcare-knowledge-multi-agent-dev}
-      CHAT_HISTORY_BACKEND: ${CHAT_HISTORY_BACKEND:-memory}
+      S3_BUCKET: ${LOCAL_S3_BUCKET:-}
+      S3_RAW_PREFIX: ${LOCAL_S3_RAW_PREFIX:-raw/}
+      S3_MANIFEST_KEY: ${LOCAL_S3_MANIFEST_KEY:-manifests/documents.json}
+      OPENSEARCH_ENDPOINT: ${LOCAL_OPENSEARCH_ENDPOINT:-}
+      OPENSEARCH_INDEX: ${LOCAL_OPENSEARCH_INDEX:-dstrmaysam-healthcare-knowledge-multi-agent-dev}
+      CHAT_HISTORY_BACKEND: ${LOCAL_CHAT_HISTORY_BACKEND:-postgres}
       DOCUMENT_MANIFEST_CACHE_TTL_SECONDS: ${DOCUMENT_MANIFEST_CACHE_TTL_SECONDS:-300}
       LANGFUSE_PROMPT_CACHE_TTL_SECONDS: ${LANGFUSE_PROMPT_CACHE_TTL_SECONDS:-300}
       CHAT_FAST_RAG_ENABLED: ${CHAT_FAST_RAG_ENABLED:-false}
       CHAT_FAST_PLANNED_EXECUTION_ENABLED: ${CHAT_FAST_PLANNED_EXECUTION_ENABLED:-true}
       CHAT_FAST_RAG_MIN_QUERY_TERMS: ${CHAT_FAST_RAG_MIN_QUERY_TERMS:-3}
-      MAX_GRAPH_LLM_CALLS: ${MAX_GRAPH_LLM_CALLS:-2}
+      MAX_GRAPH_LLM_CALLS: ${MAX_GRAPH_LLM_CALLS:-10}
       RAG_TOP_K: ${RAG_TOP_K:-10}
       RAG_NEIGHBOR_CHUNKS: ${RAG_NEIGHBOR_CHUNKS:-1}
       RAG_QUERY_CACHE_TTL_SECONDS: ${RAG_QUERY_CACHE_TTL_SECONDS:-60}
@@ -55,21 +55,21 @@ services:
       CHROMA_PERSIST_DIR: ${CHROMA_PERSIST_DIR:-/app/data/chroma}
       CHROMA_COLLECTION: ${CHROMA_COLLECTION:-dstrmaysam-healthcare-knowledge-multi-agent}
       LOCAL_APP_SECRET_FILE: ${LOCAL_APP_SECRET_FILE:-/app/data/local_app_secret.json}
-      LOCAL_TEST_ADMIN_ENABLED: ${LOCAL_TEST_ADMIN_ENABLED:-true}
+      LOCAL_TEST_ADMIN_ENABLED: ${LOCAL_TEST_ADMIN_ENABLED:-false}
       LOCAL_TEST_ADMIN_USERNAME: ${LOCAL_TEST_ADMIN_USERNAME:-admin}
       LOCAL_TEST_ADMIN_PASSWORD: ${LOCAL_TEST_ADMIN_PASSWORD:-admin123}
-      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
-      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      POSTGRES_DB: ${POSTGRES_DB:-healthcare_agent}
-      POSTGRES_USER: ${POSTGRES_USER:-healthcare_agent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-healthcare_agent_dev}
-      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-disable}
+      POSTGRES_HOST: ${LOCAL_POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${LOCAL_POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${LOCAL_POSTGRES_DB:-healthcare_agent}
+      POSTGRES_USER: ${LOCAL_POSTGRES_USER:-healthcare_agent}
+      POSTGRES_PASSWORD: ${LOCAL_POSTGRES_PASSWORD:-healthcare_agent_dev}
+      POSTGRES_SSLMODE: ${LOCAL_POSTGRES_SSLMODE:-disable}
       DETERMINISTIC_LOOKUP_ENABLED: ${DETERMINISTIC_LOOKUP_ENABLED:-true}
-      TOOL_EXECUTION_MODE: ${TOOL_EXECUTION_MODE:-local}
-      MCP_SERVER_URL: ${MCP_SERVER_URL:-http://host.docker.internal:9000/sse}
-      MCP_PROJECT_ID: ${MCP_PROJECT_ID:-dstrmaysam-healthcare-knowledge-multi-agent}
-      MCP_TOOL_TIMEOUT_SECONDS: ${MCP_TOOL_TIMEOUT_SECONDS:-30}
-      MCP_TOOL_FALLBACK_TO_LOCAL: ${MCP_TOOL_FALLBACK_TO_LOCAL:-false}
+      TOOL_EXECUTION_MODE: ${LOCAL_TOOL_EXECUTION_MODE:-mcp}
+      MCP_SERVER_URL: ${LOCAL_MCP_SERVER_URL:-http://host.docker.internal:9000/sse}
+      MCP_PROJECT_ID: ${LOCAL_MCP_PROJECT_ID:-dstrmaysam-healthcare-knowledge-multi-agent}
+      MCP_TOOL_TIMEOUT_SECONDS: ${LOCAL_MCP_TOOL_TIMEOUT_SECONDS:-30}
+      MCP_TOOL_FALLBACK_TO_LOCAL: ${LOCAL_MCP_TOOL_FALLBACK_TO_LOCAL:-false}
     volumes:
       - ./data:/app/data
     ports:
@@ -95,15 +95,15 @@ services:
       dockerfile: Dockerfile
     image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/dstrmaysam-healthcare-knowledge-multi-agent-dev:postgres-latest
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-healthcare_agent}
-      POSTGRES_USER: ${POSTGRES_USER:-healthcare_agent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-healthcare_agent_dev}
+      POSTGRES_DB: ${LOCAL_POSTGRES_DB:-healthcare_agent}
+      POSTGRES_USER: ${LOCAL_POSTGRES_USER:-healthcare_agent}
+      POSTGRES_PASSWORD: ${LOCAL_POSTGRES_PASSWORD:-healthcare_agent_dev}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-healthcare_agent} -d ${POSTGRES_DB:-healthcare_agent}"]
+      test: ["CMD-SHELL", "pg_isready -U ${LOCAL_POSTGRES_USER:-healthcare_agent} -d ${LOCAL_POSTGRES_DB:-healthcare_agent}"]
       interval: 5s
       timeout: 5s
       retries: 12

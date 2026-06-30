@@ -93,6 +93,12 @@ class SecretProvider:
         self.settings = settings
         self._cache: dict[str, dict[str, Any]] = {}
 
+    def invalidate(self, secret_name: str | None = None) -> None:
+        if secret_name is None:
+            self._cache.clear()
+            return
+        self._cache.pop(secret_name, None)
+
     @retry_transient
     def get_json(self, secret_name: str) -> dict[str, Any]:
         if secret_name in self._cache:
@@ -116,7 +122,7 @@ class SecretProvider:
             raise SecretProviderError(f"Secret {secret_name!r} does not contain SecretString JSON")
 
         try:
-            value = json.loads(raw)
+            value = json.loads(raw.lstrip("\ufeffï»¿"))
         except json.JSONDecodeError as exc:
             raise SecretProviderError(f"Secret {secret_name!r} is not valid JSON") from exc
 
