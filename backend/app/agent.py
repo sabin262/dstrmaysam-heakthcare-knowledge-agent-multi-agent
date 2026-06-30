@@ -2276,6 +2276,12 @@ class KnowledgeAgent:
                     "app_env": self.settings.app_env,
                     "model": self.settings.azure_openai_deployment or "unknown",
                     "prompt_label": self.settings.prompt_label,
+                    "tool_execution_mode": self.settings.tool_execution_mode,
+                    "tool_execution_location": (
+                        "MCP server" if self.settings.tool_execution_mode == "mcp" else "Backend local tools"
+                    ),
+                    "mcp_server_url": self.settings.mcp_server_url if self.settings.tool_execution_mode == "mcp" else "",
+                    "mcp_project_id": self.settings.mcp_project_id if self.settings.tool_execution_mode == "mcp" else "",
                     "tools_used": tools_used,
                     "tool_flow": tool_flow,
                     "tool_count": len(tools_used),
@@ -2293,6 +2299,10 @@ class KnowledgeAgent:
                     "agent_latencies_ms": agent_latencies_ms,
                     "agent_errors": agent_errors,
                 }
+                performance["tool_execution_mode"] = trace_metadata["tool_execution_mode"]
+                performance["tool_execution_location"] = trace_metadata["tool_execution_location"]
+                performance["mcp_server_url"] = trace_metadata["mcp_server_url"]
+                performance["mcp_project_id"] = trace_metadata["mcp_project_id"]
                 audit_event = self.audit.log_chat_event(
                     user=user_context,
                     session_id=session_id,
@@ -2331,6 +2341,10 @@ class KnowledgeAgent:
                         "app_env": self.settings.app_env,
                         "model": self.settings.azure_openai_deployment or "unknown",
                         "prompt_label": self.settings.prompt_label,
+                        "tool_execution_mode": trace_metadata["tool_execution_mode"],
+                        "tool_execution_location": trace_metadata["tool_execution_location"],
+                        "mcp_server_url": trace_metadata["mcp_server_url"],
+                        "mcp_project_id": trace_metadata["mcp_project_id"],
                         "chat_execution_mode": execution_mode,
                         "chat_execution_mode_label": execution_mode_label,
                         "source_document_keys": trace_metadata["source_document_keys"],
