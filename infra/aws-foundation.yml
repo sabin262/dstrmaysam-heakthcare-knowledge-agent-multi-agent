@@ -975,6 +975,10 @@ Resources:
           FromPort: 9000
           ToPort: 9000
           SourceSecurityGroupId: !Ref AlbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 9001
+          ToPort: 9001
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -1113,9 +1117,10 @@ Resources:
       TargetType: ip
       Protocol: HTTP
       Port: 9000
-      HealthCheckPath: /
+      HealthCheckPort: "9001"
+      HealthCheckPath: /health
       Matcher:
-        HttpCode: "200-499"
+        HttpCode: "200"
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1352,6 +1357,8 @@ Resources:
           PortMappings:
             - ContainerPort: 9000
               Protocol: tcp
+            - ContainerPort: 9001
+              Protocol: tcp
           Environment:
             - Name: MCP_APP_ENV
               Value: dev
@@ -1365,6 +1372,8 @@ Resources:
               Value: 0.0.0.0
             - Name: PORT
               Value: "9000"
+            - Name: HEALTH_PORT
+              Value: "9001"
           LogConfiguration:
             LogDriver: awslogs
             Options:
