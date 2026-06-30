@@ -154,6 +154,12 @@ POLICY_QUERY_MARKERS = {
     "incident report",
     "data breach",
     "breach reporting",
+    "patient safety",
+    "clinical safety",
+    "safety governance",
+    "safety management",
+    "manage patient safety",
+    "managing patient safety",
 }
 DETERMINISTIC_QUERY_MARKERS = {
     "bleep",
