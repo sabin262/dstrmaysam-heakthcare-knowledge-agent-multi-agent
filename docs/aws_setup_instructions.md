@@ -209,6 +209,11 @@ $appSecret = @'
 {
   "session_secret": "replace-with-long-random-value",
   "guardian_api_key": "replace-with-guardian-content-api-key",
+  "tool_execution_mode": "local",
+  "mcp_server_url": "http://host.docker.internal:9000/sse",
+  "mcp_project_id": "dstrmaysam-healthcare-knowledge-multi-agent",
+  "mcp_tool_timeout_seconds": 30,
+  "mcp_tool_fallback_to_local": false,
   "auth_users": {
     "admin": "pbkdf2_sha256$1000$436e10a3455a383cd122f9fee62bb2d9$55a52972c1069e44b24076f738daa09c01dbfd9a44a6356c50809d3008a1eae3"
   },
@@ -228,6 +233,31 @@ aws secretsmanager put-secret-value `
 ```
 
 The `guardian_api_key` value is optional for login, but required for the NHS news carousel/page in AWS mode. The backend reads it from the app secret when `GUARDIAN_API_KEY` is not set as an environment variable.
+
+The tool execution and MCP values are also read from this app secret in AWS mode. Do not set `TOOL_EXECUTION_MODE`, `MCP_SERVER_URL`, `MCP_PROJECT_ID`, `MCP_TOOL_TIMEOUT_SECONDS`, or `MCP_TOOL_FALLBACK_TO_LOCAL` as ECS task environment variables.
+
+To add or update only the MCP/tool execution keys while preserving existing app-secret values:
+
+```powershell
+$secretId = "/$($env:BASE_NAME)/app"
+$raw = aws secretsmanager get-secret-value `
+  --region $env:AWS_REGION `
+  --secret-id $secretId `
+  --query SecretString `
+  --output text
+
+$payload = $raw | ConvertFrom-Json
+$payload | Add-Member -NotePropertyName tool_execution_mode -NotePropertyValue "local" -Force
+$payload | Add-Member -NotePropertyName mcp_server_url -NotePropertyValue "http://host.docker.internal:9000/sse" -Force
+$payload | Add-Member -NotePropertyName mcp_project_id -NotePropertyValue "dstrmaysam-healthcare-knowledge-multi-agent" -Force
+$payload | Add-Member -NotePropertyName mcp_tool_timeout_seconds -NotePropertyValue 30 -Force
+$payload | Add-Member -NotePropertyName mcp_tool_fallback_to_local -NotePropertyValue $false -Force
+
+aws secretsmanager put-secret-value `
+  --region $env:AWS_REGION `
+  --secret-id $secretId `
+  --secret-string ($payload | ConvertTo-Json -Depth 50 -Compress)
+```
 
 Update Azure OpenAI:
 
@@ -553,18 +583,11 @@ CHAT_WARMUP_RETRIEVAL_ENABLED=true
 DETERMINISTIC_LOOKUP_ENABLED=true
 DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED=false
 
-TOOL_EXECUTION_MODE=local
-MCP_SERVER_URL=http://host.docker.internal:9000/sse
-MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
-MCP_TOOL_NAME=execute_project_tool
-MCP_TOOL_TIMEOUT_SECONDS=30
-MCP_TOOL_FALLBACK_TO_LOCAL=false
-
 GUARDIAN_NEWS_REFRESH_SECONDS=300
 GUARDIAN_NEWS_PAGE_SIZE=10
 ```
 
-Do not put raw Azure OpenAI, Langfuse, Guardian, or database passwords in plain ECS environment variables. Store secret values in Secrets Manager or ECS secret injection. The local `.env` may contain developer-only secrets, but the AWS deployment should use managed secrets.
+Do not put raw Azure OpenAI, Langfuse, Guardian, database passwords, or MCP/tool execution settings in plain ECS environment variables. Store secret values in Secrets Manager or ECS secret injection. The local `.env` may contain developer-only secrets and local MCP defaults, but the AWS deployment should use managed secrets.
 
 Frontend ECS task/service environment uses the dev ALB backend listener:
 

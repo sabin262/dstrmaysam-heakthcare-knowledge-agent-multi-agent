@@ -56,12 +56,6 @@
         {"name": "DETERMINISTIC_LOOKUP_ENABLED", "value": "true"},
         {"name": "DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED", "value": "false"},
         {"name": "LOCAL_TEST_ADMIN_ENABLED", "value": "false"},
-        {"name": "TOOL_EXECUTION_MODE", "value": "local"},
-        {"name": "MCP_SERVER_URL", "value": "http://host.docker.internal:9000/sse"},
-        {"name": "MCP_PROJECT_ID", "value": "dstrmaysam-healthcare-knowledge-multi-agent"},
-        {"name": "MCP_TOOL_NAME", "value": "execute_project_tool"},
-        {"name": "MCP_TOOL_TIMEOUT_SECONDS", "value": "30"},
-        {"name": "MCP_TOOL_FALLBACK_TO_LOCAL", "value": "false"},
         {"name": "GUARDIAN_NEWS_REFRESH_SECONDS", "value": "300"},
         {"name": "GUARDIAN_NEWS_PAGE_SIZE", "value": "10"}
       ],

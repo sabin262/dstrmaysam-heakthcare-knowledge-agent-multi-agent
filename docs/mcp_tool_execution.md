@@ -9,9 +9,9 @@ The healthcare backend can execute tools in two modes:
 
 1. `KnowledgeAgent` builds the same `AgentTool` names and descriptions.
 2. The supervisor/specialist graph chooses a tool as before.
-3. `ToolExecutionRouter` checks `TOOL_EXECUTION_MODE`.
+3. `ToolExecutionRouter` checks the resolved tool execution mode.
 4. In local mode, it calls the local function.
-5. In MCP mode, it calls the selected MCP tool name directly on the configured MCP server with:
+5. In MCP mode, it calls the agent-selected MCP tool directly with:
    - `project_id`
    - query
    - user roles/departments
@@ -47,11 +47,13 @@ Use:
 TOOL_EXECUTION_MODE=mcp
 MCP_SERVER_URL=http://host.docker.internal:9000/sse
 MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
+MCP_TOOL_TIMEOUT_SECONDS=30
+MCP_TOOL_FALLBACK_TO_LOCAL=false
 ```
 
 ## AWS Later
 
-Host the MCP server as a separate ECS service. Give it its own task role and configure access to:
+Host the MCP server as a separate ECS service. In AWS mode, store `tool_execution_mode`, `mcp_server_url`, `mcp_project_id`, `mcp_tool_timeout_seconds`, and `mcp_tool_fallback_to_local` in the backend app secret in Secrets Manager instead of ECS task environment variables. Give the MCP service its own task role and configure access to:
 
 - RDS Postgres for operational table lookup
 - S3/OpenSearch if document retrieval is moved fully into MCP

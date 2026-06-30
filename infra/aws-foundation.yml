@@ -1050,18 +1050,6 @@ Resources:
               Value: "true"
             - Name: DETERMINISTIC_LOOKUP_MULTIPART_FIRST_ENABLED
               Value: "false"
-            - Name: TOOL_EXECUTION_MODE
-              Value: local
-            - Name: MCP_SERVER_URL
-              Value: http://host.docker.internal:9000/sse
-            - Name: MCP_PROJECT_ID
-              Value: dstrmaysam-healthcare-knowledge-multi-agent
-            - Name: MCP_TOOL_NAME
-              Value: execute_project_tool
-            - Name: MCP_TOOL_TIMEOUT_SECONDS
-              Value: "30"
-            - Name: MCP_TOOL_FALLBACK_TO_LOCAL
-              Value: "false"
             - Name: GUARDIAN_NEWS_REFRESH_SECONDS
               Value: "300"
             - Name: GUARDIAN_NEWS_PAGE_SIZE
