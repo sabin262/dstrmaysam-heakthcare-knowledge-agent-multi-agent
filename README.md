@@ -57,11 +57,12 @@ For a deeper system explanation, see [docs/system_summary.md](docs/system_summar
 
 ```text
 backend/app/       FastAPI API, agent, retrieval, auth, ingestion, storage, observability
+backend/packages/  Shared Python packages used by backend and external tool runtimes
 frontend/          Streamlit application
 database/init/     Postgres schema and seed healthcare data
 data/              Local document, Chroma, and local secret persistence
 evals/             RAGAS golden dataset runner and stress test
-infra/             ECS, IAM, DynamoDB, and OpenSearch templates
+infra/             ECS, IAM, RDS/Postgres, S3, and OpenSearch templates
 docs/              Architecture, SDLC, AWS, and system summary documentation
 tests/             Unit and integration-style tests
 ```
@@ -151,6 +152,8 @@ MCP_PROJECT_ID=dstrmaysam-healthcare-knowledge-multi-agent
 ```
 
 The MCP server lives in `../MCP-Tools` and must be run as an external service. This project's Compose file does not start an MCP container. Keep `TOOL_EXECUTION_MODE=local` for the current in-process behavior.
+
+The deterministic table lookup implementation lives in the shared package at `backend/packages/healthcare_tools_core`. Local mode imports it in-process, while the MCP server installs the same package from this repository and calls the same `DeterministicLookupService` remotely. Push this repository before running the MCP pipeline if the shared package has changed.
 
 If `LOCAL_APP_SECRET_FILE` does not exist, the backend creates it with a generated session secret and the configured local username/password.
 
