@@ -1151,6 +1151,18 @@ def admin_dashboard(
         sources = metadata.get("sources", []) if isinstance(metadata.get("sources"), list) else []
         chat_execution_mode = str(metadata.get("chat_execution_mode") or "supervisor")
         chat_execution_mode_label = str(metadata.get("chat_execution_mode_label") or "Supervisor")
+        tool_execution_mode = str(
+            metadata.get("tool_execution_mode")
+            or performance.get("tool_execution_mode")
+            or ""
+        )
+        tool_execution_location = str(
+            metadata.get("tool_execution_location")
+            or performance.get("tool_execution_location")
+            or ("MCP server" if tool_execution_mode == "mcp" else "Backend local tools" if tool_execution_mode else "Unknown")
+        )
+        mcp_server_url = str(metadata.get("mcp_server_url") or performance.get("mcp_server_url") or "")
+        mcp_project_id = str(metadata.get("mcp_project_id") or performance.get("mcp_project_id") or "")
         latency_ms = int(metadata.get("latency_ms") or performance.get("total_ms") or 0)
         latency_breakdown = _dashboard_latency_breakdown(metadata, performance, latency_ms)
         input_token_count = int(metadata.get("input_tokens") or 0)
@@ -1209,6 +1221,10 @@ def admin_dashboard(
                 "agent_errors": agent_errors,
                 "chat_execution_mode": chat_execution_mode,
                 "chat_execution_mode_label": chat_execution_mode_label,
+                "tool_execution_mode": tool_execution_mode,
+                "tool_execution_location": tool_execution_location,
+                "mcp_server_url": mcp_server_url,
+                "mcp_project_id": mcp_project_id,
                 "source_count": len(sources),
                 "source_document_keys": metadata.get("source_document_keys", []),
                 "latency_ms": latency_ms,

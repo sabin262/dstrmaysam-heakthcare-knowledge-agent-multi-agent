@@ -1224,6 +1224,18 @@ def render_query_detail(item: dict[str, Any]) -> None:
     st.caption(f"Session ID: {item.get('session_id')}")
     st.caption(f"Routing: {item.get('chat_execution_mode_label') or 'Supervisor'}")
     st.caption(f"Agent mode: {item.get('agent_mode') or 'unknown'}")
+    tool_execution_mode = str(item.get("tool_execution_mode") or "").strip().lower()
+    tool_execution_location = str(item.get("tool_execution_location") or "").strip()
+    if not tool_execution_location:
+        tool_execution_location = "MCP server" if tool_execution_mode == "mcp" else "Backend local tools" if tool_execution_mode else "Unknown"
+    tool_location_detail = tool_execution_location
+    if tool_execution_mode:
+        tool_location_detail = f"{tool_location_detail} ({tool_execution_mode})"
+    if tool_execution_mode == "mcp":
+        mcp_target = str(item.get("mcp_server_url") or item.get("mcp_project_id") or "").strip()
+        if mcp_target:
+            tool_location_detail = f"{tool_location_detail} - {mcp_target}"
+    st.caption(f"Tool execution: {tool_location_detail}")
     st.caption(f"Agents: {item.get('agent_flow_summary') or ', '.join(item.get('agents_used') or []) or 'unavailable'}")
     if display_supervisor_decisions:
         st.markdown("**Supervisor decisions**")
@@ -1329,6 +1341,10 @@ def render_query_detail(item: dict[str, Any]) -> None:
                 "latency_breakdown": item.get("latency_breakdown", {}),
                 "chat_execution_mode": item.get("chat_execution_mode"),
                 "chat_execution_mode_label": item.get("chat_execution_mode_label"),
+                "tool_execution_mode": item.get("tool_execution_mode"),
+                "tool_execution_location": item.get("tool_execution_location"),
+                "mcp_server_url": item.get("mcp_server_url"),
+                "mcp_project_id": item.get("mcp_project_id"),
                 "agent_mode": item.get("agent_mode"),
                 "ragas": item.get("ragas", {}),
                 "ragas_status": item.get("ragas_status"),

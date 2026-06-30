@@ -4,6 +4,7 @@ import re
 import os
 import asyncio
 import inspect
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
@@ -153,11 +154,18 @@ def _compute_with_ragas(
     ragas_embeddings = None
     if settings is not None and secret_provider is not None:
         ragas_llm, ragas_embeddings = _build_ragas_azure_clients(settings, secret_provider)
+    metrics = _configured_ragas_metrics(
+        faithfulness,
+        answer_relevancy,
+        LLMContextPrecisionWithoutReference(),
+        llm=ragas_llm,
+        embeddings=ragas_embeddings,
+    )
 
     try:
         result = evaluate(
             dataset,
-            metrics=[faithfulness, answer_relevancy, LLMContextPrecisionWithoutReference()],
+            metrics=metrics,
             llm=ragas_llm,
             embeddings=ragas_embeddings,
             raise_exceptions=True,
@@ -175,6 +183,18 @@ def _compute_with_ragas(
         if numeric is not None:
             scores[score_name] = numeric
     return scores
+
+
+def _configured_ragas_metrics(*metrics: Any, llm: Any, embeddings: Any) -> list[Any]:
+    configured: list[Any] = []
+    for metric in metrics:
+        metric_instance = deepcopy(metric)
+        if llm is not None and hasattr(metric_instance, "llm"):
+            setattr(metric_instance, "llm", llm)
+        if embeddings is not None and hasattr(metric_instance, "embeddings"):
+            setattr(metric_instance, "embeddings", embeddings)
+        configured.append(metric_instance)
+    return configured
 
 
 def _build_ragas_azure_clients(
