@@ -98,5 +98,9 @@
   {
     "ParameterKey": "FrontendDesiredCount",
     "ParameterValue": "0"
+  },
+  {
+    "ParameterKey": "McpDesiredCount",
+    "ParameterValue": "0"
   }
 ]

@@ -5,7 +5,7 @@ Target stage: `dev`
 Default region: `eu-west-2`  
 Base name: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
 
-This runbook creates the AWS foundation resources required by AWS mode. The foundation stack creates a small VPC, private subnets for RDS, optional public ALB/Fargate dev services, and an optional CodePipeline/CodeBuild/ECS deploy flow so changes can be tested directly on AWS. For local PowerShell administration, it can also create an optional SSM-managed admin instance, but your AWS Organizations SCP may block EC2 instance creation.
+This runbook creates the AWS foundation resources required by AWS mode. The foundation stack creates a small VPC, private subnets for RDS, optional public ALB/Fargate dev services, an in-VPC MCP runtime service, and an optional CodePipeline/CodeBuild/ECS deploy flow so changes can be tested directly on AWS. For local PowerShell administration, it can also create an optional SSM-managed admin instance, but your AWS Organizations SCP may block EC2 instance creation.
 
 ## 1. Resources Created
 
@@ -17,14 +17,19 @@ The CloudFormation template `infra/aws-foundation.yml` creates:
   - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/app`
   - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai`
   - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse`
+- MCP tools secret name output:
+  - `/dstrmaysam-healthcare-knowledge-multi-agent-dev/mcp-tools`
 - Isolated VPC and two private subnets for RDS networking
 - Optional SSM-managed admin instance for local `psql` access to private RDS
 - RDS Postgres instance with generated master password secret
 - OpenSearch Serverless vector collection and access policies
 - ECR repository: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
+- MCP ECR repository: `dstrmaysam-healthcare-knowledge-multi-agent-dev-mcp`
 - ECS cluster: `dstrmaysam-healthcare-knowledge-multi-agent-dev`
 - ECS execution, backend task, and frontend task IAM roles
 - Optional public ALB, backend/frontend ECS Fargate services, and target groups for dev testing
+- MCP ECS Fargate service in the same VPC, reachable privately from backend at `http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse` and publicly for dev at the `McpPublicUrl` output
+- MCP ALB listener/target group, Cloud Map private DNS namespace/service, security group, task role, and log group
 - Optional CodePipeline source/build/deploy pipeline:
   - CodeStar Connections GitHub source
   - CodeBuild Docker image build and ECR push
@@ -74,13 +79,14 @@ $env:REPOSITORY_BRANCH = "master"
 $env:PUBLIC_INGRESS_CIDR = "0.0.0.0/0"
 $env:BACKEND_DESIRED_COUNT = "0"
 $env:FRONTEND_DESIRED_COUNT = "0"
+$env:MCP_DESIRED_COUNT = "0"
 $env:DATABASE_INGRESS_CIDR = "10.40.0.0/16"
 $env:AWS_ACCOUNT_ID = aws sts get-caller-identity --query Account --output text
 ```
 
 Use `DB_ADMIN_ACCESS_ENABLED=false` in your current account because an AWS Organizations service control policy denied `ec2:RunInstances`. Use CloudShell VPC for the SQL step instead.
 
-Keep `BACKEND_DESIRED_COUNT` and `FRONTEND_DESIRED_COUNT` at `0` on the first deploy unless you have already pushed `backend-latest` and `frontend-latest` images to ECR. The pipeline publishes immutable commit tags and refreshes the `backend-latest` and `frontend-latest` bootstrap tags on every run. After the first successful pipeline run builds images, update both values to `1`.
+Keep `BACKEND_DESIRED_COUNT`, `FRONTEND_DESIRED_COUNT`, and `MCP_DESIRED_COUNT` at `0` on the first deploy unless you have already pushed `backend-latest`, `frontend-latest`, and `mcp-latest` images to ECR. The healthcare pipeline publishes immutable backend/frontend commit tags and refreshes the `backend-latest` and `frontend-latest` bootstrap tags on every run. The separate MCP repo pipeline publishes `mcp-<commit>` and `mcp-latest`. After the first successful image builds, update the desired counts to `1`.
 
 ## 3. Validate And Deploy Foundation Stack
 
@@ -130,6 +136,7 @@ aws cloudformation deploy `
     PublicIngressCidr=$env:PUBLIC_INGRESS_CIDR `
     BackendDesiredCount=$env:BACKEND_DESIRED_COUNT `
     FrontendDesiredCount=$env:FRONTEND_DESIRED_COUNT `
+    McpDesiredCount=$env:MCP_DESIRED_COUNT `
     DatabaseIngressCidr=$env:DATABASE_INGRESS_CIDR
 ```
 
@@ -157,6 +164,7 @@ aws cloudformation deploy `
     PublicIngressCidr=$env:PUBLIC_INGRESS_CIDR `
     BackendDesiredCount=$env:BACKEND_DESIRED_COUNT `
     FrontendDesiredCount=$env:FRONTEND_DESIRED_COUNT `
+    McpDesiredCount=$env:MCP_DESIRED_COUNT `
     DatabaseIngressCidr=$env:DATABASE_INGRESS_CIDR
 ```
 
@@ -182,19 +190,28 @@ Important outputs:
 - `DatabaseMasterSecretArn`
 - `OpenSearchCollectionEndpoint`
 - `EcrRepositoryUri`
+- `McpEcrRepositoryUri`
 - `EcsClusterName`
 - `BackendTaskRoleArn`
 - `FrontendTaskRoleArn`
 - `EcsExecutionRoleArn`
+- `McpToolsSecretName`
+- `McpServiceName`
+- `McpCloudMapUrl`
+- `McpPublicUrl`
+- `McpLogGroupName`
+- `McpTaskRoleArn`
 - `DevApplicationUrl`, when `CicdEnabled=true`
 - `BackendApiUrl`, when `CicdEnabled=true`
 - `DevCodePipelineName`, when `CicdEnabled=true` and CodeStar parameters are provided
 
 ## 4. Populate Secrets Manager Values
 
-The template creates the Secrets Manager secret resources but does not manage their secret values. This prevents stack updates from replacing real credentials with placeholders. Populate or update the values with `aws secretsmanager put-secret-value` before starting the backend.
+The template creates the app, Azure OpenAI, and Langfuse Secrets Manager secret resources but does not manage their secret values. This prevents stack updates from replacing real credentials with placeholders. Populate or update the values with `aws secretsmanager put-secret-value` before starting the backend.
 
 The app, Azure OpenAI, and Langfuse secrets use `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`, so deleting or replacing the stack will not intentionally delete the stored secret resources. If you need to remove them, delete them manually after confirming you no longer need the values.
+
+The MCP tools secret is intentionally not created by CloudFormation because it may already exist from local/dev setup or a previous stack attempt. The stack still outputs the expected name as `McpToolsSecretName`, and the MCP task role can read it. Use the idempotent create-or-update command below so existing MCP secret values are updated in place, not deleted.
 
 Generate an app password hash:
 
@@ -209,8 +226,8 @@ $appSecret = @'
 {
   "session_secret": "replace-with-long-random-value",
   "guardian_api_key": "replace-with-guardian-content-api-key",
-  "tool_execution_mode": "local",
-  "mcp_server_url": "http://host.docker.internal:9000/sse",
+  "tool_execution_mode": "mcp",
+  "mcp_server_url": "http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse",
   "mcp_project_id": "dstrmaysam-healthcare-knowledge-multi-agent",
   "mcp_tool_timeout_seconds": 30,
   "mcp_tool_fallback_to_local": false,
@@ -236,6 +253,8 @@ The `guardian_api_key` value is optional for login, but required for the NHS new
 
 The tool execution and MCP values are also read from this app secret in AWS mode. Do not set `TOOL_EXECUTION_MODE`, `MCP_SERVER_URL`, `MCP_PROJECT_ID`, `MCP_TOOL_TIMEOUT_SECONDS`, or `MCP_TOOL_FALLBACK_TO_LOCAL` as ECS task environment variables.
 
+Only switch `tool_execution_mode` to `mcp` after the healthcare stack has created the MCP Cloud Map service and the MCP repo pipeline has deployed a running MCP task. Before that point, keep it as `local` if you need AWS backend chat to continue working.
+
 To add or update only the MCP/tool execution keys while preserving existing app-secret values:
 
 ```powershell
@@ -247,8 +266,8 @@ $raw = aws secretsmanager get-secret-value `
   --output text
 
 $payload = $raw | ConvertFrom-Json
-$payload | Add-Member -NotePropertyName tool_execution_mode -NotePropertyValue "local" -Force
-$payload | Add-Member -NotePropertyName mcp_server_url -NotePropertyValue "http://host.docker.internal:9000/sse" -Force
+$payload | Add-Member -NotePropertyName tool_execution_mode -NotePropertyValue "mcp" -Force
+$payload | Add-Member -NotePropertyName mcp_server_url -NotePropertyValue "http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse" -Force
 $payload | Add-Member -NotePropertyName mcp_project_id -NotePropertyValue "dstrmaysam-healthcare-knowledge-multi-agent" -Force
 $payload | Add-Member -NotePropertyName mcp_tool_timeout_seconds -NotePropertyValue 30 -Force
 $payload | Add-Member -NotePropertyName mcp_tool_fallback_to_local -NotePropertyValue $false -Force
@@ -294,6 +313,52 @@ aws secretsmanager put-secret-value `
   --region $env:AWS_REGION `
   --secret-id "/$($env:BASE_NAME)/langfuse" `
   --secret-string $langfuseSecret
+```
+
+Update MCP tools runtime config after you have the stack outputs and database password:
+
+```powershell
+$mcpToolsSecret = @'
+{
+  "MCP_APP_ENV": "dev",
+  "AWS_REGION": "eu-west-2",
+  "POSTGRES_HOST": "<DatabaseEndpoint output>",
+  "POSTGRES_PORT": "5432",
+  "POSTGRES_DB": "healthcare_agent",
+  "POSTGRES_USER": "healthcare_agent",
+  "POSTGRES_PASSWORD": "<DatabaseMasterSecretArn password>",
+  "POSTGRES_SSLMODE": "require",
+  "S3_BUCKET": "dstrmaysam-healthcare-knowledge-multi-agent-dev",
+  "S3_RAW_PREFIX": "raw/",
+  "HEALTHCARE_MANIFEST_KEY": "manifests/documents.json",
+  "OPENSEARCH_ENDPOINT": "<OpenSearchCollectionEndpoint output>",
+  "OPENSEARCH_INDEX": "dstrmaysam-healthcare-knowledge-multi-agent-dev",
+  "AZURE_OPENAI_SECRET_NAME": "/dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai",
+  "RAG_TOP_K": "10",
+  "RAG_NEIGHBOR_CHUNKS": "1",
+  "MCP_PROJECT_ID": "dstrmaysam-healthcare-knowledge-multi-agent"
+}
+'@
+
+$mcpSecretId = "/$($env:BASE_NAME)/mcp-tools"
+
+aws secretsmanager describe-secret `
+  --region $env:AWS_REGION `
+  --secret-id $mcpSecretId *> $null
+
+if ($LASTEXITCODE -eq 0) {
+  aws secretsmanager put-secret-value `
+    --region $env:AWS_REGION `
+    --secret-id $mcpSecretId `
+    --secret-string $mcpToolsSecret
+} else {
+  aws secretsmanager create-secret `
+    --region $env:AWS_REGION `
+    --name $mcpSecretId `
+    --description "MCP Tools runtime configuration for dstrmaysam healthcare knowledge multi-agent dev" `
+    --secret-string $mcpToolsSecret `
+    --tags Key=Project,Value=dstrmaysam-healthcare-knowledge-multi-agent Key=Application,Value=dstrmaysam Key=Owner,Value=Sabin
+}
 ```
 
 ## 5. RDS Postgres Schema And Seed Data
@@ -467,6 +532,7 @@ aws cloudformation deploy `
     PublicIngressCidr=$env:PUBLIC_INGRESS_CIDR `
     BackendDesiredCount=$env:BACKEND_DESIRED_COUNT `
     FrontendDesiredCount=$env:FRONTEND_DESIRED_COUNT `
+    McpDesiredCount=$env:MCP_DESIRED_COUNT `
     DatabaseIngressCidr=$env:DATABASE_INGRESS_CIDR
 ```
 
@@ -533,7 +599,118 @@ aws codepipeline start-pipeline-execution `
 
 Keep `PublicIngressCidr` restricted to your IP or VPN CIDR where possible. The default `0.0.0.0/0` is convenient for quick dev testing but not appropriate for a real environment.
 
-## 8. AWS Mode Runtime Environment
+## 8. MCP Repo Pipeline Use
+
+The MCP runtime is created by this healthcare stack, but the MCP image build and service update are owned by the separate `MCP-Tools` repo. Deploy the healthcare stack first with:
+
+```powershell
+$env:MCP_DESIRED_COUNT = "0"
+```
+
+Then capture the outputs needed by the MCP repo pipeline:
+
+```powershell
+$env:MCP_ECR_REPOSITORY_URI = aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='McpEcrRepositoryUri'].OutputValue" `
+  --output text
+
+$env:ECS_CLUSTER_NAME = aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='EcsClusterName'].OutputValue" `
+  --output text
+
+$env:MCP_SERVICE_NAME = aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='McpServiceName'].OutputValue" `
+  --output text
+
+$env:MCP_TASK_ROLE_ARN = aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='McpTaskRoleArn'].OutputValue" `
+  --output text
+
+$env:ECS_EXECUTION_ROLE_ARN = aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='EcsExecutionRoleArn'].OutputValue" `
+  --output text
+```
+
+Set MCP pipeline inputs:
+
+```powershell
+$env:MCP_PIPELINE_STACK_NAME = "$($env:BASE_NAME)-mcp-pipeline"
+$env:MCP_CODESTAR_CONNECTION_ARN = "arn:aws:codeconnections:eu-west-2:666127452756:connection/1cf03e9c-74b3-4ff8-a2d9-35e61ea2754c"
+$env:MCP_REPOSITORY_ID = "parthdavra/MCP-Tools"
+$env:MCP_REPOSITORY_BRANCH = "main"
+```
+
+Deploy the MCP repo pipeline from this repo folder:
+
+```powershell
+aws cloudformation deploy `
+  --stack-name $env:MCP_PIPELINE_STACK_NAME `
+  --template-file "..\MCP-Tools\infra\mcp-pipeline.yml" `
+  --region $env:AWS_REGION `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --parameter-overrides `
+    CodeStarConnectionArn=$env:MCP_CODESTAR_CONNECTION_ARN `
+    RepositoryId=$env:MCP_REPOSITORY_ID `
+    RepositoryBranch=$env:MCP_REPOSITORY_BRANCH `
+    McpEcrRepositoryUri=$env:MCP_ECR_REPOSITORY_URI `
+    EcsClusterName=$env:ECS_CLUSTER_NAME `
+    McpServiceName=$env:MCP_SERVICE_NAME `
+    McpContainerName=mcp-tools `
+    EcsExecutionRoleArn=$env:ECS_EXECUTION_ROLE_ARN `
+    McpTaskRoleArn=$env:MCP_TASK_ROLE_ARN
+```
+
+Start the MCP pipeline:
+
+```powershell
+aws codepipeline start-pipeline-execution `
+  --name "$($env:BASE_NAME)-mcp-pipeline" `
+  --region $env:AWS_REGION
+```
+
+After the MCP pipeline has pushed `mcp-latest`, redeploy the healthcare stack with:
+
+```powershell
+$env:MCP_DESIRED_COUNT = "1"
+```
+
+Then update the backend app secret to use the private Cloud Map URL for in-VPC backend-to-MCP traffic:
+
+```json
+{
+  "tool_execution_mode": "mcp",
+  "mcp_server_url": "http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse",
+  "mcp_project_id": "dstrmaysam-healthcare-knowledge-multi-agent",
+  "mcp_tool_timeout_seconds": 30,
+  "mcp_tool_fallback_to_local": false
+}
+```
+
+The stack also exposes MCP through the public dev ALB on port `9000`. Get the public MCP SSE URL with:
+
+```powershell
+$env:MCP_PUBLIC_URL = aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='McpPublicUrl'].OutputValue" `
+  --output text
+
+Write-Host $env:MCP_PUBLIC_URL
+```
+
+Use `McpCloudMapUrl` for backend traffic inside the same VPC. Use `McpPublicUrl` when calling MCP from outside the VPC. Public access is controlled by `PublicIngressCidr`, so narrow that value to your IP/VPN CIDR when possible.
+
+## 9. AWS Mode Runtime Environment
 
 Backend ECS task/service environment should use:
 
@@ -597,7 +774,7 @@ BACKEND_URL=http://<DevApplicationLoadBalancer DNS>:8000
 
 When `CicdEnabled=true`, the CloudFormation task definitions and services are created directly. The JSON task definition files in `infra/` remain standalone references.
 
-## 9. OpenSearch Index Creation And Verification
+## 10. OpenSearch Index Creation And Verification
 
 The backend ingestion path calls the application index bootstrap logic and uses `infra/opensearch-index.json` shape internally. After the backend is running with AWS mode values:
 
@@ -619,12 +796,27 @@ aws s3 cp "s3://$($env:BASE_NAME)/manifests/documents.json" - --region $env:AWS_
 If OpenSearch permissions fail, confirm:
 
 - Backend task role has `aoss:APIAccessAll`.
-- OpenSearch data access policy includes the backend task role ARN.
+- MCP task role has `aoss:APIAccessAll` when MCP mode is used for document or policy search.
+- OpenSearch data access policy includes the backend and MCP task role ARNs.
 - Network policy allows the backend networking path.
 
-## 10. Delete Resources
+## 11. Delete Resources
 
-Before deleting the stack, empty mutable resources:
+Before deleting the healthcare stack, delete the separate MCP repo pipeline stack if you created it:
+
+```powershell
+aws cloudformation delete-stack `
+  --stack-name "$($env:BASE_NAME)-mcp-pipeline" `
+  --region $env:AWS_REGION
+
+aws cloudformation wait stack-delete-complete `
+  --stack-name "$($env:BASE_NAME)-mcp-pipeline" `
+  --region $env:AWS_REGION
+```
+
+If the MCP pipeline stack deletion fails because the artifact bucket is not empty, empty the `McpArtifactBucketName` output first.
+
+Before deleting the healthcare stack, empty mutable healthcare resources:
 
 ```powershell
 aws s3 rm "s3://$($env:BASE_NAME)" --recursive --region $env:AWS_REGION
@@ -642,6 +834,20 @@ aws ecr batch-delete-image `
   --region $env:AWS_REGION `
   --repository-name $env:BASE_NAME `
   --image-ids $imageIdsUri
+
+$mcpImageIdsPath = Join-Path $env:TEMP "dstrmaysam-hkm-mcp-ecr-images.json"
+$mcpImageIdsUri = "file:///" + ($mcpImageIdsPath -replace "\\", "/")
+
+aws ecr list-images `
+  --region $env:AWS_REGION `
+  --repository-name "$($env:BASE_NAME)-mcp" `
+  --query "imageIds" `
+  --output json | Out-File -Encoding ascii $mcpImageIdsPath
+
+aws ecr batch-delete-image `
+  --region $env:AWS_REGION `
+  --repository-name "$($env:BASE_NAME)-mcp" `
+  --image-ids $mcpImageIdsUri
 ```
 
 Delete the stack:
@@ -659,10 +865,10 @@ aws cloudformation wait stack-delete-complete `
 If deletion fails:
 
 - Ensure the S3 bucket is empty, including versions/delete markers if versioning was used.
-- Ensure ECR has no remaining images.
+- Ensure both ECR repositories have no remaining images.
 - Check whether RDS produced a final snapshot because of replacement/deletion behavior.
 
-## 11. Compatibility Checklist
+## 12. Compatibility Checklist
 
 After switching from local to AWS mode:
 
@@ -673,13 +879,15 @@ After switching from local to AWS mode:
 - Documents upload to S3.
 - Ingestion writes chunks to OpenSearch Serverless.
 - Langfuse tracing loads from the new Langfuse secret.
+- MCP mode uses `McpCloudMapUrl` and per-query details show tool execution on the MCP server.
 
-## 12. Files
+## 13. Files
 
 | File | Purpose |
 |---|---|
 | `infra/aws-foundation.yml` | Foundation CloudFormation stack. |
 | `infra/aws-foundation-parameters.example.json` | Example stack parameters. |
+| `..\MCP-Tools\infra\mcp-pipeline.yml` | Separate MCP repo pipeline that builds/pushes MCP and updates only the MCP ECS service. |
 | `infra/ecs-backend-task-definition.json` | Backend ECS task definition example for future service deployment. |
 | `infra/ecs-frontend-task-definition.json` | Frontend ECS task definition example for future service deployment. |
 | `infra/db-init/Dockerfile` | Pipeline database initialization image with `psql`. |

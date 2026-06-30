@@ -51,9 +51,35 @@ MCP_TOOL_TIMEOUT_SECONDS=30
 MCP_TOOL_FALLBACK_TO_LOCAL=false
 ```
 
-## AWS Later
+## AWS Deployment
 
-Host the MCP server as a separate ECS service. In AWS mode, store `tool_execution_mode`, `mcp_server_url`, `mcp_project_id`, `mcp_tool_timeout_seconds`, and `mcp_tool_fallback_to_local` in the backend app secret in Secrets Manager instead of ECS task environment variables. Give the MCP service its own task role and configure access to:
+The healthcare foundation stack owns this project's MCP runtime infrastructure inside the healthcare dev VPC:
+
+- ECR repository: `dstrmaysam-healthcare-knowledge-multi-agent-dev-mcp`
+- ECS/Fargate service: `dstrmaysam-healthcare-knowledge-multi-agent-dev-mcp`
+- Cloud Map URL: `http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse`
+- Public dev ALB URL from the `McpPublicUrl` stack output
+- Security group allowing inbound `9000` from the backend/app task security group and the dev ALB security group
+- RDS ingress from the MCP security group on `5432`
+- MCP task role, log group, and OpenSearch Serverless data access policy principal
+
+The MCP repo remains separate. Its own CodePipeline builds the MCP image, pushes `mcp-<commit>` and `mcp-latest`, then updates only the MCP ECS service created by the healthcare stack.
+
+Use the Cloud Map URL for backend-to-MCP calls inside the same VPC. Use the `McpPublicUrl` output for dev calls from outside the VPC. Public access is controlled by the stack `PublicIngressCidr` parameter.
+
+In AWS mode, store `tool_execution_mode`, `mcp_server_url`, `mcp_project_id`, `mcp_tool_timeout_seconds`, and `mcp_tool_fallback_to_local` in the backend app secret in Secrets Manager instead of ECS task environment variables. Use:
+
+```json
+{
+  "tool_execution_mode": "mcp",
+  "mcp_server_url": "http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse",
+  "mcp_project_id": "dstrmaysam-healthcare-knowledge-multi-agent",
+  "mcp_tool_timeout_seconds": 30,
+  "mcp_tool_fallback_to_local": false
+}
+```
+
+Give the MCP service its own task role and configure access to:
 
 - RDS Postgres for operational table lookup
 - S3/OpenSearch if document retrieval is moved fully into MCP

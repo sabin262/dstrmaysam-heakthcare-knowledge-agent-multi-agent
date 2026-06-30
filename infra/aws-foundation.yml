@@ -113,6 +113,11 @@ Parameters:
     Default: 0
     MinValue: 0
     MaxValue: 5
+  McpDesiredCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 5
 
 Conditions:
   CreateDbAdminAccess: !Equals [!Ref DbAdminAccessEnabled, "true"]
@@ -670,6 +675,50 @@ Resources:
         - Key: Owner
           Value: !Ref OwnerTag
 
+  McpTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ShortName}-mcp-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: McpRuntimeAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadRequiredSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${BaseName}/mcp-tools-*"
+                  - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${BaseName}/azure-openai-*"
+              - Sid: ReadKnowledgeBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${KnowledgeBucket}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${KnowledgeBucket}/*"
+              - Sid: OpenSearchServerlessAccess
+                Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource: !GetAtt OpenSearchCollection.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
   FrontendTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -723,7 +772,8 @@ Resources:
               }
             ],
             "Principal": [
-              "${BackendTaskRole.Arn}"
+              "${BackendTaskRole.Arn}",
+              "${McpTaskRole.Arn}"
             ]
           }
         ]
@@ -743,6 +793,40 @@ Resources:
               {
                 "rulePriority": 1,
                 "description": "Keep the latest 20 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 20
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  McpImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${BaseName}-mcp"
+      EmptyOnDelete: true
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the latest 20 MCP images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
@@ -794,6 +878,19 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/ecs/${BaseName}/frontend"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  McpLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${BaseName}/mcp"
       RetentionInDays: 30
       Tags:
         - Key: Project
@@ -856,6 +953,81 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${BaseName}-tasks"
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  McpSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateCicd
+    Properties:
+      GroupDescription: !Sub "${BaseName} MCP ECS task ingress from backend tasks and dev ALB"
+      VpcId: !Ref FoundationVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          SourceSecurityGroupId: !Ref AppTaskSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${BaseName}-mcp-tasks"
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  DatabaseIngressFromMcpSecurityGroup:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateCicd
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref McpSecurityGroup
+      Description: !Sub "${BaseName} MCP task access to RDS Postgres"
+
+  McpPrivateDnsNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Condition: CreateCicd
+    Properties:
+      Name: !Sub "${ShortName}.local"
+      Vpc: !Ref FoundationVpc
+      Description: !Sub "${BaseName} private service discovery namespace"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  McpDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Condition: CreateCicd
+    Properties:
+      Name: mcp-tools
+      NamespaceId: !Ref McpPrivateDnsNamespace
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 30
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+      Tags:
         - Key: Project
           Value: !Ref ProjectTag
         - Key: Application
@@ -932,6 +1104,26 @@ Resources:
         - Key: Owner
           Value: !Ref OwnerTag
 
+  McpTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: CreateCicd
+    Properties:
+      Name: !Sub "${ShortName}-mcp"
+      VpcId: !Ref FoundationVpc
+      TargetType: ip
+      Protocol: HTTP
+      Port: 9000
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: "200-499"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
   FrontendProdListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Condition: CreateCicd
@@ -953,6 +1145,17 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref BackendTargetGroup
+
+  McpPublicListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: CreateCicd
+    Properties:
+      LoadBalancerArn: !Ref DevApplicationLoadBalancer
+      Port: 9000
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref McpTargetGroup
 
   BackendTaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -1130,6 +1333,45 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: db-init
 
+  McpTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: CreateCicd
+    Properties:
+      Family: !Sub "${BaseName}-mcp"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "512"
+      Memory: "1024"
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt McpTaskRole.Arn
+      ContainerDefinitions:
+        - Name: mcp-tools
+          Image: !Join [":", [!GetAtt McpImageRepository.RepositoryUri, "mcp-latest"]]
+          Essential: true
+          PortMappings:
+            - ContainerPort: 9000
+              Protocol: tcp
+          Environment:
+            - Name: MCP_APP_ENV
+              Value: dev
+            - Name: MCP_SECRET_NAME
+              Value: !Sub "/${BaseName}/mcp-tools"
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: HOST
+              Value: 0.0.0.0
+            - Name: PORT
+              Value: "9000"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref McpLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
   BackendService:
     Type: AWS::ECS::Service
     Condition: CreateCicd
@@ -1184,6 +1426,41 @@ Resources:
         - ContainerName: frontend
           ContainerPort: 8501
           TargetGroupArn: !Ref FrontendTargetGroup
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  McpService:
+    Type: AWS::ECS::Service
+    Condition: CreateCicd
+    DependsOn:
+      - McpDiscoveryService
+      - DatabaseIngressFromMcpSecurityGroup
+      - McpPublicListener
+    Properties:
+      ServiceName: !Sub "${BaseName}-mcp"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref McpTaskDefinition
+      DesiredCount: !Ref McpDesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref McpSecurityGroup
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref PublicSubnetTwo
+      ServiceRegistries:
+        - RegistryArn: !GetAtt McpDiscoveryService.Arn
+      LoadBalancers:
+        - ContainerName: mcp-tools
+          ContainerPort: 9000
+          TargetGroupArn: !Ref McpTargetGroup
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1532,6 +1809,8 @@ Outputs:
     Value: !Sub "/${BaseName}/azure-openai"
   LangfuseSecretName:
     Value: !Sub "/${BaseName}/langfuse"
+  McpToolsSecretName:
+    Value: !Sub "/${BaseName}/mcp-tools"
   DatabaseEndpoint:
     Value: !GetAtt Database.Endpoint.Address
   DatabasePort:
@@ -1552,6 +1831,8 @@ Outputs:
     Value: !Ref BaseName
   EcrRepositoryUri:
     Value: !GetAtt ImageRepository.RepositoryUri
+  McpEcrRepositoryUri:
+    Value: !GetAtt McpImageRepository.RepositoryUri
   EcsClusterName:
     Value: !Ref EcsCluster
   BackendServiceName:
@@ -1560,6 +1841,17 @@ Outputs:
   FrontendServiceName:
     Condition: CreateCicd
     Value: !GetAtt FrontendRollingService.Name
+  McpServiceName:
+    Condition: CreateCicd
+    Value: !GetAtt McpService.Name
+  McpCloudMapUrl:
+    Condition: CreateCicd
+    Value: !Sub "http://mcp-tools.${ShortName}.local:9000/sse"
+  McpPublicUrl:
+    Condition: CreateCicd
+    Value: !Sub "http://${DevApplicationLoadBalancer.DNSName}:9000/sse"
+  McpLogGroupName:
+    Value: !Ref McpLogGroup
   DevApplicationUrl:
     Condition: CreateCicd
     Value: !Sub "http://${DevApplicationLoadBalancer.DNSName}"
@@ -1578,6 +1870,8 @@ Outputs:
     Value: !GetAtt BackendTaskRole.Arn
   FrontendTaskRoleArn:
     Value: !GetAtt FrontendTaskRole.Arn
+  McpTaskRoleArn:
+    Value: !GetAtt McpTaskRole.Arn
   BackendLogGroupName:
     Value: !Ref BackendLogGroup
   FrontendLogGroupName:

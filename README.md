@@ -171,8 +171,38 @@ AWS mode uses:
 - OpenSearch Serverless for vector and keyword retrieval
 - RDS Postgres for chat history and deterministic lookup tables
 - ECS task roles for AWS credentials
+- An optional MCP ECS service exposed privately through Cloud Map and publicly for dev through the ALB on port `9000`
 
 Do not provide static AWS access keys to ECS tasks. Let the task role provide AWS credentials.
+
+Minimal dev deploy flow:
+
+```powershell
+$env:STACK_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-dev"
+$env:BASE_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-dev"
+$env:AWS_REGION = "eu-west-2"
+$env:CFN_ARTIFACT_BUCKET = "$($env:BASE_NAME)-cfn-artifacts"
+$env:MCP_DESIRED_COUNT = "1"
+
+aws cloudformation deploy `
+  --stack-name $env:STACK_NAME `
+  --template-file infra/aws-foundation.yml `
+  --s3-bucket $env:CFN_ARTIFACT_BUCKET `
+  --s3-prefix cloudformation `
+  --region $env:AWS_REGION `
+  --capabilities CAPABILITY_NAMED_IAM `
+  --parameter-overrides `
+    CicdEnabled=true `
+    McpDesiredCount=$env:MCP_DESIRED_COUNT
+
+aws cloudformation describe-stacks `
+  --stack-name $env:STACK_NAME `
+  --region $env:AWS_REGION `
+  --query "Stacks[0].Outputs[?OutputKey=='McpPublicUrl'].OutputValue" `
+  --output text
+```
+
+The backend should still use the private `McpCloudMapUrl` in its app secret when it runs in the same VPC. Use `McpPublicUrl` for external dev access to the MCP SSE endpoint.
 
 ## Secret Model
 
@@ -184,6 +214,7 @@ Expected AWS secret names:
 /dstrmaysam-healthcare-knowledge-multi-agent-dev/app
 /dstrmaysam-healthcare-knowledge-multi-agent-dev/azure-openai
 /dstrmaysam-healthcare-knowledge-multi-agent-dev/langfuse
+/dstrmaysam-healthcare-knowledge-multi-agent-dev/mcp-tools
 ```
 
 App secret shape:
