@@ -71,9 +71,11 @@ class McpToolClient:
             raise RuntimeError("fastmcp is not installed in the backend environment") from exc
 
         timeout = max(1, int(self.settings.mcp_tool_timeout_seconds or 30))
+        mcp_payload = dict(payload)
+        mcp_payload.setdefault("tool_name", tool_name)
         args = {
             "project_id": self.settings.mcp_project_id,
-            "payload": payload,
+            "payload": mcp_payload,
         }
         async with Client(self.settings.mcp_server_url) as client:
             return await asyncio.wait_for(
@@ -82,8 +84,8 @@ class McpToolClient:
             )
 
     @staticmethod
-    async def _call_tool_and_extract_text(client: Any, mcp_tool_name: str, args: dict[str, Any]) -> str:
-        result = await client.call_tool(mcp_tool_name, args)
+    async def _call_tool_and_extract_text(client: Any, selected_tool_name: str, args: dict[str, Any]) -> str:
+        result = await client.call_tool(selected_tool_name, args)
         return _content_to_text(result)
 
 

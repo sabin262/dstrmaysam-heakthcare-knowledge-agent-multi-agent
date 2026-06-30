@@ -16,6 +16,13 @@ class SecretProviderError(RuntimeError):
     """Raised when a required secret cannot be loaded."""
 
 
+DEFAULT_TOOL_EXECUTION_MODE = "local"
+DEFAULT_MCP_SERVER_URL = "http://host.docker.internal:9000/sse"
+DEFAULT_MCP_PROJECT_ID = "dstrmaysam-healthcare-knowledge-multi-agent"
+DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 30
+DEFAULT_MCP_TOOL_FALLBACK_TO_LOCAL = False
+
+
 @dataclass(frozen=True)
 class AppSecrets:
     session_secret: str
@@ -39,6 +46,39 @@ class LangfuseSecrets:
     public_key: str
     secret_key: str
     base_url: str
+
+
+@dataclass(frozen=True)
+class ToolExecutionSecrets:
+    tool_execution_mode: str
+    mcp_server_url: str
+    mcp_project_id: str
+    mcp_tool_timeout_seconds: int
+    mcp_tool_fallback_to_local: bool
+
+
+def _secret_value(data: dict[str, Any], key: str, default: Any = "") -> Any:
+    if key in data:
+        return data.get(key)
+    upper_key = key.upper()
+    if upper_key in data:
+        return data.get(upper_key)
+    return default
+
+
+def _secret_bool(data: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = _secret_value(data, key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _secret_int(data: dict[str, Any], key: str, default: int) -> int:
+    value = _secret_value(data, key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class SecretProvider:
@@ -157,6 +197,26 @@ class SecretProvider:
             public_key=str(data["public_key"]),
             secret_key=str(data["secret_key"]),
             base_url=str(data["base_url"]),
+        )
+
+    def load_tool_execution(self) -> ToolExecutionSecrets:
+        data = self.get_json(self.settings.app_secret_name)
+        return ToolExecutionSecrets(
+            tool_execution_mode=str(
+                _secret_value(data, "tool_execution_mode", DEFAULT_TOOL_EXECUTION_MODE)
+            ).strip().lower(),
+            mcp_server_url=str(_secret_value(data, "mcp_server_url", DEFAULT_MCP_SERVER_URL)),
+            mcp_project_id=str(_secret_value(data, "mcp_project_id", DEFAULT_MCP_PROJECT_ID)),
+            mcp_tool_timeout_seconds=_secret_int(
+                data,
+                "mcp_tool_timeout_seconds",
+                DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+            ),
+            mcp_tool_fallback_to_local=_secret_bool(
+                data,
+                "mcp_tool_fallback_to_local",
+                DEFAULT_MCP_TOOL_FALLBACK_TO_LOCAL,
+            ),
         )
 
 

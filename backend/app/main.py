@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import logging
@@ -98,6 +99,22 @@ def get_secret_provider() -> SecretProvider:
 
 
 @lru_cache
+def get_runtime_settings() -> AppSettings:
+    settings = get_settings()
+    if settings.use_local_resources():
+        return settings
+    tool_execution = get_secret_provider().load_tool_execution()
+    return replace(
+        settings,
+        tool_execution_mode=tool_execution.tool_execution_mode,
+        mcp_server_url=tool_execution.mcp_server_url,
+        mcp_project_id=tool_execution.mcp_project_id,
+        mcp_tool_timeout_seconds=tool_execution.mcp_tool_timeout_seconds,
+        mcp_tool_fallback_to_local=tool_execution.mcp_tool_fallback_to_local,
+    )
+
+
+@lru_cache
 def get_auth_service() -> AuthService:
     return AuthService(get_secret_provider())
 
@@ -151,7 +168,7 @@ def create_ingestion_job():
 @lru_cache
 def get_agent() -> KnowledgeAgent:
     return KnowledgeAgent(
-        settings=get_settings(),
+        settings=get_runtime_settings(),
         secret_provider=get_secret_provider(),
         history=get_history_repository(),
         retrieval=get_retrieval_service(),
@@ -729,7 +746,7 @@ def current_user(user: HealthcareUserContext = Depends(active_user_context)) -> 
 @app.get("/health")
 def health() -> dict[str, object]:
     agent = get_agent()
-    settings_summary = get_settings().public_summary()
+    settings_summary = get_runtime_settings().public_summary()
     try:
         settings_summary["guardian_api_configured"] = str(get_news_service().api_key_configured())
     except Exception:
