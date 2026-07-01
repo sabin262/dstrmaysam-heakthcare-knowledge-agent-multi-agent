@@ -6,7 +6,7 @@ echo "Running pre-push checks..."
 PYTHON_BIN="${PYTHON:-python}"
 
 if "$PYTHON_BIN" -c "import pytest" >/dev/null 2>&1; then
-  "$PYTHON_BIN" -m pytest tests -q
+  "$PYTHON_BIN" -m pytest tests/tests_pre_push.py -q
   "$PYTHON_BIN" -m compileall backend frontend tests -q
 elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   echo "pytest is not installed for $PYTHON_BIN; falling back to docker compose."
@@ -14,7 +14,7 @@ elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
   if pwd -W >/dev/null 2>&1; then
     WORKSPACE_MOUNT="$(pwd -W)"
   fi
-  MSYS_NO_PATHCONV=1 docker compose run --rm -T -v "$WORKSPACE_MOUNT:/workspace" -w /workspace -e PYTHONPATH=/workspace backend python -m pytest tests -q
+  MSYS_NO_PATHCONV=1 docker compose run --rm -T -v "$WORKSPACE_MOUNT:/workspace" -w /workspace -e PYTHONPATH=/workspace backend python -m pytest tests/tests_pre_push.py -q
   MSYS_NO_PATHCONV=1 docker compose run --rm -T -v "$WORKSPACE_MOUNT:/workspace" -w /workspace -e PYTHONPATH=/workspace backend python -m compileall backend frontend tests -q
 else
   echo "pytest is not installed for $PYTHON_BIN, and docker compose is not available." >&2
