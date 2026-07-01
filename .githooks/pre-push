@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+echo "Running pre-push checks..."
+
+PYTHON_BIN="${PYTHON:-python}"
+
+if "$PYTHON_BIN" -c "import pytest" >/dev/null 2>&1; then
+  "$PYTHON_BIN" -m pytest tests -q
+  "$PYTHON_BIN" -m compileall backend frontend tests -q
+elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  echo "pytest is not installed for $PYTHON_BIN; falling back to docker compose."
+  docker compose run --rm -T -v "$PWD:/workspace" -w /workspace -e PYTHONPATH=/workspace backend python -m pytest tests -q
+  docker compose run --rm -T -v "$PWD:/workspace" -w /workspace -e PYTHONPATH=/workspace backend python -m compileall backend frontend tests -q
+else
+  echo "pytest is not installed for $PYTHON_BIN, and docker compose is not available." >&2
+  echo "Install backend test dependencies or run tests in the backend container before pushing." >&2
+  exit 1
+fi
+
+echo "Pre-push checks passed."

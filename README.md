@@ -112,6 +112,14 @@ Username: admin
 Password: admin123
 ```
 
+## Git Hooks
+
+This repo includes a pre-push hook in `.githooks/pre-push`. It runs the test suite and compile checks before code can be pushed. Enable it in a checkout with:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Runtime Modes
 
 The current code selects local resource implementations through `LOCAL_TEST_ADMIN_ENABLED`.
