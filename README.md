@@ -234,7 +234,25 @@ App secret shape:
       "departments": ["clinical_governance"],
       "password_change_required": false
     }
-  }
+  },
+  "twilio_whatsapp_enabled": false,
+  "twilio_account_sid": "",
+  "twilio_auth_token": "",
+  "twilio_whatsapp_from": "whatsapp:+14155238886",
+  "twilio_whatsapp_webhook_url": "https://YOUR-DOMAIN/twilio/whatsapp/webhook",
+  "twilio_whatsapp_async_enabled": true,
+  "twilio_whatsapp_allow_unmapped": false,
+  "twilio_whatsapp_default_roles": ["staff"],
+  "twilio_whatsapp_default_departments": [],
+  "twilio_whatsapp_users": {
+    "+447700900000": {
+      "user_id": "sabin",
+      "roles": ["admin", "doctor", "staff"],
+      "departments": ["clinical_governance", "operations"],
+      "enabled": true
+    }
+  },
+  "twilio_whatsapp_max_reply_chars": 1400
 }
 ```
 
@@ -278,6 +296,20 @@ python -m app.auth hash-password
 Chat uses a single supervisor-led multi-agent graph. The frontend sends `query` and `session_id`; the backend supervisor LLM decides whether to call deterministic lookup, RAG, policy, catalog, or safety specialists before synthesis.
 
 There is no online deterministic preflight shortcut and no user-selectable execution-mode switch. Exact operational lookup is handled by the graph-selected `DeterministicLookupAgent` through `postgres_deterministic_lookup`. If the supervisor tries to answer directly or route only to RAG for a clear structured lookup, in-graph deterministic guardrails force a `DeterministicLookupAgent` route before synthesis. A legacy `execution_mode` request field is tolerated for old clients, but it is ignored and normalized to supervisor routing.
+
+### Twilio WhatsApp Chat
+
+The backend exposes a Twilio webhook adapter at:
+
+```text
+POST /twilio/whatsapp/webhook
+```
+
+Configure the Twilio WhatsApp Sandbox or approved WhatsApp sender inbound webhook to this URL. In local mode, expose the backend through a tunnel such as ngrok and set `TWILIO_WHATSAPP_WEBHOOK_URL` to the exact public webhook URL so Twilio signature validation uses the same URL Twilio signed. In AWS mode, use your HTTPS domain in the app secret field `twilio_whatsapp_webhook_url`.
+
+The adapter maps the WhatsApp sender phone number to a user profile in `twilio_whatsapp_users`, builds a normal `HealthcareUserContext`, and calls the same supervisor-led chat workflow as `/chat`. Keep `twilio_whatsapp_allow_unmapped=false` for healthcare data unless you intentionally want anonymous staff-level access.
+
+For long-running multi-agent answers, set `twilio_whatsapp_async_enabled=true`. Twilio receives an immediate acknowledgement, then the backend sends the final answer through Twilio's Messages API using `twilio_account_sid`, `twilio_auth_token`, and `twilio_whatsapp_from`.
 
 Available tools include:
 
