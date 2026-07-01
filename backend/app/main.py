@@ -9,9 +9,10 @@ from pathlib import PurePath
 import re
 import threading
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.concurrency import run_in_threadpool
 
 from .agent import KnowledgeAgent
 from .auth import (
@@ -54,6 +55,15 @@ from .observability import ObservabilityClient
 from .retrieval import RetrievalService
 from .secrets import EnvSecretProvider, SecretProvider
 from .storage import DocumentStore, LocalDocumentStore
+from .twilio_whatsapp import (
+    format_whatsapp_answer,
+    parse_twilio_message,
+    require_valid_twilio_request,
+    send_twilio_whatsapp_message,
+    split_whatsapp_messages,
+    twiml_message,
+    user_context_for_sender,
+)
 
 
 SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
@@ -156,6 +166,10 @@ def get_observability() -> ObservabilityClient:
 @lru_cache
 def get_news_service() -> GuardianNewsService:
     return GuardianNewsService(get_settings(), get_secret_provider())
+
+
+def get_twilio_whatsapp_config():
+    return get_secret_provider().load_twilio_whatsapp()
 
 
 def create_ingestion_job():
@@ -1421,6 +1435,120 @@ def chat(request: ChatRequest, user: HealthcareUserContext = Depends(active_user
         performance=result.metadata.get("performance", {}),
         latency_breakdown=result.metadata.get("latency_breakdown", {}),
     )
+
+
+def _answer_whatsapp_message(
+    *,
+    query: str,
+    session_id: str,
+    user_context: HealthcareUserContext,
+    channel_metadata: dict[str, object],
+) -> str:
+    result = get_agent().answer(
+        user_id=user_context.user_id,
+        query=query,
+        session_id=session_id,
+        user_context=user_context,
+        execution_mode=None,
+    )
+    logger.info(
+        "twilio_whatsapp_chat_answered user=%s session=%s trace=%s latency_ms=%s metadata=%s",
+        user_context.user_id,
+        result.session_id,
+        result.trace_id,
+        result.latency_ms,
+        channel_metadata,
+    )
+    return result.answer
+
+
+def _send_async_whatsapp_answer(
+    *,
+    query: str,
+    session_id: str,
+    user_context: HealthcareUserContext,
+    to_address: str,
+    channel_metadata: dict[str, object],
+) -> None:
+    config = get_twilio_whatsapp_config()
+    try:
+        answer = _answer_whatsapp_message(
+            query=query,
+            session_id=session_id,
+            user_context=user_context,
+            channel_metadata=channel_metadata,
+        )
+        formatted = format_whatsapp_answer(answer, max_chars=max(500, config.max_reply_chars * 3))
+        chunks = split_whatsapp_messages(formatted, max_chars=max(500, config.max_reply_chars))
+        for chunk in chunks:
+            send_twilio_whatsapp_message(config=config, to_address=to_address, body=chunk)
+    except Exception as exc:
+        logger.exception("twilio_whatsapp_async_reply_failed")
+        try:
+            send_twilio_whatsapp_message(
+                config=config,
+                to_address=to_address,
+                body=f"I could not complete that request: {type(exc).__name__}. Please try the web chat.",
+            )
+        except Exception:
+            logger.exception("twilio_whatsapp_async_error_reply_failed")
+
+
+@app.post("/twilio/whatsapp/webhook")
+async def twilio_whatsapp_webhook(request: Request, background_tasks: BackgroundTasks) -> Response:
+    config = get_twilio_whatsapp_config()
+    if not config.enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Twilio WhatsApp integration is disabled")
+
+    message, params = await parse_twilio_message(request)
+    require_valid_twilio_request(request=request, params=params, config=config)
+    if not message.body:
+        return Response(
+            content=twiml_message("Please send a text question for the healthcare knowledge assistant."),
+            media_type="application/xml",
+        )
+
+    user_context = user_context_for_sender(config, message.from_address, message.wa_id)
+    if user_context is None:
+        return Response(
+            content=twiml_message("This WhatsApp number is not authorised to use the healthcare knowledge assistant."),
+            media_type="application/xml",
+        )
+
+    sender = message.wa_id or message.from_address
+    session_id = f"whatsapp:{sender}"
+    channel_metadata = {
+        "channel": "twilio_whatsapp",
+        "message_sid": message.message_sid,
+        "from": message.from_address,
+        "to": message.to_address,
+        "profile_name": message.profile_name,
+        "wa_id": message.wa_id,
+    }
+
+    if config.async_enabled:
+        background_tasks.add_task(
+            _send_async_whatsapp_answer,
+            query=message.body,
+            session_id=session_id,
+            user_context=user_context,
+            to_address=message.from_address,
+            channel_metadata=channel_metadata,
+        )
+        return Response(
+            content=twiml_message("I’m checking that now and will reply here shortly."),
+            media_type="application/xml",
+        )
+
+    answer = await run_in_threadpool(
+        _answer_whatsapp_message,
+        query=message.body,
+        session_id=session_id,
+        user_context=user_context,
+        channel_metadata=channel_metadata,
+    )
+    formatted = format_whatsapp_answer(answer, max_chars=max(500, config.max_reply_chars))
+    return Response(content=twiml_message(formatted), media_type="application/xml")
 
 
 @app.get("/chat/sessions", response_model=list[ChatSessionSummary])

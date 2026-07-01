@@ -231,6 +231,24 @@ $appSecret = @'
   "mcp_project_id": "dstrmaysam-healthcare-knowledge-multi-agent",
   "mcp_tool_timeout_seconds": 30,
   "mcp_tool_fallback_to_local": false,
+  "twilio_whatsapp_enabled": false,
+  "twilio_account_sid": "",
+  "twilio_auth_token": "",
+  "twilio_whatsapp_from": "whatsapp:+14155238886",
+  "twilio_whatsapp_webhook_url": "https://YOUR-DOMAIN/twilio/whatsapp/webhook",
+  "twilio_whatsapp_async_enabled": true,
+  "twilio_whatsapp_allow_unmapped": false,
+  "twilio_whatsapp_default_roles": ["staff"],
+  "twilio_whatsapp_default_departments": [],
+  "twilio_whatsapp_users": {
+    "+447700900000": {
+      "user_id": "sabin",
+      "roles": ["admin", "doctor", "staff"],
+      "departments": ["clinical_governance", "operations"],
+      "enabled": true
+    }
+  },
+  "twilio_whatsapp_max_reply_chars": 1400,
   "auth_users": {
     "admin": "pbkdf2_sha256$1000$436e10a3455a383cd122f9fee62bb2d9$55a52972c1069e44b24076f738daa09c01dbfd9a44a6356c50809d3008a1eae3"
   },
@@ -254,6 +272,14 @@ The `guardian_api_key` value is optional for login, but required for the NHS new
 The tool execution and MCP values are also read from this app secret in AWS mode. Do not set `TOOL_EXECUTION_MODE`, `MCP_SERVER_URL`, `MCP_PROJECT_ID`, `MCP_TOOL_TIMEOUT_SECONDS`, or `MCP_TOOL_FALLBACK_TO_LOCAL` as ECS task environment variables.
 
 Only switch `tool_execution_mode` to `mcp` after the healthcare stack has created the MCP Cloud Map service and the MCP repo pipeline has deployed a running MCP task. Before that point, keep it as `local` if you need AWS backend chat to continue working.
+
+For Twilio WhatsApp, configure the Twilio Sandbox or approved sender inbound webhook to:
+
+```text
+https://YOUR-DOMAIN/twilio/whatsapp/webhook
+```
+
+Set `twilio_whatsapp_webhook_url` to that exact URL in the app secret. This is required for Twilio signature validation when requests pass through an ALB, reverse proxy, or HTTPS terminator. Keep `twilio_whatsapp_allow_unmapped=false` unless you intentionally want unmapped WhatsApp numbers to receive the default staff role.
 
 To add or update only the MCP/tool execution keys while preserving existing app-secret values:
 

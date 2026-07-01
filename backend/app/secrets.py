@@ -57,6 +57,21 @@ class ToolExecutionSecrets:
     mcp_tool_fallback_to_local: bool
 
 
+@dataclass(frozen=True)
+class TwilioWhatsAppSecrets:
+    enabled: bool
+    auth_token: str
+    account_sid: str
+    from_number: str
+    webhook_public_url: str
+    async_enabled: bool
+    allow_unmapped_users: bool
+    default_roles: tuple[str, ...]
+    default_departments: tuple[str, ...]
+    users: dict[str, dict[str, Any]]
+    max_reply_chars: int
+
+
 def _secret_value(data: dict[str, Any], key: str, default: Any = "") -> Any:
     if key in data:
         return data.get(key)
@@ -79,6 +94,28 @@ def _secret_int(data: dict[str, Any], key: str, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _secret_csv_tuple(data: dict[str, Any], key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = _secret_value(data, key, list(default))
+    if isinstance(value, str):
+        return tuple(item.strip().lower() for item in value.split(",") if item.strip())
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip().lower() for item in value if str(item).strip())
+    return default
+
+
+def _secret_mapping(data: dict[str, Any], key: str) -> dict[str, dict[str, Any]]:
+    value = _secret_value(data, key, {})
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        value = parsed
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): dict(v) for k, v in value.items() if isinstance(v, dict)}
 
 
 class SecretProvider:
@@ -225,6 +262,22 @@ class SecretProvider:
             ),
         )
 
+    def load_twilio_whatsapp(self) -> TwilioWhatsAppSecrets:
+        data = self.get_json(self.settings.app_secret_name)
+        return TwilioWhatsAppSecrets(
+            enabled=_secret_bool(data, "twilio_whatsapp_enabled", False),
+            auth_token=str(_secret_value(data, "twilio_auth_token", "")),
+            account_sid=str(_secret_value(data, "twilio_account_sid", "")),
+            from_number=str(_secret_value(data, "twilio_whatsapp_from", "")),
+            webhook_public_url=str(_secret_value(data, "twilio_whatsapp_webhook_url", "")),
+            async_enabled=_secret_bool(data, "twilio_whatsapp_async_enabled", False),
+            allow_unmapped_users=_secret_bool(data, "twilio_whatsapp_allow_unmapped", False),
+            default_roles=_secret_csv_tuple(data, "twilio_whatsapp_default_roles", ("staff",)),
+            default_departments=_secret_csv_tuple(data, "twilio_whatsapp_default_departments", ()),
+            users=_secret_mapping(data, "twilio_whatsapp_users"),
+            max_reply_chars=_secret_int(data, "twilio_whatsapp_max_reply_chars", 1400),
+        )
+
 
 class StaticSecretProvider(SecretProvider):
     """Test-only provider that keeps the deployed app contract intact."""
@@ -305,6 +358,44 @@ class EnvSecretProvider(SecretProvider):
                 }
             },
         }
+
+    def load_twilio_whatsapp(self) -> TwilioWhatsAppSecrets:
+        def env_bool(name: str, default: bool = False) -> bool:
+            return os.getenv(name, "true" if default else "false").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+
+        raw_users = os.getenv("TWILIO_WHATSAPP_USERS", "{}")
+        try:
+            users_value = json.loads(raw_users) if raw_users.strip() else {}
+        except json.JSONDecodeError:
+            users_value = {}
+        if not isinstance(users_value, dict):
+            users_value = {}
+        return TwilioWhatsAppSecrets(
+            enabled=env_bool("TWILIO_WHATSAPP_ENABLED", False),
+            auth_token=os.getenv("TWILIO_AUTH_TOKEN", ""),
+            account_sid=os.getenv("TWILIO_ACCOUNT_SID", ""),
+            from_number=os.getenv("TWILIO_WHATSAPP_FROM", ""),
+            webhook_public_url=os.getenv("TWILIO_WHATSAPP_WEBHOOK_URL", ""),
+            async_enabled=env_bool("TWILIO_WHATSAPP_ASYNC_ENABLED", False),
+            allow_unmapped_users=env_bool("TWILIO_WHATSAPP_ALLOW_UNMAPPED", False),
+            default_roles=tuple(
+                role.strip().lower()
+                for role in os.getenv("TWILIO_WHATSAPP_DEFAULT_ROLES", "staff").split(",")
+                if role.strip()
+            ),
+            default_departments=tuple(
+                department.strip().lower()
+                for department in os.getenv("TWILIO_WHATSAPP_DEFAULT_DEPARTMENTS", "").split(",")
+                if department.strip()
+            ),
+            users={str(k): dict(v) for k, v in users_value.items() if isinstance(v, dict)},
+            max_reply_chars=int(os.getenv("TWILIO_WHATSAPP_MAX_REPLY_CHARS", "1400")),
+        )
 
     def _azure_secret_from_env(self) -> dict[str, Any]:
         chat_deployment = self.settings.azure_openai_deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
