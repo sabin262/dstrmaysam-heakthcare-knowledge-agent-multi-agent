@@ -2056,6 +2056,23 @@ def _edited_rows_to_records(edited_rows: Any) -> list[dict[str, Any]]:
 
 
 def render_bulk_document_metadata_overlay(documents: list[dict[str, Any]]) -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDialog"] div[role="dialog"] {
+            width: 60vw;
+            max-width: 60vw;
+        }
+        @media (max-width: 1100px) {
+            div[data-testid="stDialog"] div[role="dialog"] {
+                width: 92vw;
+                max-width: 92vw;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     if not documents:
         st.info("No documents are available to edit.")
         return
@@ -2084,6 +2101,7 @@ def render_bulk_document_metadata_overlay(documents: list[dict[str, Any]]) -> No
         original_rows,
         hide_index=True,
         use_container_width=True,
+        height=620,
         num_rows="fixed",
         disabled=["Key", "File"],
         column_order=["File", "Category", "Document type", "Access roles", "Key"],

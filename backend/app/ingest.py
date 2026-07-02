@@ -419,7 +419,12 @@ class IngestionJob:
                 manifest_documents.append(unchanged_document)
                 continue
 
-            if existing_document and not force_reindex:
+            should_delete_existing_chunks = bool(
+                existing_document
+                and not force_reindex
+                and (metadata_needs_reindex or existing_document.get("checksum") != checksum)
+            )
+            if should_delete_existing_chunks:
                 deleted_chunks += self._delete_document_chunks(key)
 
             document = parse_document(key, raw_document["body"])
