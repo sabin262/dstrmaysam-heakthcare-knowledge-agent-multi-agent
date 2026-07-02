@@ -9,16 +9,40 @@ from .deterministic_lookup import (
     supported_csv_lookup_mappings,
 )
 from .runtime import HealthcareUserContext, user_context_from_payload
+from .tools import (
+    DocumentRecord,
+    HealthcareAccessControl,
+    HealthcareSafetyGuard,
+    HealthcareToolExecutor,
+    RetrievalHit,
+    SafetyAssessment,
+    SourceGovernance,
+    catalog_query_terms,
+    document_catalog_payload,
+    document_matches_catalog_query,
+    format_retrieval_hits,
+)
 
 __all__ = [
     "CRM_TABLES",
     "DeterministicLookupService",
+    "DocumentRecord",
+    "HealthcareAccessControl",
+    "HealthcareSafetyGuard",
+    "HealthcareToolExecutor",
     "HealthcareUserContext",
     "LookupResult",
+    "RetrievalHit",
+    "SafetyAssessment",
+    "SourceGovernance",
     "UnsupportedCsvLookupError",
     "build_csv_semantic_metadata",
     "build_table_semantic_metadata",
+    "catalog_query_terms",
+    "document_catalog_payload",
+    "document_matches_catalog_query",
     "detect_csv_table_mapping",
+    "format_retrieval_hits",
     "supported_csv_lookup_mappings",
     "user_context_from_payload",
 ]
