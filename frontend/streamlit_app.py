@@ -62,6 +62,13 @@ DOCUMENT_TYPE_OPTIONS = [
     "procedure",
     "csv_table",
 ]
+DOCUMENT_ACCESS_ROLE_PRESETS = [
+    "staff",
+    "staff, admin, manager",
+    "doctor, nurse, clinical_governance, admin",
+    "doctor, nurse, pharmacy, clinical_governance, admin",
+    "staff, admin, manager, doctor, nurse, pharmacy, clinical_governance",
+]
 
 
 def _set_auth_cookie(token: str, max_age_seconds: int) -> None:
@@ -1947,6 +1954,22 @@ def document_table_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
+def _document_roles_display(roles: Any) -> str:
+    if isinstance(roles, str):
+        raw_roles = [role.strip() for role in roles.split(",")]
+    elif isinstance(roles, list):
+        raw_roles = [str(role).strip() for role in roles]
+    else:
+        raw_roles = []
+    return ", ".join(role for role in raw_roles if role)
+
+
+def _parse_document_roles(value: Any) -> list[str]:
+    roles = [role.strip() for role in str(value or "").split(",") if role.strip()]
+    valid_roles = [role for role in roles if role in KNOWN_ROLES]
+    return valid_roles or ["staff"]
+
+
 def _metadata_options(options: list[str], current_value: str) -> list[str]:
     value = (current_value or "").strip()
     if value and value not in options:
@@ -2002,6 +2025,133 @@ def _remove_cached_document(document_key: str) -> None:
     ]
     st.session_state.document_cache_loaded = True
     st.session_state.document_cache_error = None
+
+
+def _bulk_document_metadata_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for document in documents:
+        metadata = document.get("metadata") or {}
+        key = str(document.get("key") or document.get("uri") or document.get("title") or "")
+        rows.append(
+            {
+                "Key": key,
+                "File": document.get("title") or key.rsplit("/", 1)[-1],
+                "Category": str(metadata.get("domain") or "general"),
+                "Document type": str(metadata.get("document_type") or "document"),
+                "Access roles": _document_roles_display(metadata.get("allowed_roles") or ["staff"]),
+            }
+        )
+    return rows
+
+
+def _edited_rows_to_records(edited_rows: Any) -> list[dict[str, Any]]:
+    if hasattr(edited_rows, "to_dict"):
+        try:
+            return list(edited_rows.to_dict("records"))
+        except Exception:
+            return []
+    if isinstance(edited_rows, list):
+        return [dict(row) for row in edited_rows if isinstance(row, dict)]
+    return []
+
+
+def render_bulk_document_metadata_overlay(documents: list[dict[str, Any]]) -> None:
+    if not documents:
+        st.info("No documents are available to edit.")
+        return
+
+    original_rows = _bulk_document_metadata_rows(documents)
+    category_options = sorted(
+        set(DOCUMENT_CATEGORY_OPTIONS)
+        | {str(row.get("Category") or "general") for row in original_rows if str(row.get("Category") or "").strip()}
+    )
+    type_options = sorted(
+        set(DOCUMENT_TYPE_OPTIONS)
+        | {
+            str(row.get("Document type") or "document")
+            for row in original_rows
+            if str(row.get("Document type") or "").strip()
+        }
+    )
+    role_options = list(DOCUMENT_ACCESS_ROLE_PRESETS)
+    for row in original_rows:
+        roles = str(row.get("Access roles") or "").strip()
+        if roles and roles not in role_options:
+            role_options.append(roles)
+
+    st.caption("Edit metadata for all visible documents. Changes are saved to the manifest metadata.")
+    edited_rows = st.data_editor(
+        original_rows,
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        disabled=["Key", "File"],
+        column_order=["File", "Category", "Document type", "Access roles", "Key"],
+        column_config={
+            "File": st.column_config.TextColumn("File", width="large"),
+            "Category": st.column_config.SelectboxColumn("Category", options=category_options, required=True),
+            "Document type": st.column_config.SelectboxColumn("Document type", options=type_options, required=True),
+            "Access roles": st.column_config.SelectboxColumn("Access roles", options=role_options, required=True),
+            "Key": st.column_config.TextColumn("Key", width="medium"),
+        },
+        key="bulk-document-metadata-editor",
+    )
+    if st.button("Save all metadata changes", type="primary"):
+        original_by_key = {str(row.get("Key") or ""): row for row in original_rows}
+        changed_rows = []
+        for row in _edited_rows_to_records(edited_rows):
+            key = str(row.get("Key") or "")
+            original = original_by_key.get(key)
+            if not key or not original:
+                continue
+            if (
+                str(row.get("Category") or "") != str(original.get("Category") or "")
+                or str(row.get("Document type") or "") != str(original.get("Document type") or "")
+                or str(row.get("Access roles") or "") != str(original.get("Access roles") or "")
+            ):
+                changed_rows.append(row)
+
+        if not changed_rows:
+            st.info("No metadata changes to save.")
+            return
+
+        progress = st.progress(0, text="Saving metadata changes...")
+        saved = 0
+        try:
+            for index, row in enumerate(changed_rows, start=1):
+                updated = patch_json(
+                    "/admin/documents/metadata",
+                    {
+                        "key": str(row.get("Key") or ""),
+                        "category": str(row.get("Category") or "general"),
+                        "document_type": str(row.get("Document type") or "document"),
+                        "allowed_roles": _parse_document_roles(row.get("Access roles")),
+                    },
+                )
+                _update_cached_document(updated)
+                saved += 1
+                progress.progress(index / len(changed_rows), text=f"Saved {index} of {len(changed_rows)} document(s)")
+            st.session_state.document_metadata_notice = (
+                f"Updated metadata for {saved} document(s). Run ingestion to apply changes to indexed chunks."
+            )
+            st.rerun()
+        except Exception as exc:
+            progress.empty()
+            st.error(f"Bulk metadata update failed after {saved} document(s): {exc}")
+
+
+def run_document_ingestion_with_progress(*, initial_label: str = "Preparing ingestion...") -> dict[str, Any]:
+    progress = st.progress(0, text=initial_label)
+    progress.progress(0.15, text="Reading uploaded source files...")
+    progress.progress(0.35, text="Parsing documents and preserving existing metadata...")
+    progress.progress(0.55, text="Indexing chunks in the search backend...")
+    result = post_json("/admin/documents/ingest", {})
+    progress.progress(0.9, text="Refreshing document manifest...")
+    st.session_state.document_cache = list(result.get("documents", []))
+    st.session_state.document_cache_loaded = True
+    st.session_state.document_cache_error = None
+    progress.progress(1.0, text="Ingestion and indexing complete.")
+    return result
 
 
 def render_document_detail_overlay(document: dict[str, Any], *, index: int) -> None:
@@ -2140,6 +2290,18 @@ def render_documents_table(documents: list[dict[str, Any]]) -> None:
                 st.subheader(selected_title)
                 render_document_detail_overlay(selected_document, index=selected_index)
 
+    if st.button("Edit all document metadata", key="edit-all-document-metadata"):
+        if hasattr(st, "dialog"):
+
+            @st.dialog("Edit all document metadata", width="large")
+            def bulk_document_metadata_dialog() -> None:
+                render_bulk_document_metadata_overlay(documents)
+
+            bulk_document_metadata_dialog()
+        else:
+            st.subheader("Edit all document metadata")
+            render_bulk_document_metadata_overlay(documents)
+
 
 def render_admin_documents() -> None:
     render_page_title("Documents")
@@ -2160,8 +2322,14 @@ def render_admin_documents() -> None:
     )
     if st.button("Upload selected files", disabled=not uploaded_files):
         uploaded_count = 0
-        for uploaded_file in uploaded_files or []:
+        upload_progress = st.progress(0, text="Starting upload...")
+        selected_files = list(uploaded_files or [])
+        for index, uploaded_file in enumerate(selected_files, start=1):
             try:
+                upload_progress.progress(
+                    (index - 1) / max(len(selected_files), 1),
+                    text=f"Uploading {uploaded_file.name}...",
+                )
                 result = post_file(
                     "/admin/documents/upload",
                     "file",
@@ -2171,10 +2339,20 @@ def render_admin_documents() -> None:
                 )
                 uploaded_count += 1
                 st.caption(f"Uploaded {result['key']}")
+                upload_progress.progress(
+                    index / max(len(selected_files), 1),
+                    text=f"Uploaded {index} of {len(selected_files)} file(s)",
+                )
             except Exception as exc:
                 st.error(f"Upload failed for {uploaded_file.name}: {exc}")
         if uploaded_count:
-            st.success(f"Uploaded {uploaded_count} file(s)")
+            st.success(f"Uploaded {uploaded_count} file(s). Indexing uploaded content...")
+            try:
+                result = run_document_ingestion_with_progress(initial_label="Starting indexing for uploaded files...")
+                current_documents = list(result.get("documents", []))
+                st.success("Upload and indexing complete")
+            except Exception as exc:
+                st.error(f"Indexing after upload failed: {exc}")
 
     st.divider()
     if st.button("Refresh indexed documents"):
@@ -2184,30 +2362,25 @@ def render_admin_documents() -> None:
     st.divider()
     st.subheader("Ingest and index")
     if st.button("Run ingestion and indexing"):
-        with st.spinner("Ingesting S3 documents and updating the search index..."):
-            try:
-                result = post_json("/admin/documents/ingest", {})
-                st.success("Ingestion complete")
-                metric_columns = st.columns(5)
-                metric_columns[0].metric("Documents", len(result.get("documents", [])))
-                metric_columns[1].metric("New chunks", result.get("indexed_chunks", 0))
-                metric_columns[2].metric("Total chunks", result.get("total_chunks", 0))
-                metric_columns[3].metric("Skipped", result.get("skipped_documents", 0))
-                metric_columns[4].metric("Removed", result.get("deleted_documents", 0))
-                st.session_state.document_cache = list(result.get("documents", []))
-                st.session_state.document_cache_loaded = True
-                st.session_state.document_cache_error = None
-                if result.get("force_reindex"):
-                    st.caption(
-                        "Re-indexed unchanged files because the OpenSearch index changed "
-                        f"from {result.get('previous_opensearch_index') or 'unknown'} "
-                        f"to {result.get('opensearch_index') or 'current index'}."
-                    )
-                if result.get("deleted_chunks"):
-                    st.caption(f"Deleted {result.get('deleted_chunks')} stale indexed chunk(s)")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Ingestion failed: {exc}")
+        try:
+            result = run_document_ingestion_with_progress(initial_label="Starting full document ingestion...")
+            st.success("Ingestion complete")
+            metric_columns = st.columns(5)
+            metric_columns[0].metric("Documents", len(result.get("documents", [])))
+            metric_columns[1].metric("New chunks", result.get("indexed_chunks", 0))
+            metric_columns[2].metric("Total chunks", result.get("total_chunks", 0))
+            metric_columns[3].metric("Skipped", result.get("skipped_documents", 0))
+            metric_columns[4].metric("Removed", result.get("deleted_documents", 0))
+            if result.get("force_reindex"):
+                st.caption(
+                    "Re-indexed unchanged files because the OpenSearch index changed "
+                    f"from {result.get('previous_opensearch_index') or 'unknown'} "
+                    f"to {result.get('opensearch_index') or 'current index'}."
+                )
+            if result.get("deleted_chunks"):
+                st.caption(f"Deleted {result.get('deleted_chunks')} stale indexed chunk(s)")
+        except Exception as exc:
+            st.error(f"Ingestion failed: {exc}")
 
     st.divider()
     with st.expander("Delete all indexes"):

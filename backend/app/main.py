@@ -1038,7 +1038,7 @@ def update_admin_document_metadata(
             "content_type": target.content_type,
             "metadata": metadata,
             "chunk_count": int(target.chunk_count or 0),
-            "ingestion_status": target.ingestion_status or "",
+            "ingestion_status": "metadata_updated",
         }
         if not hasattr(document_store, "upsert_manifest_record"):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Document manifest is read-only")

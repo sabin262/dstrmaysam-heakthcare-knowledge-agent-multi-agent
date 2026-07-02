@@ -19,6 +19,7 @@ LOOKUP_TABLE_ASSET_SOURCE = "postgres_table_lookup"
 LOOKUP_TABLE_URI_PREFIX = "postgres://table"
 LEGACY_LOOKUP_CSV_ASSET_SOURCE = "postgres_uploaded_lookup"
 SUPPORTED_RAW_EXTENSIONS = (".pdf", ".docx", ".txt", ".md", ".csv")
+USER_MANAGED_METADATA_FIELDS = ("domain", "document_type", "allowed_roles")
 logger = logging.getLogger(__name__)
 
 
@@ -134,6 +135,21 @@ def infer_healthcare_metadata(key: str, checksum: str, text: str = "") -> dict[s
         "document_type": document_type,
         "allowed_roles": allowed_roles,
     }
+
+
+def preserve_user_managed_metadata(
+    inferred_metadata: dict[str, Any],
+    existing_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    metadata = dict(inferred_metadata or {})
+    existing_metadata = existing_record.get("metadata") if isinstance(existing_record, dict) else {}
+    if not isinstance(existing_metadata, dict):
+        return metadata
+    for field in USER_MANAGED_METADATA_FIELDS:
+        value = existing_metadata.get(field)
+        if value not in (None, "", []):
+            metadata[field] = value
+    return metadata
 
 
 def parse_document(key: str, data: bytes) -> ParsedDocument:
@@ -390,7 +406,12 @@ class IngestionJob:
                 continue
 
             existing_document = existing_by_key.get(key)
-            if existing_document and existing_document.get("checksum") == checksum and not force_reindex:
+            metadata_needs_reindex = (
+                str(existing_document.get("ingestion_status") or "") == "metadata_updated"
+                if existing_document
+                else False
+            )
+            if existing_document and existing_document.get("checksum") == checksum and not force_reindex and not metadata_needs_reindex:
                 skipped_documents += 1
                 unchanged_document = dict(existing_document)
                 unchanged_document.setdefault("uri", f"s3://{self.settings.s3_bucket}/{key}")
@@ -402,6 +423,7 @@ class IngestionJob:
                 deleted_chunks += self._delete_document_chunks(key)
 
             document = parse_document(key, raw_document["body"])
+            document.metadata = preserve_user_managed_metadata(document.metadata, existing_document)
             chunks = chunk_text(
                 document.text,
                 chunk_size=self.settings.ingestion_chunk_size,
