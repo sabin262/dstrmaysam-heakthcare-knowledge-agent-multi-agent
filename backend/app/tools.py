@@ -9,6 +9,24 @@ from .retrieval import RetrievalHit, RetrievalService
 from .storage import DocumentRecord, DocumentStore
 from .tool_execution import ToolExecutionRouter
 
+CATALOG_RESULT_LIMIT = 50
+CATALOG_QUERY_STOPWORDS = {
+    "all",
+    "available",
+    "catalog",
+    "catalogue",
+    "document",
+    "documents",
+    "file",
+    "files",
+    "have",
+    "list",
+    "show",
+    "the",
+    "what",
+    "which",
+}
+
 
 @dataclass(frozen=True)
 class AgentTool:
@@ -39,7 +57,13 @@ def format_retrieval_hits(hits: list[RetrievalHit]) -> str:
 
 
 def catalog_query_terms(query: str) -> list[str]:
-    return [term.lower() for term in query.split() if len(term) >= 3]
+    terms = []
+    for term in query.split():
+        normalized = term.lower().strip(".,:;!?()[]{}\"'")
+        if len(normalized) < 3 or normalized in CATALOG_QUERY_STOPWORDS:
+            continue
+        terms.append(normalized)
+    return terms
 
 
 def document_matches_catalog_query(record: DocumentRecord, query: str) -> bool:
@@ -76,7 +100,18 @@ def build_agent_tools(
         for record in documents.list_documents():
             if document_matches_catalog_query(record, query):
                 records.append(document_catalog_payload(record))
-        return json.dumps(records[:20], indent=2)
+        limited_records = records[:CATALOG_RESULT_LIMIT]
+        return json.dumps(
+            {
+                "kind": "document_catalog",
+                "query": query,
+                "total_matches": len(records),
+                "returned_count": len(limited_records),
+                "limit": CATALOG_RESULT_LIMIT,
+                "documents": limited_records,
+            },
+            indent=2,
+        )
 
     def table_lookup(query: str) -> str:
         """Look up exact answers in CSV or table-like files stored in S3."""

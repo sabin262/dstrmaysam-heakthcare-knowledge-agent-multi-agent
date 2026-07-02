@@ -16,9 +16,37 @@ from .storage import DocumentRecord, DocumentStore
 from .tool_execution import ToolExecutionRouter
 from .tools import AgentTool, format_retrieval_hits
 
+CATALOG_RESULT_LIMIT = 50
+CATALOG_QUERY_STOPWORDS = {
+    "all",
+    "available",
+    "catalog",
+    "catalogue",
+    "document",
+    "documents",
+    "file",
+    "files",
+    "have",
+    "list",
+    "show",
+    "the",
+    "what",
+    "which",
+}
+
 
 def _terms(query: str) -> list[str]:
     return [term.lower() for term in query.split() if len(term) >= 3]
+
+
+def _catalog_terms(query: str) -> list[str]:
+    terms = []
+    for term in query.split():
+        normalized = term.lower().strip(".,:;!?()[]{}\"'")
+        if len(normalized) < 3 or normalized in CATALOG_QUERY_STOPWORDS:
+            continue
+        terms.append(normalized)
+    return terms
 
 
 def _lookup_limit(query: str) -> int:
@@ -26,7 +54,7 @@ def _lookup_limit(query: str) -> int:
 
 
 def _record_matches(record: DocumentRecord, query: str, domains: set[str] | None = None) -> bool:
-    terms = _terms(query)
+    terms = _terms(query) if domains else _catalog_terms(query)
     metadata = record.metadata
     if domains and str(metadata.get("domain", "")).lower() not in domains:
         return False
@@ -192,14 +220,25 @@ def build_healthcare_agent_tools(
         return format_retrieval_hits(access.filter_hits(user, filtered or hits))
 
     def catalogue_search(query: str) -> str:
-        """Find departments, services, owners, systems, and approved tools."""
+        """Find approved document inventory and metadata."""
         records = access.filter_documents(user, documents.list_documents())
         matches = [
             _document_payload(record)
             for record in records
-            if _record_matches(record, query, {"catalogue", "directory", "service", "systems"})
+            if _record_matches(record, query)
         ]
-        return json.dumps(matches[:20], indent=2)
+        limited_matches = matches[:CATALOG_RESULT_LIMIT]
+        return json.dumps(
+            {
+                "kind": "document_catalog",
+                "query": query,
+                "total_matches": len(matches),
+                "returned_count": len(limited_matches),
+                "limit": CATALOG_RESULT_LIMIT,
+                "documents": limited_matches,
+            },
+            indent=2,
+        )
 
     def calendar_rota_lookup(query: str) -> str:
         """Lookup calendar, clinic, training, on-call, and rota data from controlled Postgres tables."""
@@ -262,7 +301,7 @@ def build_healthcare_agent_tools(
         ),
         AgentTool(
             name="catalogue_search",
-            description="Find healthcare departments, services, owners, systems, and approved tools.",
+            description="List and filter approved healthcare document inventory and metadata.",
             run=routed("catalogue_search", catalogue_search),
         ),
         AgentTool(
