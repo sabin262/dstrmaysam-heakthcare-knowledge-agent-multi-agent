@@ -166,6 +166,9 @@ POLICY_QUERY_MARKERS = {
     "safety management",
     "manage patient safety",
     "managing patient safety",
+    "apply for leave",
+    "leave procedure",
+    "leave policy",
 }
 DETERMINISTIC_QUERY_MARKERS = {
     "bleep",
@@ -287,6 +290,10 @@ GENERIC_ROW_VALUE_LIST_MARKERS = {
 CATALOG_QUERY_MARKERS = {
     "available documents",
     "available policies",
+    "available procedures",
+    "available guidelines",
+    "available sops",
+    "available pathways",
     "catalog",
     "catalogue",
     "compliance documents",
@@ -297,18 +304,117 @@ CATALOG_QUERY_MARKERS = {
     "documents available",
     "documents exist",
     "documents related",
+    "guideline documents",
+    "guidelines available",
+    "guidelines exist",
     "indexed documents",
     "list documents",
+    "list guidelines",
+    "list procedures",
     "list policies",
+    "list sops",
+    "list pathways",
     "lookup assets",
     "metadata only",
     "policy inventory",
     "policy documents",
+    "procedure documents",
+    "sop documents",
+    "pathway documents",
     "show documents",
+    "show guidelines",
+    "show policies",
+    "show procedures",
+    "show sops",
+    "show pathways",
     "table assets",
     "available for lookup",
     "what documents",
+    "what guidelines",
     "what policies",
+    "what procedures",
+    "what sops",
+    "what pathways",
+}
+DOCUMENT_TYPE_TERMS = {
+    "checklist",
+    "checklists",
+    "document",
+    "documents",
+    "file",
+    "files",
+    "form",
+    "forms",
+    "guidance",
+    "guide",
+    "guideline",
+    "guidelines",
+    "manual",
+    "manuals",
+    "pathway",
+    "pathways",
+    "policy",
+    "policies",
+    "procedure",
+    "procedures",
+    "protocol",
+    "protocols",
+    "sop",
+    "sops",
+    "standard",
+    "standards",
+    "template",
+    "templates",
+}
+DOCUMENT_INVENTORY_MARKERS = {
+    "all",
+    "available",
+    "catalog",
+    "catalogue",
+    "do we have",
+    "exist",
+    "exists",
+    "inventory",
+    "indexed",
+    "list",
+    "show",
+    "uploaded",
+    "what are",
+    "what do we have",
+    "what documents",
+    "what files",
+    "which",
+    "which documents",
+    "which files",
+}
+DOCUMENT_WEAK_INVENTORY_MARKERS = {
+    "all",
+    "what are",
+    "which",
+}
+DOCUMENT_CONTENT_MARKERS = {
+    "apply",
+    "explain",
+    "follow",
+    "handle",
+    "how do i",
+    "how should",
+    "manage",
+    "require",
+    "required",
+    "requirement",
+    "requirements",
+    "requires",
+    "rules",
+    "say",
+    "say about",
+    "says",
+    "says about",
+    "steps",
+    "summarise",
+    "summarize",
+    "tell me about",
+    "what does",
 }
 SAFETY_QUERY_MARKERS = {
     "anaphylaxis",
@@ -621,6 +727,26 @@ def _contains_marker(text: str, markers: set[str]) -> bool:
     return False
 
 
+def _has_document_type_reference(text: str) -> bool:
+    return _contains_marker(text, DOCUMENT_TYPE_TERMS)
+
+
+def _has_document_content_intent(text: str) -> bool:
+    return _contains_marker(text, DOCUMENT_CONTENT_MARKERS)
+
+
+def _has_document_inventory_intent(text: str) -> bool:
+    lowered = text.lower()
+    if not _has_document_type_reference(lowered):
+        return False
+    if _contains_marker(lowered, CATALOG_QUERY_MARKERS):
+        return True
+    if _has_document_content_intent(lowered):
+        strong_inventory_markers = DOCUMENT_INVENTORY_MARKERS - DOCUMENT_WEAK_INVENTORY_MARKERS
+        return _contains_marker(lowered, strong_inventory_markers)
+    return _contains_marker(lowered, DOCUMENT_INVENTORY_MARKERS)
+
+
 def _has_policy_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_catalog_intent(lowered):
@@ -898,7 +1024,11 @@ def _has_generic_row_value_list_intent(text: str) -> bool:
 
 def _has_catalog_intent(text: str) -> bool:
     lowered = text.lower()
-    return any(marker in lowered for marker in CATALOG_QUERY_MARKERS)
+    if _has_document_inventory_intent(lowered):
+        return True
+    if _has_document_content_intent(lowered):
+        return False
+    return _contains_marker(lowered, CATALOG_QUERY_MARKERS)
 
 
 def _has_safety_intent(text: str) -> bool:
@@ -1904,6 +2034,20 @@ def _tool_flow_from_execution(
 
         guidance = remaining_guidance.pop(guidance_index)
         timing = guidance.get("timing_ms") if isinstance(guidance.get("timing_ms"), dict) else {}
+        if guidance.get("source") == "mcp_tool_router":
+            flow.append(
+                {
+                    "tool": tool,
+                    "kind": "agent_tool",
+                    "selected_by_agent": True,
+                    "query": guidance.get("query"),
+                    "source": "mcp_tool_router",
+                    "candidate_count": guidance.get("candidate_count", 0),
+                    "returned_hits": int(timing.get("returned_hits", 0)),
+                    "latency_ms": int(timing.get("total_ms", 0)),
+                }
+            )
+            continue
         flow.append(
             {
                 "tool": "document_catalog",
@@ -1937,6 +2081,20 @@ def _tool_flow_from_execution(
         if not tool:
             continue
         timing = guidance.get("timing_ms") if isinstance(guidance.get("timing_ms"), dict) else {}
+        if guidance.get("source") == "mcp_tool_router":
+            flow.append(
+                {
+                    "tool": tool,
+                    "kind": "agent_tool",
+                    "selected_by_agent": True,
+                    "query": guidance.get("query"),
+                    "source": "mcp_tool_router",
+                    "candidate_count": guidance.get("candidate_count", 0),
+                    "returned_hits": int(timing.get("returned_hits", 0)),
+                    "latency_ms": int(timing.get("total_ms", 0)),
+                }
+            )
+            continue
         flow.append(
             {
                 "tool": "document_catalog",
