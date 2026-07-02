@@ -59,6 +59,25 @@ Parameters:
     Type: String
     Default: 10.40.0.0/16
     Description: CIDR allowed to connect to RDS Postgres on 5432 until ECS service security groups are created.
+  SharedMcpAccessEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Attach this healthcare VPC to the shared MCP Transit Gateway and allow shared MCP RDS access.
+  SharedMcpVpcCidr:
+    Type: String
+    Default: 10.80.0.0/16
+    Description: CIDR block of the shared MCP VPC allowed to reach RDS through Transit Gateway.
+  SharedMcpTransitGatewayId:
+    Type: String
+    Default: "tgw-0c1660240f06c0e21"
+    Description: TransitGatewayId output from the shared MCP stack.
+  SharedMcpTransitGatewayRouteTableId:
+    Type: String
+    Default: "tgw-rtb-0816fa0261b316bb5"
+    Description: TransitGatewayRouteTableId output from the shared MCP stack.
   DatabaseName:
     Type: String
     Default: healthcare_agent
@@ -131,6 +150,16 @@ Conditions:
   CreatePublicNetworking: !Or
     - !Condition CreateCicd
     - !Condition CreateDbAdminAccess
+  SharedMcpAccessRequested: !Equals [!Ref SharedMcpAccessEnabled, "true"]
+  HasSharedMcpTransitGatewayId: !Not [!Equals [!Ref SharedMcpTransitGatewayId, ""]]
+  HasSharedMcpTransitGatewayRouteTableId: !Not [!Equals [!Ref SharedMcpTransitGatewayRouteTableId, ""]]
+  CreateSharedMcpAccess: !And
+    - !Condition SharedMcpAccessRequested
+    - !Condition HasSharedMcpTransitGatewayId
+    - !Condition HasSharedMcpTransitGatewayRouteTableId
+  CreateSharedMcpPublicRoute: !And
+    - !Condition CreateSharedMcpAccess
+    - !Condition CreatePublicNetworking
 
 Resources:
   KnowledgeBucket:
@@ -371,6 +400,60 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnetTwo
       RouteTableId: !Ref PublicRouteTable
+
+  SharedMcpTransitGatewayVpcAttachment:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Condition: CreateSharedMcpAccess
+    Properties:
+      SubnetIds:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+      TransitGatewayId: !Ref SharedMcpTransitGatewayId
+      VpcId: !Ref FoundationVpc
+      Options:
+        DnsSupport: enable
+        Ipv6Support: disable
+      Tags:
+        - Key: Name
+          Value: !Sub "${BaseName}-shared-mcp-tgw-attachment"
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  SharedMcpTransitGatewayRouteTableAssociation:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Condition: CreateSharedMcpAccess
+    Properties:
+      TransitGatewayAttachmentId: !Ref SharedMcpTransitGatewayVpcAttachment
+      TransitGatewayRouteTableId: !Ref SharedMcpTransitGatewayRouteTableId
+
+  SharedMcpTransitGatewayRouteTablePropagation:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Condition: CreateSharedMcpAccess
+    Properties:
+      TransitGatewayAttachmentId: !Ref SharedMcpTransitGatewayVpcAttachment
+      TransitGatewayRouteTableId: !Ref SharedMcpTransitGatewayRouteTableId
+
+  PrivateRouteToSharedMcpVpc:
+    Type: AWS::EC2::Route
+    Condition: CreateSharedMcpAccess
+    DependsOn: SharedMcpTransitGatewayVpcAttachment
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: !Ref SharedMcpVpcCidr
+      TransitGatewayId: !Ref SharedMcpTransitGatewayId
+
+  PublicRouteToSharedMcpVpc:
+    Type: AWS::EC2::Route
+    Condition: CreateSharedMcpPublicRoute
+    DependsOn: SharedMcpTransitGatewayVpcAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: !Ref SharedMcpVpcCidr
+      TransitGatewayId: !Ref SharedMcpTransitGatewayId
 
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -1002,6 +1085,17 @@ Resources:
       ToPort: 5432
       SourceSecurityGroupId: !Ref McpSecurityGroup
       Description: !Sub "${BaseName} MCP task access to RDS Postgres"
+
+  DatabaseIngressFromSharedMcpVpc:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateSharedMcpAccess
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      CidrIp: !Ref SharedMcpVpcCidr
+      Description: !Sub "${BaseName} shared MCP VPC access to RDS Postgres"
 
   McpPrivateDnsNamespace:
     Type: AWS::ServiceDiscovery::PrivateDnsNamespace
@@ -1807,6 +1901,9 @@ Outputs:
     Value: !Ref PublicSubnetTwo
   DatabaseSecurityGroupId:
     Value: !Ref DatabaseSecurityGroup
+  SharedMcpTransitGatewayVpcAttachmentId:
+    Condition: CreateSharedMcpAccess
+    Value: !Ref SharedMcpTransitGatewayVpcAttachment
   S3GatewayEndpointId:
     Value: !Ref S3GatewayEndpoint
   DbAdminInstanceId:

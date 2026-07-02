@@ -52,6 +52,22 @@
     "ParameterValue": "10.40.0.0/16"
   },
   {
+    "ParameterKey": "SharedMcpAccessEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "SharedMcpVpcCidr",
+    "ParameterValue": "10.80.0.0/16"
+  },
+  {
+    "ParameterKey": "SharedMcpTransitGatewayId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "SharedMcpTransitGatewayRouteTableId",
+    "ParameterValue": ""
+  },
+  {
     "ParameterKey": "DatabaseName",
     "ParameterValue": "healthcare_agent"
   },
