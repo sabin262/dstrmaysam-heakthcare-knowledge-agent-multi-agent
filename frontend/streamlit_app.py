@@ -749,6 +749,68 @@ def render_admin_users() -> None:
                     st.error(f"Password reset failed: {exc}")
 
 
+def render_admin_settings() -> None:
+    render_page_title("Settings")
+    try:
+        settings = get_json("/admin/settings/tool-execution")
+    except Exception as exc:
+        st.error(f"Unable to load tool execution settings: {exc}")
+        return
+    if not isinstance(settings, dict):
+        st.error("Tool execution settings response was not valid.")
+        return
+
+    st.session_state.tool_execution_settings = dict(settings)
+    mode_options = ["local", "mcp"]
+    current_mode = str(settings.get("tool_execution_mode") or "local").strip().lower()
+    mode_index = mode_options.index(current_mode) if current_mode in mode_options else 0
+
+    with st.form("tool-execution-settings"):
+        mode = st.selectbox("Tool execution mode", mode_options, index=mode_index)
+        mcp_server_url = st.text_input(
+            "MCP server URL",
+            value=str(settings.get("mcp_server_url") or ""),
+            placeholder="http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse",
+        )
+        mcp_project_id = st.text_input(
+            "MCP project ID",
+            value=str(settings.get("mcp_project_id") or "dstrmaysam-healthcare-knowledge-multi-agent"),
+        )
+        timeout = st.number_input(
+            "MCP tool timeout seconds",
+            min_value=1,
+            max_value=300,
+            value=int(settings.get("mcp_tool_timeout_seconds") or 30),
+            step=1,
+        )
+        fallback_to_local = st.toggle(
+            "Fallback to local tools if MCP fails",
+            value=bool(settings.get("mcp_tool_fallback_to_local")),
+        )
+        save = st.form_submit_button("Save settings")
+
+    if save:
+        try:
+            updated = patch_json(
+                "/admin/settings/tool-execution",
+                {
+                    "tool_execution_mode": mode,
+                    "mcp_server_url": mcp_server_url.strip(),
+                    "mcp_project_id": mcp_project_id.strip(),
+                    "mcp_tool_timeout_seconds": int(timeout),
+                    "mcp_tool_fallback_to_local": bool(fallback_to_local),
+                },
+            )
+            st.session_state.tool_execution_settings = dict(updated)
+            st.success("Tool execution settings saved")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Save settings failed: {exc}")
+
+    with st.expander("Current effective values", expanded=True):
+        st.json(st.session_state.get("tool_execution_settings", settings))
+
+
 def count_rows(counts: dict[str, Any], label: str) -> list[dict[str, Any]]:
     return [
         {label: str(name), "Count": int(value)}
@@ -2485,6 +2547,13 @@ def render_users_app_page() -> None:
     render_admin_users()
 
 
+def render_settings_app_page() -> None:
+    with st.sidebar:
+        render_common_sidebar()
+    render_manifest_status_overlay()
+    render_admin_settings()
+
+
 def render_documents_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
@@ -2528,6 +2597,7 @@ elif "admin" in st.session_state.get("roles", []):
                 ),
                 st.Page(render_users_app_page, title="Users", icon=":material/group:"),
                 st.Page(render_documents_app_page, title="Documents", icon=":material/folder:"),
+                st.Page(render_settings_app_page, title="Settings", icon=":material/settings:"),
             ],
         },
         position="sidebar",
