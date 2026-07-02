@@ -3,11 +3,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 
-PROMPT_NAME = "dstrmaysam-healthcare-knowledge-multi-agent-system"
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.app.prompts import LANGFUSE_SYSTEM_PROMPT_NAME, MULTI_AGENT_SYSTEM_PROMPT
+
+
+PROMPT_NAME = LANGFUSE_SYSTEM_PROMPT_NAME
 DEFAULT_LABEL = "dev"
 SYSTEM_PROMPT = """You are the Healthcare Knowledge Multi-Agent Assistant for Riverside General Hospital staff.
 
@@ -50,6 +58,8 @@ Answer style:
 - Do not duplicate the same facts in both table form and prose unless it clarifies a multipart answer.
 - State uncertainty clearly.
 - Do not fabricate policies, dates, owners, approvals, document contents, citations, contacts, or structured data."""
+
+SYSTEM_PROMPT = MULTI_AGENT_SYSTEM_PROMPT
 
 
 def load_dotenv(path: Path) -> None:

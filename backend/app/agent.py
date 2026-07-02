@@ -22,6 +22,7 @@ from .healthcare import (
 from .healthcare_tools import build_healthcare_agent_tools
 from .history import ChatHistoryRepository, ChatMessage, build_history_context
 from .observability import ObservabilityClient
+from .prompts import SYNTHESIS_SYSTEM_PROMPT
 from .ragas_scoring import compute_live_ragas_scores
 from .retrieval import RetrievalHit, RetrievalService
 from .secrets import SecretProvider
@@ -3635,7 +3636,7 @@ class KnowledgeAgent:
         llm_started = time.perf_counter()
         response = self._invoke_model(
             llm,
-            [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+            [_make_system_message(SYNTHESIS_SYSTEM_PROMPT), _make_human_message(answer_prompt)],
             config,
         )
         performance: dict[str, Any] = {
@@ -3694,7 +3695,7 @@ class KnowledgeAgent:
         llm_started = time.perf_counter()
         response = self._invoke_model(
             llm,
-            [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+            [_make_system_message(SYNTHESIS_SYSTEM_PROMPT), _make_human_message(answer_prompt)],
             config,
         )
         performance: dict[str, Any] = {
@@ -4301,7 +4302,7 @@ class KnowledgeAgent:
                 llm_started = time.perf_counter()
                 response = self._invoke_model(
                     llm,
-                    [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+                    [_make_system_message(SYNTHESIS_SYSTEM_PROMPT), _make_human_message(answer_prompt)],
                     config,
                 )
                 synthesis_ms = _elapsed_ms(llm_started)
@@ -4520,7 +4521,10 @@ class KnowledgeAgent:
             )
         )
         llm_started = time.perf_counter()
-        response = self._invoke_model(llm, messages, config)
+        final_messages = list(messages)
+        if final_messages:
+            final_messages[0] = _make_system_message(SYNTHESIS_SYSTEM_PROMPT)
+        response = self._invoke_model(llm, final_messages, config)
         synthesis_ms = _elapsed_ms(llm_started)
         _add_timing(performance, "llm_final_ms", synthesis_ms)
         performance["llm_call_count"] = int(performance["llm_call_count"]) + 1
