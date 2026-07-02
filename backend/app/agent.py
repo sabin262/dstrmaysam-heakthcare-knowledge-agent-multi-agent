@@ -50,6 +50,8 @@ HEALTHCARE_TOOL_NAMES = [
     "safety_guard",
 ]
 RETRIEVAL_SOURCE_TOOLS = {"rag_search", "document_search", "policy_search"}
+CATALOG_ROUTE_TOOLS = {"document_catalog", "catalogue_search"}
+TOOL_NAME_ALIASES = {"document_catalog": "catalogue_search"}
 DETERMINISTIC_ROUTE_TOOLS = {
     "calendar_rota_lookup",
     "formulary_table_lookup",
@@ -1514,6 +1516,133 @@ def _expandable_all_rows(row_payloads: list[dict[str, Any]], *, summary: str = "
     )
 
 
+def _catalog_documents_from_payload(payload: Any) -> tuple[list[dict[str, Any]], int, int]:
+    if isinstance(payload, list):
+        documents = [dict(item) for item in payload if isinstance(item, dict)]
+        return documents, len(documents), len(documents)
+    if not isinstance(payload, dict):
+        return [], 0, 0
+    raw_documents = payload.get("documents")
+    if raw_documents is None:
+        raw_documents = payload.get("results")
+    documents = [dict(item) for item in raw_documents or [] if isinstance(item, dict)]
+    total = int(payload.get("total_matches") or len(documents))
+    returned = int(payload.get("returned_count") or len(documents))
+    return documents, total, returned
+
+
+def _catalog_doc_metadata(doc: dict[str, Any]) -> dict[str, Any]:
+    metadata = doc.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _catalog_doc_title(doc: dict[str, Any], index: int) -> str:
+    return str(doc.get("title") or doc.get("filename") or doc.get("key") or f"Document {index}").strip()
+
+
+def _catalog_doc_detail_parts(doc: dict[str, Any]) -> list[str]:
+    metadata = _catalog_doc_metadata(doc)
+    parts: list[str] = []
+    for key, label in [
+        ("domain", "Domain"),
+        ("document_type", "Type"),
+        ("category", "Category"),
+        ("source_table", "Table"),
+        ("ingestion_status", "Status"),
+    ]:
+        value = metadata.get(key) if key in metadata else doc.get(key)
+        if value not in (None, "", [], {}):
+            parts.append(f"{label}: {_detail_value(key, value)}")
+    uri = str(doc.get("uri") or "").strip()
+    if uri:
+        parts.append(f"URI: {uri}")
+    return parts
+
+
+def _catalog_doc_block(doc: dict[str, Any], index: int) -> str:
+    title = html.escape(_catalog_doc_title(doc, index), quote=False)
+    details = _catalog_doc_detail_parts(doc)
+    if not details:
+        return f'<div style="margin:0.75rem 0;"><strong>{index}. {title}</strong></div>'
+    items = "".join(
+        f"<li>{html.escape(part, quote=False)}</li>"
+        for part in details
+    )
+    return (
+        '<div style="margin:0.75rem 0;">'
+        f"<strong>{index}. {title}</strong>"
+        f"<ul>{items}</ul>"
+        "</div>"
+    )
+
+
+def _format_catalog_documents(query: str, documents: list[dict[str, Any]], total: int, returned: int) -> str:
+    if not documents:
+        return "No matching documents were found in the catalog."
+
+    visible = documents[:DETERMINISTIC_INLINE_ROW_LIMIT]
+    lines = [f"Found {total} matching document(s) in the catalog."]
+    if returned < total:
+        lines.append(f"Showing the first {returned} returned document(s).")
+    lines.append("")
+    for index, doc in enumerate(visible, start=1):
+        title = _catalog_doc_title(doc, index)
+        detail_parts = [
+            part
+            for part in _catalog_doc_detail_parts(doc)
+            if not part.startswith("URI:")
+        ]
+        detail_text = f" ({'; '.join(detail_parts)})" if detail_parts else ""
+        lines.append(f"{index}. {title}{detail_text}")
+
+    if len(documents) <= DETERMINISTIC_INLINE_ROW_LIMIT:
+        return "\n".join(lines)
+
+    blocks = "\n".join(_catalog_doc_block(doc, index) for index, doc in enumerate(documents, start=1))
+    return (
+        "\n".join(lines)
+        + "\n\n"
+        + "<details>\n"
+        + f"<summary>Show all matching documents ({len(documents)} documents)</summary>\n"
+        + blocks
+        + "\n</details>"
+    )
+
+
+def _format_catalog_tool_outputs(query: str, tool_outputs: list[str]) -> str:
+    documents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total = 0
+    returned = 0
+    for output in tool_outputs:
+        output_text = str(output or "")
+        prefix = next(
+            (
+                f"{tool_name} results:"
+                for tool_name in CATALOG_ROUTE_TOOLS
+                if output_text.startswith(f"{tool_name} results:")
+            ),
+            "",
+        )
+        if not prefix:
+            continue
+        payload_text = output_text.split(prefix, 1)[-1].strip()
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            continue
+        payload_documents, payload_total, payload_returned = _catalog_documents_from_payload(payload)
+        total = max(total, payload_total)
+        returned = max(returned, payload_returned)
+        for doc in payload_documents:
+            key = str(doc.get("uri") or doc.get("key") or doc.get("title") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            documents.append(doc)
+    return _format_catalog_documents(query, documents, total or len(documents), returned or len(documents))
+
+
 def _unique_payloads_by_list_name(row_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     unique: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2111,7 +2240,13 @@ def _tool_flow_from_execution(
     return flow
 
 
+def _canonical_tool_name(tool_name: str) -> str:
+    normalized = str(tool_name or "").strip()
+    return TOOL_NAME_ALIASES.get(normalized, normalized)
+
+
 def _agent_name_for_tool(tool_name: str) -> str:
+    tool_name = _canonical_tool_name(tool_name)
     if tool_name in {"postgres_deterministic_lookup", "table_lookup", "formulary_table_lookup", "calendar_rota_lookup"}:
         return "DeterministicLookupAgent"
     if tool_name in {"rag_search", "document_search"}:
@@ -3699,6 +3834,7 @@ class KnowledgeAgent:
             query: str,
             reason: str,
         ) -> dict[str, Any]:
+            tool_name = _canonical_tool_name(tool_name)
             agent_name = _agent_name_for_tool(tool_name)
             decision = {
                 "agent": "SupervisorAgent",
@@ -3779,8 +3915,8 @@ class KnowledgeAgent:
             return [*normalized_routes, *guard_routes]
 
         def route_matches_planned(existing: dict[str, str], planned: dict[str, str]) -> bool:
-            existing_tool = str(existing.get("tool") or "")
-            planned_tool = str(planned.get("tool") or "")
+            existing_tool = _canonical_tool_name(str(existing.get("tool") or ""))
+            planned_tool = _canonical_tool_name(str(planned.get("tool") or ""))
             if existing_tool != planned_tool and not (
                 existing_tool in DETERMINISTIC_ROUTE_TOOLS and planned_tool in DETERMINISTIC_ROUTE_TOOLS
             ):
@@ -3987,7 +4123,7 @@ class KnowledgeAgent:
             if tool_calls:
                 routes: list[dict[str, str]] = []
                 for tool_call in tool_calls:
-                    tool_name = _tool_call_name(tool_call)
+                    tool_name = _canonical_tool_name(_tool_call_name(tool_call))
                     routes.append(
                         {
                             "tool": tool_name,
@@ -4143,6 +4279,7 @@ class KnowledgeAgent:
                     non_deterministic_outputs.append(output_text)
 
             deterministic_only = bool(tools_used) and all(tool in DETERMINISTIC_ROUTE_TOOLS for tool in tools_used)
+            catalog_only = bool(tools_used) and all(_canonical_tool_name(tool) == "catalogue_search" for tool in tools_used)
             if direct_answer and not tool_context:
                 answer = direct_answer
                 synthesis_status = "direct_answer"
@@ -4153,6 +4290,10 @@ class KnowledgeAgent:
                     tool_context=tool_context,
                 )
                 synthesis_status = "deterministic_structured_answer"
+                synthesis_ms = _elapsed_ms(started)
+            elif catalog_only:
+                answer = _format_catalog_tool_outputs(original_query, tool_outputs)
+                synthesis_status = "catalog_structured_answer"
                 synthesis_ms = _elapsed_ms(started)
             else:
                 policy_context = "\n\n".join(non_deterministic_outputs)
@@ -4331,7 +4472,7 @@ class KnowledgeAgent:
                 )
             _add_timing(performance, "llm_tool_choice_ms", llm_ms)
             for tool_call in tool_calls:
-                name = _tool_call_name(tool_call)
+                name = _canonical_tool_name(_tool_call_name(tool_call))
                 query = _tool_query(_tool_call_args(tool_call), original_query)
                 tool_call_id = _tool_call_id(tool_call)
                 agent_name = _agent_name_for_tool(name)
