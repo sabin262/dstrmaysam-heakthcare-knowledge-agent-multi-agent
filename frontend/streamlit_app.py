@@ -2242,25 +2242,160 @@ def submit_chat_query(query: str) -> None:
     st.session_state.messages.append({"role": "assistant", "content": data["answer"]})
 
 
-def chat_progress_messages(query: str) -> list[str]:
+def _query_has_any(query: str, markers: list[str]) -> bool:
     lowered = query.lower()
-    messages = ["Supervisor is reading the question and splitting any sub-questions."]
-    planned: list[str] = []
-    if any(marker in lowered for marker in ["on call", "on-call", "oncall", "rota", "shift", "appointment", "patient", "ward", "equipment", "ventilator", "medicine", "drug", "formulary"]):
-        planned.append("DeterministicLookupAgent is checking Postgres/CSV rows for exact operational facts.")
-    if any(marker in lowered for marker in ["policy", "sop", "guideline", "pathway", "retention", "stored", "records management", "privacy", "governance", "confidentiality"]):
-        planned.append("PolicyAgent is searching indexed policy and governance chunks.")
-    if any(marker in lowered for marker in ["document", "catalog", "catalogue", "uploaded", "indexed"]):
-        planned.append("CatalogAgent is checking the document inventory and metadata.")
-    if any(marker in lowered for marker in ["urgent", "quick", "emergency", "unsafe", "escalate", "risk"]):
-        planned.append("SafetyAgent is checking whether escalation guidance is needed.")
+    return any(marker in lowered for marker in markers)
+
+
+def chat_progress_steps(query: str) -> list[dict[str, str]]:
+    lowered = query.lower()
+    is_multipart = bool(re.search(r"\b(and|also|plus)\b|[?].+\S", lowered))
+    steps: list[dict[str, str]] = [
+        {
+            "label": "Read and route the request",
+            "agent": "SupervisorAgent",
+            "tool": "supervisor",
+            "detail": (
+                "Checking intent and splitting the question into parts so each part can use the right specialist."
+                if is_multipart
+                else "Checking intent so the request can use the right specialist."
+            ),
+        }
+    ]
+
+    planned = False
+    if _query_has_any(
+        lowered,
+        [
+            "on call",
+            "on-call",
+            "oncall",
+            "rota",
+            "shift",
+            "appointment",
+            "patient",
+            "ward",
+            "equipment",
+            "ventilator",
+            "defibrillator",
+            "asset",
+            "device",
+            "medicine",
+            "drug",
+            "formulary",
+            "contact",
+            "doctor",
+            "department",
+            "finance",
+            "training",
+        ],
+    ):
+        steps.append(
+            {
+                "label": "Check operational tables",
+                "agent": "DeterministicLookupAgent",
+                "tool": "postgres_deterministic_lookup",
+                "detail": "Looking up exact facts in Postgres tables such as rota, patients, appointments, contacts, equipment, and formulary.",
+            }
+        )
+        planned = True
+
+    catalog_intent = (
+        _query_has_any(lowered, ["catalog", "catalogue", "uploaded", "indexed", "document list", "available documents"])
+        or (
+            "document" in lowered
+            and _query_has_any(lowered, ["which", "list", "do we have", "we have", "available"])
+        )
+    )
+    policy_content_intent = (
+        not catalog_intent
+        or _query_has_any(
+            lowered,
+            ["what does", "how", "explain", "summar", "procedure", "apply", "handle", "report", "stored", "retention"],
+        )
+    )
+
+    if policy_content_intent and _query_has_any(
+        lowered,
+        [
+            "policy",
+            "policies",
+            "sop",
+            "guideline",
+            "guidelines",
+            "pathway",
+            "retention",
+            "stored",
+            "records management",
+            "privacy",
+            "governance",
+            "confidentiality",
+            "research",
+            "incident",
+            "compliance",
+        ],
+    ):
+        steps.append(
+            {
+                "label": "Search policy evidence",
+                "agent": "PolicyAgent",
+                "tool": "policy_search",
+                "detail": "Searching indexed policy, SOP, guideline, governance, and compliance evidence for a supported answer.",
+            }
+        )
+        planned = True
+
+    if catalog_intent:
+        steps.append(
+            {
+                "label": "Check document catalog",
+                "agent": "CatalogAgent",
+                "tool": "catalogue_search",
+                "detail": "Checking available document and table metadata so inventory questions return the right assets.",
+            }
+        )
+        planned = True
+
+    if _query_has_any(lowered, ["urgent", "quick", "emergency", "unsafe", "escalate", "risk", "safeguarding", "safety"]):
+        steps.append(
+            {
+                "label": "Review safety context",
+                "agent": "SafetyAgent",
+                "tool": "safety_guard",
+                "detail": "Checking whether the answer should include escalation or safety guidance.",
+            }
+        )
+        planned = True
+
     if not planned:
-        planned.append("RAGAgent is searching indexed knowledge chunks for relevant context.")
-    messages.extend(planned)
-    if any("PolicyAgent" in item for item in planned):
-        messages.append("If focused policy search has no matching chunks, the graph will try a broader document search before final synthesis.")
-    messages.append("SynthesisAgent is combining specialist evidence into the final answer.")
-    return messages
+        steps.append(
+            {
+                "label": "Search indexed knowledge",
+                "agent": "RAGAgent",
+                "tool": "rag_search",
+                "detail": "Searching indexed document chunks for relevant context.",
+            }
+        )
+
+    if any(step["agent"] == "PolicyAgent" for step in steps):
+        steps.append(
+            {
+                "label": "Broaden search if needed",
+                "agent": "RAGAgent",
+                "tool": "rag_search",
+                "detail": "If focused policy evidence is thin, broader document retrieval may add supporting context.",
+            }
+        )
+
+    steps.append(
+        {
+            "label": "Prepare final response",
+            "agent": "SynthesisAgent",
+            "tool": "synthesis",
+            "detail": "Combining the specialist evidence into a concise answer with sources where available.",
+        }
+    )
+    return steps
 
 
 def _chat_request_worker(
@@ -2284,7 +2419,8 @@ def _chat_request_worker(
 
 def render_chat_progress(
     progress_placeholder: Any,
-    message: str,
+    steps: list[dict[str, str]],
+    active_index: int,
     *,
     label: str = "Working on your question...",
     state: str = "running",
@@ -2292,7 +2428,18 @@ def render_chat_progress(
     with progress_placeholder.container():
         with st.chat_message("assistant"):
             with st.status(label, expanded=True, state=state):
-                st.write(message)
+                st.markdown("**What is being done**")
+                for index, step in enumerate(steps):
+                    if index < active_index:
+                        status_label = "Done"
+                    elif index == active_index:
+                        status_label = "In progress"
+                    else:
+                        status_label = "Queued"
+                    st.markdown(
+                        f"**{status_label}: {step['label']}**  \n"
+                        f"{step['agent']} / {step['tool']} - {step['detail']}"
+                    )
     scroll_chat_to_latest()
 
 
@@ -2307,17 +2454,18 @@ def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> No
     worker.start()
 
     step_index = 0
-    progress_messages = chat_progress_messages(query)
-    render_chat_progress(progress_placeholder, progress_messages[step_index])
+    progress_steps = chat_progress_steps(query)
+    render_chat_progress(progress_placeholder, progress_steps, step_index)
     while worker.is_alive():
         worker.join(timeout=0.75)
         if not worker.is_alive():
             break
-        step_index = min(step_index + 1, len(progress_messages) - 1)
-        render_chat_progress(progress_placeholder, progress_messages[step_index])
+        step_index = min(step_index + 1, len(progress_steps) - 1)
+        render_chat_progress(progress_placeholder, progress_steps, step_index)
     render_chat_progress(
         progress_placeholder,
-        "Answer ready.",
+        progress_steps,
+        len(progress_steps),
         label="Answer ready.",
         state="complete",
     )
@@ -2326,6 +2474,7 @@ def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> No
     if state == "error":
         progress_placeholder.empty()
         raise payload
+    progress_placeholder.empty()
     st.session_state.session_id = payload["session_id"]
     st.session_state.messages.append({"role": "assistant", "content": payload["answer"]})
 
