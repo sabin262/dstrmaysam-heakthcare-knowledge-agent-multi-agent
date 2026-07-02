@@ -3,11 +3,38 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar, Token
 from typing import Any
 
 from .config import AppSettings
 from .healthcare import HealthcareUserContext
+
+
+_TOOL_EXECUTION_RECORDS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "tool_execution_records",
+    default=None,
+)
+
+
+def begin_tool_execution_capture() -> Token[list[dict[str, Any]] | None]:
+    return _TOOL_EXECUTION_RECORDS.set([])
+
+
+def end_tool_execution_capture(token: Token[list[dict[str, Any]] | None]) -> None:
+    _TOOL_EXECUTION_RECORDS.reset(token)
+
+
+def current_tool_execution_records() -> list[dict[str, Any]]:
+    records = _TOOL_EXECUTION_RECORDS.get()
+    return [dict(record) for record in records] if records is not None else []
+
+
+def record_tool_execution(record: dict[str, Any]) -> None:
+    records = _TOOL_EXECUTION_RECORDS.get()
+    if records is not None:
+        records.append(dict(record))
 
 
 def _run_async(coro):
@@ -103,8 +130,34 @@ class ToolExecutionRouter:
         *,
         extra_payload: dict[str, Any] | None = None,
     ) -> str:
+        started = time.perf_counter()
         if not self._mcp_enabled():
-            return local_run(query)
+            try:
+                result = local_run(query)
+                record_tool_execution(
+                    {
+                        "tool": tool_name,
+                        "query": query,
+                        "configured_mode": str(getattr(self.settings, "tool_execution_mode", "local") or "local"),
+                        "actual_location": "Backend local tools",
+                        "status": "local_only",
+                        "latency_ms": int((time.perf_counter() - started) * 1000),
+                    }
+                )
+                return result
+            except Exception as exc:
+                record_tool_execution(
+                    {
+                        "tool": tool_name,
+                        "query": query,
+                        "configured_mode": str(getattr(self.settings, "tool_execution_mode", "local") or "local"),
+                        "actual_location": "Backend local tools",
+                        "status": "local_failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "latency_ms": int((time.perf_counter() - started) * 1000),
+                    }
+                )
+                raise
 
         payload = {
             "query": query,
@@ -113,10 +166,73 @@ class ToolExecutionRouter:
         }
         try:
             assert self._client is not None
-            return self._client.call_project_tool(tool_name, payload)
+            result = self._client.call_project_tool(tool_name, payload)
+            record_tool_execution(
+                {
+                    "tool": tool_name,
+                    "query": query,
+                    "configured_mode": "mcp",
+                    "actual_location": "MCP server",
+                    "status": "mcp_success",
+                    "mcp_server_url": self.settings.mcp_server_url if self.settings else "",
+                    "mcp_project_id": self.settings.mcp_project_id if self.settings else "",
+                    "fallback_to_local_enabled": bool(
+                        self.settings and self.settings.mcp_tool_fallback_to_local
+                    ),
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                }
+            )
+            return result
         except Exception as exc:
             if self.settings and self.settings.mcp_tool_fallback_to_local:
-                return local_run(query)
+                try:
+                    result = local_run(query)
+                    record_tool_execution(
+                        {
+                            "tool": tool_name,
+                            "query": query,
+                            "configured_mode": "mcp",
+                            "actual_location": "Backend local tools",
+                            "status": "mcp_failed_local_fallback",
+                            "mcp_server_url": self.settings.mcp_server_url,
+                            "mcp_project_id": self.settings.mcp_project_id,
+                            "fallback_to_local_enabled": True,
+                            "mcp_error": f"{type(exc).__name__}: {exc}",
+                            "latency_ms": int((time.perf_counter() - started) * 1000),
+                        }
+                    )
+                    return result
+                except Exception as local_exc:
+                    record_tool_execution(
+                        {
+                            "tool": tool_name,
+                            "query": query,
+                            "configured_mode": "mcp",
+                            "actual_location": "Backend local tools",
+                            "status": "mcp_failed_local_fallback_failed",
+                            "mcp_server_url": self.settings.mcp_server_url,
+                            "mcp_project_id": self.settings.mcp_project_id,
+                            "fallback_to_local_enabled": True,
+                            "mcp_error": f"{type(exc).__name__}: {exc}",
+                            "local_error": f"{type(local_exc).__name__}: {local_exc}",
+                            "latency_ms": int((time.perf_counter() - started) * 1000),
+                        }
+                    )
+                    raise
+            record_tool_execution(
+                {
+                    "tool": tool_name,
+                    "query": query,
+                    "configured_mode": "mcp",
+                    "actual_location": "MCP server",
+                    "status": "mcp_failed_no_fallback",
+                    "mcp_server_url": self.settings.mcp_server_url if self.settings else "",
+                    "mcp_project_id": self.settings.mcp_project_id if self.settings else "",
+                    "fallback_to_local_enabled": False,
+                    "mcp_error": f"{type(exc).__name__}: {exc}",
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                }
+            )
             return f"Tool {tool_name} failed via MCP: {type(exc).__name__}: {exc}"
 
     def _mcp_enabled(self) -> bool:

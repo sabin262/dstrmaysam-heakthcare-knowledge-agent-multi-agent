@@ -26,6 +26,12 @@ from .ragas_scoring import compute_live_ragas_scores
 from .retrieval import RetrievalHit, RetrievalService
 from .secrets import SecretProvider
 from .storage import DocumentStore
+from .tool_execution import (
+    begin_tool_execution_capture,
+    current_tool_execution_records,
+    end_tool_execution_capture,
+    record_tool_execution,
+)
 from .tools import (
     AgentTool,
     build_agent_tools,
@@ -434,6 +440,20 @@ def _tool_timing_totals(tool_timings: list[dict[str, Any]]) -> dict[str, int]:
             except Exception:
                 pass
     return totals
+
+
+def _tool_execution_location_summary(records: list[dict[str, Any]], configured_mode: str) -> str:
+    if not records:
+        return "MCP server" if configured_mode == "mcp" else "Backend local tools" if configured_mode else "Unknown"
+    statuses = {str(record.get("status") or "") for record in records}
+    locations = {str(record.get("actual_location") or "") for record in records if record.get("actual_location")}
+    if any(status in statuses for status in {"mcp_failed_local_fallback", "mcp_failed_local_fallback_failed"}):
+        return "Mixed: MCP attempted with local fallback"
+    if len(locations) == 1:
+        return next(iter(locations))
+    if locations:
+        return "Mixed: " + ", ".join(sorted(locations))
+    return "Unknown"
 
 
 def _raw_timing_metrics(performance: dict[str, Any]) -> dict[str, int]:
@@ -1795,6 +1815,50 @@ def _source_dicts_from_hits(hits: list[RetrievalHit]) -> list[dict[str, Any]]:
     ]
 
 
+def _source_dicts_from_retrieval_text(output: str) -> list[dict[str, Any]]:
+    if not output or "No relevant document chunks found." in output:
+        return []
+    pattern = re.compile(
+        r"(?ms)^\[(?P<index>\d+)\]\s+"
+        r"(?P<title>.+?)\s+"
+        r"\((?P<uri>.+?)(?:,\s*score=(?P<score>[^)]+))?\)"
+        r"(?:\nMetadata:\s*(?P<metadata>\{.*?\}))?"
+        r"\n(?P<snippet>.*?)(?=^\[\d+\]\s|\Z)"
+    )
+    sources: list[dict[str, Any]] = []
+    for match in pattern.finditer(output):
+        uri = match.group("uri").strip()
+        title = match.group("title").strip()
+        if not uri or not title:
+            continue
+        score_text = (match.group("score") or "").strip()
+        score = None
+        if score_text and score_text.lower() != "none":
+            try:
+                score = float(score_text)
+            except ValueError:
+                score = None
+        metadata: dict[str, Any] = {}
+        metadata_text = (match.group("metadata") or "").strip()
+        if metadata_text:
+            try:
+                parsed = json.loads(metadata_text)
+                if isinstance(parsed, dict):
+                    metadata = parsed
+            except json.JSONDecodeError:
+                metadata = {}
+        sources.append(
+            {
+                "title": title,
+                "uri": uri,
+                "score": score,
+                "metadata": metadata,
+                "snippet": (match.group("snippet") or "").strip()[:1200] or None,
+            }
+        )
+    return _dedupe_sources(sources)
+
+
 def _access_scope_key(user_context: HealthcareUserContext) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return (tuple(sorted(user_context.roles)), tuple(sorted(user_context.departments)))
 
@@ -2263,6 +2327,7 @@ class KnowledgeAgent:
                 settings=runtime_settings,
             )
             original_tools = self.tools
+            tool_execution_capture_token = begin_tool_execution_capture()
             try:
                 self.tools = original_tools + healthcare_tools
                 prompt_started = time.perf_counter()
@@ -2297,6 +2362,13 @@ class KnowledgeAgent:
                     performance.get("agent_latencies_ms") or agent_metadata["agent_latencies_ms"]
                 )
                 agent_errors = list(performance.get("agent_errors") or agent_metadata["agent_errors"])
+                tool_execution_records = current_tool_execution_records()
+                tool_execution_location = _tool_execution_location_summary(
+                    tool_execution_records,
+                    str(runtime_settings.tool_execution_mode or ""),
+                )
+                performance["tool_execution_records"] = tool_execution_records
+                performance["tool_execution_location_actual"] = tool_execution_location
                 answer = self._apply_llm_response_guardrail(
                     query=safe_query,
                     answer=answer,
@@ -2316,9 +2388,8 @@ class KnowledgeAgent:
                     "model": runtime_settings.azure_openai_deployment or "unknown",
                     "prompt_label": runtime_settings.prompt_label,
                     "tool_execution_mode": runtime_settings.tool_execution_mode,
-                    "tool_execution_location": (
-                        "MCP server" if runtime_settings.tool_execution_mode == "mcp" else "Backend local tools"
-                    ),
+                    "tool_execution_location": tool_execution_location,
+                    "tool_execution_records": tool_execution_records,
                     "mcp_server_url": runtime_settings.mcp_server_url if runtime_settings.tool_execution_mode == "mcp" else "",
                     "mcp_project_id": runtime_settings.mcp_project_id if runtime_settings.tool_execution_mode == "mcp" else "",
                     "tools_used": tools_used,
@@ -2382,6 +2453,7 @@ class KnowledgeAgent:
                         "prompt_label": runtime_settings.prompt_label,
                         "tool_execution_mode": trace_metadata["tool_execution_mode"],
                         "tool_execution_location": trace_metadata["tool_execution_location"],
+                        "tool_execution_records": trace_metadata["tool_execution_records"],
                         "mcp_server_url": trace_metadata["mcp_server_url"],
                         "mcp_project_id": trace_metadata["mcp_project_id"],
                         "chat_execution_mode": execution_mode,
@@ -2465,6 +2537,7 @@ class KnowledgeAgent:
                     session_id=session_id,
                 )
             finally:
+                end_tool_execution_capture(tool_execution_capture_token)
                 self.tools = original_tools
 
         return AgentResult(
@@ -2844,7 +2917,44 @@ class KnowledgeAgent:
         self, name: str, query: str, user_context: HealthcareUserContext
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
         if name in RETRIEVAL_SOURCE_TOOLS:
+            if str(self.settings.tool_execution_mode or "local").strip().lower() == "mcp":
+                output = self._run_tool(name, query)
+                sources = _source_dicts_from_retrieval_text(output)
+                guidance = {
+                    "tool": name,
+                    "query": query,
+                    "candidate_keys": [],
+                    "candidate_count": 0,
+                    "catalog_filter_applied": False,
+                    "fallback_to_broad_search": True,
+                    "timing_ms": {
+                        "catalog_ms": 0,
+                        "retrieval_search_ms": 0,
+                        "returned_hits": len(sources),
+                        "total_ms": 0,
+                    },
+                    "source": "mcp_tool_router",
+                }
+                return output, sources, [guidance]
+            started = time.perf_counter()
             hits, guidance = self._retrieval_hits_for_tool(name, query, user_context)
+            record_tool_execution(
+                {
+                    "tool": name,
+                    "query": query,
+                    "configured_mode": str(self.settings.tool_execution_mode or "local"),
+                    "actual_location": "Backend local retrieval",
+                    "status": "backend_direct_retrieval",
+                    "reason": "graph_retrieval_path_bypasses_tool_router",
+                    "mcp_server_url": self.settings.mcp_server_url
+                    if str(self.settings.tool_execution_mode or "").lower() == "mcp"
+                    else "",
+                    "mcp_project_id": self.settings.mcp_project_id
+                    if str(self.settings.tool_execution_mode or "").lower() == "mcp"
+                    else "",
+                    "latency_ms": _elapsed_ms(started),
+                }
+            )
             return self._format_retrieval_hits(hits), _source_dicts_from_hits(hits), [guidance]
         return self._run_tool(name, query), [], []
 

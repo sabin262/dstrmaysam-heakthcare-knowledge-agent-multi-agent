@@ -1177,6 +1177,13 @@ def admin_dashboard(
         )
         mcp_server_url = str(metadata.get("mcp_server_url") or performance.get("mcp_server_url") or "")
         mcp_project_id = str(metadata.get("mcp_project_id") or performance.get("mcp_project_id") or "")
+        tool_execution_records = (
+            metadata.get("tool_execution_records")
+            if isinstance(metadata.get("tool_execution_records"), list)
+            else performance.get("tool_execution_records")
+            if isinstance(performance.get("tool_execution_records"), list)
+            else []
+        )
         latency_ms = int(metadata.get("latency_ms") or performance.get("total_ms") or 0)
         latency_breakdown = _dashboard_latency_breakdown(metadata, performance, latency_ms)
         input_token_count = int(metadata.get("input_tokens") or 0)
@@ -1237,6 +1244,7 @@ def admin_dashboard(
                 "chat_execution_mode_label": chat_execution_mode_label,
                 "tool_execution_mode": tool_execution_mode,
                 "tool_execution_location": tool_execution_location,
+                "tool_execution_records": tool_execution_records,
                 "mcp_server_url": mcp_server_url,
                 "mcp_project_id": mcp_project_id,
                 "source_count": len(sources),

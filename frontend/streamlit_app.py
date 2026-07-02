@@ -1236,6 +1236,30 @@ def render_query_detail(item: dict[str, Any]) -> None:
         if mcp_target:
             tool_location_detail = f"{tool_location_detail} - {mcp_target}"
     st.caption(f"Tool execution: {tool_location_detail}")
+    tool_execution_records = (
+        item.get("tool_execution_records")
+        if isinstance(item.get("tool_execution_records"), list)
+        else []
+    )
+    if tool_execution_records:
+        execution_rows = []
+        for record in tool_execution_records:
+            if not isinstance(record, dict):
+                continue
+            execution_rows.append(
+                {
+                    "tool": record.get("tool", ""),
+                    "status": record.get("status", ""),
+                    "actual location": record.get("actual_location", ""),
+                    "configured mode": record.get("configured_mode", ""),
+                    "latency ms": record.get("latency_ms", 0),
+                    "mcp error": record.get("mcp_error", ""),
+                    "reason": record.get("reason", ""),
+                }
+            )
+        if execution_rows:
+            st.markdown("**Tool execution records**")
+            st.dataframe(execution_rows, hide_index=True, use_container_width=True)
     st.caption(f"Agents: {item.get('agent_flow_summary') or ', '.join(item.get('agents_used') or []) or 'unavailable'}")
     if display_supervisor_decisions:
         st.markdown("**Supervisor decisions**")
