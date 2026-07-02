@@ -22,6 +22,7 @@ from .healthcare import (
 from .healthcare_tools import build_healthcare_agent_tools
 from .history import ChatHistoryRepository, ChatMessage, build_history_context
 from .observability import ObservabilityClient
+from .prompts import SYNTHESIS_SYSTEM_PROMPT
 from .ragas_scoring import compute_live_ragas_scores
 from .retrieval import RetrievalHit, RetrievalService
 from .secrets import SecretProvider
@@ -2163,14 +2164,14 @@ def _tool_flow_from_execution(
 
         guidance = remaining_guidance.pop(guidance_index)
         timing = guidance.get("timing_ms") if isinstance(guidance.get("timing_ms"), dict) else {}
-        if guidance.get("source") == "mcp_tool_router":
+        if guidance.get("source") in {"mcp_tool_router", "tool_router"}:
             flow.append(
                 {
                     "tool": tool,
                     "kind": "agent_tool",
                     "selected_by_agent": True,
                     "query": guidance.get("query"),
-                    "source": "mcp_tool_router",
+                    "source": guidance.get("source"),
                     "candidate_count": guidance.get("candidate_count", 0),
                     "returned_hits": int(timing.get("returned_hits", 0)),
                     "latency_ms": int(timing.get("total_ms", 0)),
@@ -2210,14 +2211,14 @@ def _tool_flow_from_execution(
         if not tool:
             continue
         timing = guidance.get("timing_ms") if isinstance(guidance.get("timing_ms"), dict) else {}
-        if guidance.get("source") == "mcp_tool_router":
+        if guidance.get("source") in {"mcp_tool_router", "tool_router"}:
             flow.append(
                 {
                     "tool": tool,
                     "kind": "agent_tool",
                     "selected_by_agent": True,
                     "query": guidance.get("query"),
-                    "source": "mcp_tool_router",
+                    "source": guidance.get("source"),
                     "candidate_count": guidance.get("candidate_count", 0),
                     "returned_hits": int(timing.get("returned_hits", 0)),
                     "latency_ms": int(timing.get("total_ms", 0)),
@@ -3210,45 +3211,25 @@ class KnowledgeAgent:
         self, name: str, query: str, user_context: HealthcareUserContext
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
         if name in RETRIEVAL_SOURCE_TOOLS:
-            if str(self.settings.tool_execution_mode or "local").strip().lower() == "mcp":
-                output = self._run_tool(name, query)
-                sources = _source_dicts_from_retrieval_text(output)
-                guidance = {
-                    "tool": name,
-                    "query": query,
-                    "candidate_keys": [],
-                    "candidate_count": 0,
-                    "catalog_filter_applied": False,
-                    "fallback_to_broad_search": True,
-                    "timing_ms": {
-                        "catalog_ms": 0,
-                        "retrieval_search_ms": 0,
-                        "returned_hits": len(sources),
-                        "total_ms": 0,
-                    },
-                    "source": "mcp_tool_router",
-                }
-                return output, sources, [guidance]
             started = time.perf_counter()
-            hits, guidance = self._retrieval_hits_for_tool(name, query, user_context)
-            record_tool_execution(
-                {
-                    "tool": name,
-                    "query": query,
-                    "configured_mode": str(self.settings.tool_execution_mode or "local"),
-                    "actual_location": "Backend local retrieval",
-                    "status": "backend_direct_retrieval",
-                    "reason": "graph_retrieval_path_bypasses_tool_router",
-                    "mcp_server_url": self.settings.mcp_server_url
-                    if str(self.settings.tool_execution_mode or "").lower() == "mcp"
-                    else "",
-                    "mcp_project_id": self.settings.mcp_project_id
-                    if str(self.settings.tool_execution_mode or "").lower() == "mcp"
-                    else "",
-                    "latency_ms": _elapsed_ms(started),
-                }
-            )
-            return self._format_retrieval_hits(hits), _source_dicts_from_hits(hits), [guidance]
+            output = self._run_tool(name, query)
+            sources = _source_dicts_from_retrieval_text(output)
+            guidance = {
+                "tool": name,
+                "query": query,
+                "candidate_keys": [],
+                "candidate_count": 0,
+                "catalog_filter_applied": False,
+                "fallback_to_broad_search": True,
+                "timing_ms": {
+                    "catalog_ms": 0,
+                    "retrieval_search_ms": 0,
+                    "returned_hits": len(sources),
+                    "total_ms": _elapsed_ms(started),
+                },
+                "source": "tool_router",
+            }
+            return output, sources, [guidance]
         return self._run_tool(name, query), [], []
 
     def _run_specialist_agent(
@@ -3655,7 +3636,7 @@ class KnowledgeAgent:
         llm_started = time.perf_counter()
         response = self._invoke_model(
             llm,
-            [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+            [_make_system_message(SYNTHESIS_SYSTEM_PROMPT), _make_human_message(answer_prompt)],
             config,
         )
         performance: dict[str, Any] = {
@@ -3714,7 +3695,7 @@ class KnowledgeAgent:
         llm_started = time.perf_counter()
         response = self._invoke_model(
             llm,
-            [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+            [_make_system_message(SYNTHESIS_SYSTEM_PROMPT), _make_human_message(answer_prompt)],
             config,
         )
         performance: dict[str, Any] = {
@@ -4321,7 +4302,7 @@ class KnowledgeAgent:
                 llm_started = time.perf_counter()
                 response = self._invoke_model(
                     llm,
-                    [_make_system_message(system_prompt), _make_human_message(answer_prompt)],
+                    [_make_system_message(SYNTHESIS_SYSTEM_PROMPT), _make_human_message(answer_prompt)],
                     config,
                 )
                 synthesis_ms = _elapsed_ms(llm_started)
@@ -4540,7 +4521,10 @@ class KnowledgeAgent:
             )
         )
         llm_started = time.perf_counter()
-        response = self._invoke_model(llm, messages, config)
+        final_messages = list(messages)
+        if final_messages:
+            final_messages[0] = _make_system_message(SYNTHESIS_SYSTEM_PROMPT)
+        response = self._invoke_model(llm, final_messages, config)
         synthesis_ms = _elapsed_ms(llm_started)
         _add_timing(performance, "llm_final_ms", synthesis_ms)
         performance["llm_call_count"] = int(performance["llm_call_count"]) + 1

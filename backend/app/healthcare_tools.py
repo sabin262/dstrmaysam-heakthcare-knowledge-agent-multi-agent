@@ -1,83 +1,22 @@
 from __future__ import annotations
 
-import json
+from pathlib import Path
+import sys
 from typing import Any
 
 from .config import AppSettings
-from .healthcare import (
-    HealthcareAccessControl,
-    HealthcareSafetyGuard,
-    HealthcareUserContext,
-    SourceGovernance,
-)
 from .deterministic_lookup import DeterministicLookupService, detect_csv_table_mapping
+from .healthcare import HealthcareAccessControl, HealthcareSafetyGuard, HealthcareUserContext
 from .retrieval import RetrievalService
-from .storage import DocumentRecord, DocumentStore
+from .storage import DocumentStore
 from .tool_execution import ToolExecutionRouter
-from .tools import AgentTool, format_retrieval_hits
+from .tools import AgentTool
 
-CATALOG_RESULT_LIMIT = 50
-CATALOG_QUERY_STOPWORDS = {
-    "all",
-    "available",
-    "catalog",
-    "catalogue",
-    "document",
-    "documents",
-    "file",
-    "files",
-    "have",
-    "list",
-    "show",
-    "the",
-    "what",
-    "which",
-}
+_package_src = Path(__file__).resolve().parents[1] / "packages" / "healthcare_tools_core" / "src"
+if _package_src.exists() and str(_package_src) not in sys.path:
+    sys.path.insert(0, str(_package_src))
 
-
-def _terms(query: str) -> list[str]:
-    return [term.lower() for term in query.split() if len(term) >= 3]
-
-
-def _catalog_terms(query: str) -> list[str]:
-    terms = []
-    for term in query.split():
-        normalized = term.lower().strip(".,:;!?()[]{}\"'")
-        if len(normalized) < 3 or normalized in CATALOG_QUERY_STOPWORDS:
-            continue
-        terms.append(normalized)
-    return terms
-
-
-def _lookup_limit(query: str) -> int:
-    return 50
-
-
-def _record_matches(record: DocumentRecord, query: str, domains: set[str] | None = None) -> bool:
-    terms = _terms(query) if domains else _catalog_terms(query)
-    metadata = record.metadata
-    if domains and str(metadata.get("domain", "")).lower() not in domains:
-        return False
-    haystack = " ".join(
-        [
-            record.title,
-            record.key,
-            record.content_type,
-            json.dumps(metadata, sort_keys=True),
-        ]
-    ).lower()
-    return not terms or any(term in haystack for term in terms)
-
-
-def _document_payload(record: DocumentRecord) -> dict[str, Any]:
-    governance = SourceGovernance.from_metadata(record.metadata)
-    return {
-        "title": record.title,
-        "uri": record.uri,
-        "content_type": record.content_type,
-        "metadata": record.metadata,
-        "governance": governance.as_dict(),
-    }
+from healthcare_tools_core import HealthcareToolExecutor  # noqa: E402
 
 
 def _deterministic_table_assets(
@@ -145,30 +84,6 @@ def _deterministic_tool_description(table_assets: list[dict[str, Any]]) -> str:
     return base + " Available table lookup assets: " + " | ".join(asset_lines)
 
 
-def _run_deterministic_lookup(
-    deterministic_lookup: DeterministicLookupService,
-    query: str,
-    user: HealthcareUserContext,
-    *,
-    limit: int,
-    table_assets: list[dict[str, Any]],
-) -> str:
-    try:
-        return deterministic_lookup.lookup(
-            query,
-            user,
-            limit=limit,
-            table_assets=table_assets,
-        ).to_json()
-    except TypeError:
-        return deterministic_lookup.lookup(
-            query,
-            user,
-            limit=limit,
-            csv_assets=table_assets,
-        ).to_json()
-
-
 def build_healthcare_agent_tools(
     *,
     retrieval: RetrievalService,
@@ -185,124 +100,39 @@ def build_healthcare_agent_tools(
         user=user,
         access=access,
     )
+    executor = HealthcareToolExecutor(
+        settings,
+        retrieval=retrieval,
+        documents=documents,
+        deterministic_lookup=deterministic_lookup,
+    )
 
-    def routed(
-        name: str,
-        local_run,
-        *,
-        extra_payload: dict[str, Any] | None = None,
-    ):
+    def routed(name: str, *, extra_payload: dict[str, Any] | None = None):
         def run(query: str) -> str:
-            return router.run(name, query, local_run, extra_payload=extra_payload)
+            return router.run(
+                name,
+                query,
+                lambda value: executor.execute_tool(name, value, user_context=user, extra=extra_payload or {}),
+                extra_payload=extra_payload,
+            )
 
         return run
-
-    def document_search(query: str) -> str:
-        """Semantic search over approved healthcare documents."""
-        hits = access.filter_hits(user, retrieval.search(query))
-        return format_retrieval_hits(hits)
-
-    def policy_search(query: str) -> str:
-        """Focused search over clinical/admin policies, SOPs, pathways, and guidelines."""
-        hits = retrieval.search(query)
-        filtered = []
-        for hit in hits:
-            metadata = hit.metadata
-            domain = str(metadata.get("domain", "")).lower()
-            document_type = str(metadata.get("document_type", "")).lower()
-            if domain in {"clinical_policy", "admin_policy", "compliance"} or document_type in {
-                "policy",
-                "sop",
-                "pathway",
-                "guideline",
-            }:
-                filtered.append(hit)
-        return format_retrieval_hits(access.filter_hits(user, filtered or hits))
-
-    def catalogue_search(query: str) -> str:
-        """Find approved document inventory and metadata."""
-        records = access.filter_documents(user, documents.list_documents())
-        matches = [
-            _document_payload(record)
-            for record in records
-            if _record_matches(record, query)
-        ]
-        limited_matches = matches[:CATALOG_RESULT_LIMIT]
-        return json.dumps(
-            {
-                "kind": "document_catalog",
-                "query": query,
-                "total_matches": len(matches),
-                "returned_count": len(limited_matches),
-                "limit": CATALOG_RESULT_LIMIT,
-                "documents": limited_matches,
-            },
-            indent=2,
-        )
-
-    def calendar_rota_lookup(query: str) -> str:
-        """Lookup calendar, clinic, training, on-call, and rota data from controlled Postgres tables."""
-        if deterministic_lookup is not None:
-            return _run_deterministic_lookup(
-                deterministic_lookup,
-                query,
-                user,
-                limit=_lookup_limit(query),
-                table_assets=deterministic_table_assets,
-            )
-        return json.dumps([], indent=2)
-
-    def formulary_table_lookup(query: str) -> str:
-        """Exact lookup over formulary, restricted medicines, codes, approvals, and structured facts."""
-        if deterministic_lookup is not None:
-            return _run_deterministic_lookup(
-                deterministic_lookup,
-                query,
-                user,
-                limit=_lookup_limit(query),
-                table_assets=deterministic_table_assets,
-            )
-        return json.dumps([], indent=2)
-
-    def safety_guard(query: str) -> str:
-        """Detect clinical risk, missing sources, PHI exposure, or escalation needs."""
-        assessment = safety.assess(query)
-        return json.dumps(assessment.as_dict(), indent=2)
-
-    def postgres_deterministic_lookup(query: str) -> str:
-        """Exact Postgres lookup for patients, doctors, departments, contacts, appointments, wards, and formulary data."""
-        if deterministic_lookup is None:
-            return json.dumps(
-                {
-                    "category": "unavailable",
-                    "message": "Postgres deterministic lookup is not configured.",
-                    "rows": [],
-                },
-                indent=2,
-            )
-        return _run_deterministic_lookup(
-            deterministic_lookup,
-            query,
-            user,
-            limit=_lookup_limit(query),
-            table_assets=deterministic_table_assets,
-        )
 
     return [
         AgentTool(
             name="document_search",
             description="Semantic search over approved healthcare documents.",
-            run=routed("document_search", document_search),
+            run=routed("document_search"),
         ),
         AgentTool(
             name="policy_search",
             description="Focused retrieval over approved clinical/admin policies, SOPs, pathways, and guidelines.",
-            run=routed("policy_search", policy_search),
+            run=routed("policy_search"),
         ),
         AgentTool(
             name="catalogue_search",
             description="List and filter approved healthcare document inventory and metadata.",
-            run=routed("catalogue_search", catalogue_search),
+            run=routed("catalogue_search"),
         ),
         AgentTool(
             name="calendar_rota_lookup",
@@ -310,33 +140,21 @@ def build_healthcare_agent_tools(
                 "Lookup clinics, training, and general rota schedules from approved structured sources. "
                 "For staff availability, doctors, nurses, or on-call questions, prefer postgres_deterministic_lookup."
             ),
-            run=routed(
-                "calendar_rota_lookup",
-                calendar_rota_lookup,
-                extra_payload={"table_assets": deterministic_table_assets},
-            ),
+            run=routed("calendar_rota_lookup", extra_payload={"table_assets": deterministic_table_assets}),
         ),
         AgentTool(
             name="formulary_table_lookup",
             description="Lookup restricted medicines, formulary rows, approval rules, codes, and structured facts.",
-            run=routed(
-                "formulary_table_lookup",
-                formulary_table_lookup,
-                extra_payload={"table_assets": deterministic_table_assets},
-            ),
+            run=routed("formulary_table_lookup", extra_payload={"table_assets": deterministic_table_assets}),
         ),
         AgentTool(
             name="postgres_deterministic_lookup",
             description=_deterministic_tool_description(deterministic_table_assets),
-            run=routed(
-                "postgres_deterministic_lookup",
-                postgres_deterministic_lookup,
-                extra_payload={"table_assets": deterministic_table_assets},
-            ),
+            run=routed("postgres_deterministic_lookup", extra_payload={"table_assets": deterministic_table_assets}),
         ),
         AgentTool(
             name="safety_guard",
             description="Detect clinical risk, missing sources, PHI exposure, or escalation needs.",
-            run=routed("safety_guard", safety_guard),
+            run=routed("safety_guard"),
         ),
     ]

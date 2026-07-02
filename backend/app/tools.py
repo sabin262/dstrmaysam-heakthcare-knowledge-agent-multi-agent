@@ -1,31 +1,26 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
+from pathlib import Path
+import sys
 from typing import Callable
 
 from .config import AppSettings
-from .retrieval import RetrievalHit, RetrievalService
-from .storage import DocumentRecord, DocumentStore
+from .retrieval import RetrievalService
+from .storage import DocumentStore
 from .tool_execution import ToolExecutionRouter
 
-CATALOG_RESULT_LIMIT = 50
-CATALOG_QUERY_STOPWORDS = {
-    "all",
-    "available",
-    "catalog",
-    "catalogue",
-    "document",
-    "documents",
-    "file",
-    "files",
-    "have",
-    "list",
-    "show",
-    "the",
-    "what",
-    "which",
-}
+_package_src = Path(__file__).resolve().parents[1] / "packages" / "healthcare_tools_core" / "src"
+if _package_src.exists() and str(_package_src) not in sys.path:
+    sys.path.insert(0, str(_package_src))
+
+from healthcare_tools_core import (  # noqa: E402
+    HealthcareToolExecutor,
+    catalog_query_terms,
+    document_catalog_payload,
+    document_matches_catalog_query,
+    format_retrieval_hits,
+)
 
 
 @dataclass(frozen=True)
@@ -35,91 +30,24 @@ class AgentTool:
     run: Callable[[str], str]
 
 
-def format_retrieval_hits(hits: list[RetrievalHit]) -> str:
-    if not hits:
-        return "No relevant document chunks found."
-    lines: list[str] = []
-    for index, hit in enumerate(hits, start=1):
-        details = {
-            key: value
-            for key, value in {
-                "chunk_index": hit.metadata.get("_chunk_index"),
-                "domain": hit.metadata.get("domain"),
-                "document_type": hit.metadata.get("document_type"),
-            }.items()
-            if value not in (None, "", {})
-        }
-        detail_text = f"\nMetadata: {json.dumps(details, sort_keys=True)}" if details else ""
-        lines.append(
-            f"[{index}] {hit.title} ({hit.uri}, score={hit.score}){detail_text}\n{hit.text[:1200]}"
-        )
-    return "\n\n".join(lines)
-
-
-def catalog_query_terms(query: str) -> list[str]:
-    terms = []
-    for term in query.split():
-        normalized = term.lower().strip(".,:;!?()[]{}\"'")
-        if len(normalized) < 3 or normalized in CATALOG_QUERY_STOPWORDS:
-            continue
-        terms.append(normalized)
-    return terms
-
-
-def document_matches_catalog_query(record: DocumentRecord, query: str) -> bool:
-    terms = catalog_query_terms(query)
-    haystack = " ".join(
-        [record.title, record.key, record.content_type, json.dumps(record.metadata)]
-    ).lower()
-    return not terms or any(term in haystack for term in terms)
-
-
-def document_catalog_payload(record: DocumentRecord) -> dict[str, object]:
-    return {
-        "title": record.title,
-        "uri": record.uri,
-        "content_type": record.content_type,
-        "metadata": record.metadata,
-    }
-
-
 def build_agent_tools(
     retrieval: RetrievalService,
     documents: DocumentStore,
     settings: AppSettings | None = None,
 ) -> list[AgentTool]:
     router = ToolExecutionRouter(settings)
+    executor = HealthcareToolExecutor(
+        settings,
+        retrieval=retrieval,
+        documents=documents,
+    )
 
-    def rag_search(query: str) -> str:
-        """Search indexed knowledge documents using retrieval augmented generation context."""
-        return format_retrieval_hits(retrieval.search(query))
+    def run_shared(tool_name: str, query: str) -> str:
+        return executor.execute_tool(tool_name, query)
 
-    def document_catalog(query: str) -> str:
-        """List or filter indexed knowledge documents from the S3 manifest."""
-        records = []
-        for record in documents.list_documents():
-            if document_matches_catalog_query(record, query):
-                records.append(document_catalog_payload(record))
-        limited_records = records[:CATALOG_RESULT_LIMIT]
-        return json.dumps(
-            {
-                "kind": "document_catalog",
-                "query": query,
-                "total_matches": len(records),
-                "returned_count": len(limited_records),
-                "limit": CATALOG_RESULT_LIMIT,
-                "documents": limited_records,
-            },
-            indent=2,
-        )
-
-    def table_lookup(query: str) -> str:
-        """Look up exact answers in CSV or table-like files stored in S3."""
-        return json.dumps(documents.lookup_table(query), indent=2)
-
-    def routed(name: str, local_run: Callable[[str], str]) -> Callable[[str], str]:
+    def routed(name: str) -> Callable[[str], str]:
         def run(query: str) -> str:
-            return router.run(name, query, local_run)
+            return router.run(name, query, lambda value: run_shared(name, value))
 
         return run
 
@@ -127,16 +55,16 @@ def build_agent_tools(
         AgentTool(
             name="rag_search",
             description="Semantic RAG search over indexed knowledge documents with citations.",
-            run=routed("rag_search", rag_search),
+            run=routed("rag_search"),
         ),
         AgentTool(
             name="document_catalog",
             description="List and filter available S3 knowledge documents by metadata.",
-            run=routed("document_catalog", document_catalog),
+            run=routed("document_catalog"),
         ),
         AgentTool(
             name="table_lookup",
-            description="Find exact values from CSV files stored in S3.",
-            run=routed("table_lookup", table_lookup),
+            description="Find exact values from controlled Postgres lookup tables.",
+            run=routed("table_lookup"),
         ),
     ]
