@@ -36,6 +36,7 @@ from .models import (
     AdminDeleteIndexesRequest,
     AdminDeleteIndexesResponse,
     AdminPasswordResetRequest,
+    AdminToolExecutionSettings,
     AdminUserCreateRequest,
     AdminUserSummary,
     AdminUserUpdateRequest,
@@ -354,6 +355,25 @@ def _auth_user_response(user: HealthcareUserContext) -> AuthUserResponse:
         departments=list(user.departments),
         password_change_required=user.password_change_required,
     )
+
+
+def _tool_execution_settings_response() -> AdminToolExecutionSettings:
+    provider = get_secret_provider()
+    if hasattr(provider, "invalidate"):
+        provider.invalidate(get_settings().app_secret_name)
+    tool_execution = provider.load_tool_execution()
+    return AdminToolExecutionSettings(
+        tool_execution_mode=tool_execution.tool_execution_mode,
+        mcp_server_url=tool_execution.mcp_server_url,
+        mcp_project_id=tool_execution.mcp_project_id,
+        mcp_tool_timeout_seconds=tool_execution.mcp_tool_timeout_seconds,
+        mcp_tool_fallback_to_local=tool_execution.mcp_tool_fallback_to_local,
+    )
+
+
+def _refresh_tool_execution_runtime_caches() -> None:
+    get_runtime_settings.cache_clear()
+    get_agent.cache_clear()
 
 
 def _safe_upload_filename(filename: str | None) -> str:
@@ -874,6 +894,54 @@ def reset_admin_user_password(
         return _admin_user_response(updated)
     except UserManagementError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/admin/settings/tool-execution", response_model=AdminToolExecutionSettings)
+def get_admin_tool_execution_settings(
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> AdminToolExecutionSettings:
+    try:
+        return _tool_execution_settings_response()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.patch("/admin/settings/tool-execution", response_model=AdminToolExecutionSettings)
+def update_admin_tool_execution_settings(
+    request: AdminToolExecutionSettings,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> AdminToolExecutionSettings:
+    mode = request.tool_execution_mode.strip().lower()
+    if mode not in {"local", "mcp"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="tool_execution_mode must be local or mcp")
+
+    mcp_server_url = request.mcp_server_url.strip()
+    mcp_project_id = request.mcp_project_id.strip()
+    if mode == "mcp" and not mcp_server_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mcp_server_url is required for MCP mode")
+    if not mcp_project_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mcp_project_id is required")
+
+    provider = get_secret_provider()
+    secret_name = get_settings().app_secret_name
+    try:
+        payload = dict(provider.get_json(secret_name))
+        payload.update(
+            {
+                "tool_execution_mode": mode,
+                "mcp_server_url": mcp_server_url,
+                "mcp_project_id": mcp_project_id,
+                "mcp_tool_timeout_seconds": int(request.mcp_tool_timeout_seconds),
+                "mcp_tool_fallback_to_local": bool(request.mcp_tool_fallback_to_local),
+            }
+        )
+        provider.put_json(secret_name, payload)
+        if hasattr(provider, "invalidate"):
+            provider.invalidate(secret_name)
+        _refresh_tool_execution_runtime_caches()
+        return _tool_execution_settings_response()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @app.post("/admin/documents/upload", response_model=AdminDocumentUploadResponse)
