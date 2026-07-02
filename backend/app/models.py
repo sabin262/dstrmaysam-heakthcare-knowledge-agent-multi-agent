@@ -111,6 +111,14 @@ class AdminPasswordResetRequest(BaseModel):
     temporary_password: str = Field(min_length=1)
 
 
+class AdminToolExecutionSettings(BaseModel):
+    tool_execution_mode: str = Field(min_length=1)
+    mcp_server_url: str = ""
+    mcp_project_id: str = Field(min_length=1)
+    mcp_tool_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    mcp_tool_fallback_to_local: bool = False
+
+
 class AdminDeleteIndexesRequest(BaseModel):
     admin_password: str = Field(min_length=1)
 
