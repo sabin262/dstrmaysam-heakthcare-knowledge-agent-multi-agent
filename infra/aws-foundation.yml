@@ -1043,6 +1043,17 @@ Resources:
         - Key: Owner
           Value: !Ref OwnerTag
 
+  AppTaskSelfIngressBackend:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateCicd
+    Properties:
+      GroupId: !Ref AppTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId: !Ref AppTaskSecurityGroup
+      Description: !Sub "${BaseName} frontend task access to backend task"
+
   McpSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Condition: CreateCicd
@@ -1104,6 +1115,27 @@ Resources:
       Name: !Sub "${ShortName}.local"
       Vpc: !Ref FoundationVpc
       Description: !Sub "${BaseName} private service discovery namespace"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  BackendDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Condition: CreateCicd
+    Properties:
+      Name: backend
+      NamespaceId: !Ref McpPrivateDnsNamespace
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 30
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1387,7 +1419,7 @@ Resources:
               Protocol: tcp
           Environment:
             - Name: BACKEND_URL
-              Value: !Sub "http://${DevApplicationLoadBalancer.DNSName}:8000"
+              Value: !Sub "http://backend.${ShortName}.local:8000"
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -1482,6 +1514,7 @@ Resources:
     Condition: CreateCicd
     DependsOn:
       - BackendListener
+      - BackendDiscoveryService
     Properties:
       ServiceName: !Sub "${BaseName}-backend"
       Cluster: !Ref EcsCluster
@@ -1500,6 +1533,8 @@ Resources:
         - ContainerName: backend
           ContainerPort: 8000
           TargetGroupArn: !Ref BackendTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt BackendDiscoveryService.Arn
       Tags:
         - Key: Project
           Value: !Ref ProjectTag
@@ -1955,6 +1990,9 @@ Outputs:
   McpCloudMapUrl:
     Condition: CreateCicd
     Value: !Sub "http://mcp-tools.${ShortName}.local:9000/sse"
+  BackendCloudMapUrl:
+    Condition: CreateCicd
+    Value: !Sub "http://backend.${ShortName}.local:8000"
   McpPublicUrl:
     Condition: CreateCicd
     Value: !Sub "http://${DevApplicationLoadBalancer.DNSName}:9000/sse"

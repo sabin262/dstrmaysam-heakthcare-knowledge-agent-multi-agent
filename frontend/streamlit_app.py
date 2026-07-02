@@ -25,6 +25,16 @@ CHAT_PROGRESS_MESSAGES = [
     "Checking structured lookup data and indexed documents if needed.",
     "Preparing a concise answer.",
 ]
+MCP_SERVER_URL_OPTIONS = [
+    (
+        "Shared MCP Server",
+        "http://internal-dstrmaysam-shared-mcp-alb-748190876.eu-west-2.elb.amazonaws.com/sse",
+    ),
+    (
+        "Healthcare MCP Server",
+        "http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse",
+    ),
+]
 DASHBOARD_RANGE_OPTIONS = [
     ("30mins", "30m"),
     ("1hr", "1h"),
@@ -764,13 +774,24 @@ def render_admin_settings() -> None:
     mode_options = ["local", "mcp"]
     current_mode = str(settings.get("tool_execution_mode") or "local").strip().lower()
     mode_index = mode_options.index(current_mode) if current_mode in mode_options else 0
+    current_mcp_server_url = str(settings.get("mcp_server_url") or "").strip()
+    mcp_server_url_options = list(MCP_SERVER_URL_OPTIONS)
+    known_mcp_urls = {url for _, url in mcp_server_url_options}
+    if current_mcp_server_url and current_mcp_server_url not in known_mcp_urls:
+        mcp_server_url_options.append(("Current custom URL", current_mcp_server_url))
+    mcp_url_values = [url for _, url in mcp_server_url_options]
+    mcp_url_index = mcp_url_values.index(current_mcp_server_url) if current_mcp_server_url in mcp_url_values else 0
 
     with st.form("tool-execution-settings"):
         mode = st.selectbox("Tool execution mode", mode_options, index=mode_index)
-        mcp_server_url = st.text_input(
+        mcp_server_url = st.selectbox(
             "MCP server URL",
-            value=str(settings.get("mcp_server_url") or ""),
-            placeholder="http://mcp-tools.dstrmaysam-hkm-dev.local:9000/sse",
+            options=mcp_url_values,
+            index=mcp_url_index,
+            format_func=lambda value: next(
+                (f"{label}: {url}" for label, url in mcp_server_url_options if url == value),
+                str(value),
+            ),
         )
         mcp_project_id = st.text_input(
             "MCP project ID",
