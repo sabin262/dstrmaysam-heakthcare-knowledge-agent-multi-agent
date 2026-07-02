@@ -61,7 +61,7 @@ Parameters:
     Description: CIDR allowed to connect to RDS Postgres on 5432 until ECS service security groups are created.
   SharedMcpAccessEnabled:
     Type: String
-    Default: "false"
+    Default: "true"
     AllowedValues:
       - "true"
       - "false"
