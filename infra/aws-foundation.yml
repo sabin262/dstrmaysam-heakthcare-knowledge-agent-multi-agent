@@ -1372,6 +1372,8 @@ Resources:
               Value: 0.0.0.0
             - Name: PORT
               Value: "9000"
+            - Name: MCP_PORT
+              Value: "9000"
             - Name: HEALTH_PORT
               Value: "9001"
           LogConfiguration:
