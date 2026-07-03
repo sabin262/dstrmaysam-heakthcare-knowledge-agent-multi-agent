@@ -73,16 +73,39 @@ def source_contexts(
     return contexts[:MAX_RAGAS_CONTEXTS]
 
 
+def exact_evidence_contexts(contexts: list[str] | None) -> list[str]:
+    normalized_contexts: list[str] = []
+    seen: set[str] = set()
+    for context in contexts or []:
+        for chunk in _split_context(str(context or "")[:MAX_RAGAS_EXTRA_CONTEXT_CHARS]):
+            normalized = _normalize_context(chunk)
+            if not normalized:
+                continue
+            identity = normalized[:500]
+            if identity in seen:
+                continue
+            seen.add(identity)
+            normalized_contexts.append(normalized[:MAX_RAGAS_CONTEXT_CHARS])
+            if len(normalized_contexts) >= MAX_RAGAS_CONTEXTS:
+                return normalized_contexts
+    return normalized_contexts
+
+
 def compute_live_ragas_scores(
     *,
     question: str,
     answer: str,
     sources: list[dict[str, Any]],
     additional_contexts: list[str] | None = None,
+    exact_contexts: list[str] | None = None,
     settings: "AppSettings | None" = None,
     secret_provider: "SecretProvider | None" = None,
 ) -> dict[str, Any]:
-    contexts = source_contexts(sources, additional_contexts=additional_contexts)
+    contexts = (
+        exact_evidence_contexts(exact_contexts)
+        if exact_contexts is not None
+        else source_contexts(sources, additional_contexts=additional_contexts)
+    )
     if not answer.strip() or not contexts:
         return {
             "scores": {},
