@@ -2406,6 +2406,7 @@ class GraphAgentResult:
     sources: list[dict[str, Any]]
     tools_used: list[str]
     tool_context: str
+    ragas_contexts: list[str] = field(default_factory=list)
     catalog_guidance: list[dict[str, Any]] = field(default_factory=list)
     performance: dict[str, Any] = field(default_factory=dict)
 
@@ -2756,7 +2757,8 @@ class KnowledgeAgent:
                         "guardrail_applied": trace_metadata["guardrail_applied"],
                         "guardrail_reason": trace_metadata["guardrail_reason"],
                         "performance": performance,
-                        "ragas_context_source": "sources_and_tool_context",
+                        "ragas_context_source": "exact_synthesis_evidence",
+                        "ragas_evidence_contexts": list(graph_result.ragas_contexts or []),
                         "ragas_status": "pending",
                         "ragas_provider": None,
                         "langfuse_ragas_published": False,
@@ -2825,7 +2827,7 @@ class KnowledgeAgent:
                     question=safe_query,
                     answer=answer,
                     sources=sources,
-                    additional_contexts=[graph_result.tool_context],
+                    exact_contexts=graph_result.ragas_contexts or [graph_result.tool_context],
                     trace_id=trace_id,
                     user_id=user_id,
                     session_id=session_id,
@@ -2945,6 +2947,7 @@ class KnowledgeAgent:
         answer: str,
         sources: list[dict[str, Any]],
         additional_contexts: list[str] | None = None,
+        exact_contexts: list[str] | None = None,
         trace_id: str,
         user_id: str,
         session_id: str,
@@ -2956,6 +2959,7 @@ class KnowledgeAgent:
                 "answer": answer,
                 "sources": sources,
                 "additional_contexts": additional_contexts or [],
+                "exact_contexts": exact_contexts,
                 "trace_id": trace_id,
                 "user_id": user_id,
                 "session_id": session_id,
@@ -2971,6 +2975,7 @@ class KnowledgeAgent:
         answer: str,
         sources: list[dict[str, Any]],
         additional_contexts: list[str] | None = None,
+        exact_contexts: list[str] | None = None,
         trace_id: str,
         user_id: str,
         session_id: str,
@@ -2980,6 +2985,7 @@ class KnowledgeAgent:
             answer=answer,
             sources=sources,
             additional_contexts=additional_contexts or [],
+            exact_contexts=exact_contexts,
             settings=self.settings,
             secret_provider=self.secret_provider,
         )
@@ -3003,7 +3009,8 @@ class KnowledgeAgent:
             "ragas_status": result.get("status"),
             "ragas_provider": result.get("provider"),
             "ragas_error": result.get("error"),
-            "ragas_context_source": "sources_and_tool_context",
+            "ragas_context_source": "exact_synthesis_evidence" if exact_contexts is not None else "sources_and_tool_context",
+            "ragas_evidence_contexts": list(exact_contexts or []),
             "ragas_context_count": result.get("context_count"),
             "ragas_context_chars": result.get("context_chars"),
             "langfuse_ragas_published": bool(publish_status.get("published")),
@@ -3450,6 +3457,7 @@ class KnowledgeAgent:
                     sources=[],
                     tools_used=[],
                     tool_context="No graph tools were executed.",
+                    ragas_contexts=[],
                     performance={
                         **performance,
                         "agent_mode": "direct_fallback",
@@ -3501,6 +3509,7 @@ class KnowledgeAgent:
                 sources=_dedupe_sources(all_sources),
                 tools_used=planned_tools,
                 tool_context=tool_context,
+                ragas_contexts=self._ragas_contexts_from_evidence(tool_context),
                 catalog_guidance=all_guidance,
                 performance=performance,
             )
@@ -3527,6 +3536,7 @@ class KnowledgeAgent:
                 sources=sources,
                 tools_used=[offline_tool],
                 tool_context=tool_context,
+                ragas_contexts=self._ragas_contexts_from_evidence(tool_context),
                 catalog_guidance=catalog_guidance,
                 performance=performance,
             )
@@ -3550,6 +3560,7 @@ class KnowledgeAgent:
             sources=sources,
             tools_used=["rag_search"],
             tool_context=tool_context,
+            ragas_contexts=self._ragas_contexts_from_evidence(tool_context),
             catalog_guidance=catalog_guidance,
             performance=performance,
         )
@@ -3666,6 +3677,7 @@ class KnowledgeAgent:
             sources=_dedupe_sources(all_sources),
             tools_used=list(planned_tools),
             tool_context=self._bounded_context(tool_context),
+            ragas_contexts=self._ragas_contexts_from_evidence(tool_context),
             catalog_guidance=all_guidance,
             performance=performance,
         )
@@ -3720,6 +3732,7 @@ class KnowledgeAgent:
             sources=_dedupe_sources(sources),
             tools_used=["rag_search"],
             tool_context=self._bounded_context(tool_context),
+            ragas_contexts=self._ragas_contexts_from_evidence(tool_context),
             catalog_guidance=catalog_guidance,
             performance=performance,
         )
@@ -3732,6 +3745,13 @@ class KnowledgeAgent:
             tool_context[:max_chars].rstrip()
             + "\n\n[Context truncated to configured RAG_CONTEXT_MAX_CHARS.]"
         )
+
+    def _ragas_contexts_from_evidence(self, *contexts: str) -> list[str]:
+        return [
+            self._bounded_context(context)
+            for context in contexts
+            if str(context or "").strip()
+        ]
 
     def _invoke_model(self, model: Any, messages: list[Any], config: dict[str, Any] | None) -> Any:
         if config:
@@ -4265,6 +4285,7 @@ class KnowledgeAgent:
                 answer = direct_answer
                 synthesis_status = "direct_answer"
                 synthesis_ms = 0
+                ragas_contexts: list[str] = []
             elif deterministic_only:
                 answer = "\n\n".join([*deterministic_sections, *deterministic_no_result_sections]) or self._offline_answer(
                     query=original_query,
@@ -4272,13 +4293,20 @@ class KnowledgeAgent:
                 )
                 synthesis_status = "deterministic_structured_answer"
                 synthesis_ms = _elapsed_ms(started)
+                ragas_contexts = self._ragas_contexts_from_evidence(
+                    "\n\n".join([*deterministic_sections, *deterministic_no_result_sections]) or tool_context
+                )
             elif catalog_only:
                 answer = _format_catalog_tool_outputs(original_query, tool_outputs)
                 synthesis_status = "catalog_structured_answer"
                 synthesis_ms = _elapsed_ms(started)
+                ragas_contexts = self._ragas_contexts_from_evidence(tool_context)
             else:
                 policy_context = "\n\n".join(non_deterministic_outputs)
                 fixed_deterministic_answer = "\n\n".join(deterministic_sections).strip()
+                bounded_policy_context = self._bounded_context(
+                    policy_context or "No non-deterministic specialist evidence was returned."
+                )
                 remaining_question = "; ".join(
                     query for query in non_deterministic_queries if query and query != original_query
                 ) or original_query
@@ -4292,7 +4320,7 @@ class KnowledgeAgent:
                         else ""
                     )
                     + "Specialist evidence:\n"
-                    f"{self._bounded_context(policy_context or 'No non-deterministic specialist evidence was returned.')}\n\n"
+                    f"{bounded_policy_context}\n\n"
                     "Produce the final answer using only the specialist evidence above. "
                     "If a fixed deterministic answer section was provided, answer only the remaining non-deterministic parts here. "
                     "Include citations when document sources are present. "
@@ -4316,6 +4344,10 @@ class KnowledgeAgent:
                     if fixed_deterministic_answer:
                         answer = fixed_deterministic_answer + "\n\n" + answer
                     synthesis_status = "answered"
+                ragas_contexts = self._ragas_contexts_from_evidence(
+                    fixed_deterministic_answer,
+                    bounded_policy_context,
+                )
 
             agent_flow = list(state.get("agent_flow") or [])
             agent_flow.append(
@@ -4332,6 +4364,7 @@ class KnowledgeAgent:
                 sources=_dedupe_sources(list(state.get("sources") or [])),
                 tools_used=tools_used,
                 tool_context=self._bounded_context(tool_context or "No graph tools were executed."),
+                ragas_contexts=ragas_contexts,
                 catalog_guidance=list(state.get("catalog_guidance") or []),
                 performance=performance,
             )
@@ -4448,6 +4481,7 @@ class KnowledgeAgent:
                     sources=_dedupe_sources(sources),
                     tools_used=tools_used,
                     tool_context="\n\n".join(tool_outputs) or "No graph tools were executed.",
+                    ragas_contexts=self._ragas_contexts_from_evidence("\n\n".join(tool_outputs)),
                     catalog_guidance=catalog_guidance,
                     performance=performance,
                 )
@@ -4548,6 +4582,7 @@ class KnowledgeAgent:
             sources=_dedupe_sources(sources),
             tools_used=tools_used,
             tool_context="\n\n".join(tool_outputs) or "No graph tools were executed.",
+            ragas_contexts=self._ragas_contexts_from_evidence("\n\n".join(tool_outputs)),
             catalog_guidance=catalog_guidance,
             performance=performance,
         )
@@ -4561,6 +4596,7 @@ class KnowledgeAgent:
             tools_used=list(state.get("tools_used", [])),
             tool_context="\n\n".join(state.get("tool_outputs", []))
             or "No graph tools were executed.",
+            ragas_contexts=self._ragas_contexts_from_evidence("\n\n".join(state.get("tool_outputs", []))),
             catalog_guidance=list(state.get("catalog_guidance", [])),
             performance=dict(state.get("performance", {})),
         )
