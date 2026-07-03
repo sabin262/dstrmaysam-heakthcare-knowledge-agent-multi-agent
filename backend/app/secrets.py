@@ -81,6 +81,14 @@ def _secret_value(data: dict[str, Any], key: str, default: Any = "") -> Any:
     return default
 
 
+def _secret_first(data: dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        value = _secret_value(data, key, None)
+        if value not in (None, ""):
+            return value
+    return default
+
+
 def _secret_bool(data: dict[str, Any], key: str, default: bool = False) -> bool:
     value = _secret_value(data, key, default)
     if isinstance(value, bool):
@@ -207,14 +215,30 @@ class SecretProvider:
 
     def load_azure_openai(self) -> AzureOpenAISecrets:
         data = self.get_json(self.settings.azure_openai_secret_name)
-        chat_deployment = self.settings.azure_openai_deployment or str(data.get("chat_deployment", ""))
+        endpoint = str(_secret_first(data, "endpoint", "AZURE_OPENAI_ENDPOINT")).strip()
+        api_key = str(_secret_first(data, "api_key", "AZURE_OPENAI_API_KEY")).strip()
+        api_version = str(
+            _secret_first(data, "api_version", "AZURE_OPENAI_API_VERSION", default="2025-04-01-preview")
+        ).strip()
+        embedding_deployment = str(
+            _secret_first(data, "embedding_deployment", "AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+        ).strip()
+        chat_deployment = (
+            self.settings.azure_openai_deployment
+            or str(_secret_first(data, "chat_deployment", "AZURE_OPENAI_DEPLOYMENT")).strip()
+        )
         fast_chat_deployment = (
             self.settings.azure_openai_fast_deployment
-            or str(data.get("fast_chat_deployment", ""))
+            or str(_secret_first(data, "fast_chat_deployment", "AZURE_OPENAI_FAST_DEPLOYMENT")).strip()
             or chat_deployment
         )
-        required = ["endpoint", "api_key", "embedding_deployment"]
-        missing = [key for key in required if not data.get(key)]
+        missing = []
+        if not endpoint:
+            missing.append("endpoint or AZURE_OPENAI_ENDPOINT")
+        if not api_key:
+            missing.append("api_key or AZURE_OPENAI_API_KEY")
+        if not embedding_deployment:
+            missing.append("embedding_deployment or AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
         if not chat_deployment:
             missing.append("chat_deployment or AZURE_OPENAI_DEPLOYMENT")
         if missing:
@@ -222,12 +246,12 @@ class SecretProvider:
                 f"Azure OpenAI secret is missing required keys: {', '.join(missing)}"
             )
         return AzureOpenAISecrets(
-            endpoint=str(data["endpoint"]),
-            api_key=str(data["api_key"]),
-            api_version=str(data.get("api_version", "2025-04-01-preview")),
+            endpoint=endpoint,
+            api_key=api_key,
+            api_version=api_version,
             chat_deployment=chat_deployment,
             fast_chat_deployment=fast_chat_deployment,
-            embedding_deployment=str(data["embedding_deployment"]),
+            embedding_deployment=embedding_deployment,
         )
 
     def load_langfuse(self) -> LangfuseSecrets:

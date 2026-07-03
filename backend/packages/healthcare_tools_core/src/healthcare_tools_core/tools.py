@@ -238,6 +238,15 @@ def _attr(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
+def _secret_value(data: dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        for candidate in (key, key.upper()):
+            value = data.get(candidate)
+            if value not in (None, ""):
+                return value
+    return default
+
+
 def _terms(query: str) -> list[str]:
     return [term for term in re.findall(r"[a-z0-9_@.+-]+", query.lower()) if term and term not in STOPWORDS]
 
@@ -701,10 +710,19 @@ class HealthcareToolExecutor:
         except Exception:
             return config
         return {
-            "endpoint": str(secret.get("endpoint") or config["endpoint"]),
-            "api_key": str(secret.get("api_key") or config["api_key"]),
-            "api_version": str(secret.get("api_version") or config["api_version"]),
-            "embedding_deployment": str(secret.get("embedding_deployment") or config["embedding_deployment"]),
+            "endpoint": str(_secret_value(secret, "endpoint", "AZURE_OPENAI_ENDPOINT", default=config["endpoint"])),
+            "api_key": str(_secret_value(secret, "api_key", "AZURE_OPENAI_API_KEY", default=config["api_key"])),
+            "api_version": str(
+                _secret_value(secret, "api_version", "AZURE_OPENAI_API_VERSION", default=config["api_version"])
+            ),
+            "embedding_deployment": str(
+                _secret_value(
+                    secret,
+                    "embedding_deployment",
+                    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
+                    default=config["embedding_deployment"],
+                )
+            ),
         }
 
     def _secret_json(self, secret_name: str) -> dict[str, Any]:
