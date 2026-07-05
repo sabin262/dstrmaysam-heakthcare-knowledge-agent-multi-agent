@@ -1058,6 +1058,42 @@ def _matching_specialist_step(agent_flow: list[Any], selected_agent: str, select
     return {}
 
 
+def _specialist_steps_for_decision(
+    agent_flow: list[Any],
+    decision: dict[str, Any],
+    selected_agent: str,
+) -> list[dict[str, Any]]:
+    task_id = str(decision.get("task_id") or "")
+    steps: list[dict[str, Any]] = []
+    for step in agent_flow:
+        if not isinstance(step, dict):
+            continue
+        if step.get("kind") not in {"specialist_tool_decision", "specialist"}:
+            continue
+        if selected_agent and str(step.get("agent") or "") != selected_agent:
+            continue
+        if task_id and str(step.get("task_id") or "") != task_id:
+            continue
+        steps.append(step)
+    return steps
+
+
+def _tools_for_decision(
+    agent_flow: list[Any],
+    decision: dict[str, Any],
+    selected_agent: str,
+    selected_tool: str,
+) -> list[str]:
+    tools: list[str] = []
+    if selected_tool:
+        tools.append(selected_tool)
+    for step in _specialist_steps_for_decision(agent_flow, decision, selected_agent):
+        tool = str(step.get("tool") or "")
+        if tool:
+            tools.append(tool)
+    return list(dict.fromkeys(tools))
+
+
 def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> None:
     flow_steps = [step for step in agent_flow if isinstance(step, dict)]
     route_decisions = [
@@ -1074,10 +1110,29 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
     for index, decision in enumerate(route_decisions, start=1):
         selected_agent = str(decision.get("selected_agent") or "SpecialistAgent")
         selected_tool = str(decision.get("tool") or "")
-        specialist = _matching_specialist_step(flow_steps, selected_agent, selected_tool)
-        tool_steps = _related_tool_steps(tool_flow, selected_tool)
-        if not tool_steps and selected_tool:
-            tool_steps = [{"tool": selected_tool, "kind": "agent_tool", "selected_by_agent": True}]
+        decision_tools = _tools_for_decision(flow_steps, decision, selected_agent, selected_tool)
+        specialist_steps = [
+            step
+            for step in _specialist_steps_for_decision(flow_steps, decision, selected_agent)
+            if step.get("kind") == "specialist"
+        ]
+        specialist = specialist_steps[0] if specialist_steps else _matching_specialist_step(
+            flow_steps,
+            selected_agent,
+            selected_tool,
+        )
+        tool_steps = []
+        seen_tool_steps: set[str] = set()
+        for tool_name in decision_tools:
+            related_steps = _related_tool_steps(tool_flow, tool_name)
+            if not related_steps:
+                related_steps = [{"tool": tool_name, "kind": "agent_tool", "selected_by_agent": True}]
+            for related_step in related_steps:
+                key = json.dumps(related_step, sort_keys=True, default=str)
+                if key in seen_tool_steps:
+                    continue
+                seen_tool_steps.add(key)
+                tool_steps.append(related_step)
 
         tool_cards = []
         for tool_step in tool_steps:
@@ -1110,15 +1165,23 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
             )
 
         specialist_status = str(specialist.get("status") or "selected")
-        specialist_latency = int(specialist.get("latency_ms") or 0)
-        source_count = specialist.get("source_count")
+        specialist_latency = sum(int(step.get("latency_ms") or 0) for step in specialist_steps) or int(
+            specialist.get("latency_ms") or 0
+        )
+        source_counts = [
+            int(step.get("source_count") or 0)
+            for step in specialist_steps
+            if step.get("source_count") not in (None, "")
+        ]
+        source_count = sum(source_counts) if source_counts else specialist.get("source_count")
         specialist_detail = [specialist_status]
-        if selected_tool:
-            specialist_detail.append(f"tool {selected_tool}")
+        if decision_tools:
+            specialist_detail.append(f"tool {', '.join(decision_tools)}")
         if source_count not in (None, ""):
             specialist_detail.append(f"sources {source_count}")
         if specialist_latency:
             specialist_detail.append(f"{specialist_latency} ms")
+        route_tool_label = ", ".join(decision_tools)
         branches.append(
             f"""
             <div class="tree-branch">
@@ -1127,7 +1190,7 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
                     <div class="tree-name">SupervisorAgent</div>
                     <div class="tree-detail">
                         routes to {html.escape(selected_agent)}
-                        {html.escape(' using ' + selected_tool if selected_tool else '')}
+                        {html.escape(' using ' + route_tool_label if route_tool_label else '')}
                     </div>
                     <div class="tree-reason">{html.escape(str(decision.get("reason") or ""))}</div>
                 </div>
