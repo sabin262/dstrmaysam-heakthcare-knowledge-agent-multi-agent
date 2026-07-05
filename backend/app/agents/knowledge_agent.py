@@ -3334,18 +3334,13 @@ class DeterministicLookupAgent(SpecialistGraphAgent):
     agent_name = "DeterministicLookupAgent"
     node_name = "deterministic_lookup"
     default_tool = "postgres_deterministic_lookup"
-    allowed_tools = ("postgres_deterministic_lookup", "formulary_table_lookup", "calendar_rota_lookup", "table_lookup")
+    allowed_tools = ("postgres_deterministic_lookup",)
     prompt = "Choose table-backed Postgres tools for exact operational facts and validate row-level evidence."
 
     def choose_tools(self, task: SpecialistTask, state: dict[str, Any]) -> list[str]:
-        query = task.query.lower()
         planned_tool = _canonical_tool_name(str(task.constraints.get("planned_tool") or task.intent or ""))
         if planned_tool in self.allowed_tools and planned_tool in self.context.tool_names:
             return [planned_tool]
-        if ("formulary" in query or "medicine" in query or "drug" in query) and "formulary_table_lookup" in self.context.tool_names:
-            return ["formulary_table_lookup"]
-        if ("rota" in query or "schedule" in query or "clinic" in query) and "calendar_rota_lookup" in self.context.tool_names:
-            return ["calendar_rota_lookup"]
         if "postgres_deterministic_lookup" in self.context.tool_names:
             return ["postgres_deterministic_lookup"]
         return super().choose_tools(task, state)

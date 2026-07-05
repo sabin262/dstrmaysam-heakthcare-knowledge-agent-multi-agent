@@ -36,6 +36,11 @@ from ..models import (
     AdminDeleteIndexesRequest,
     AdminDeleteIndexesResponse,
     AdminPasswordResetRequest,
+    AdminSystemEvalDataset,
+    AdminSystemEvalDatasetsResponse,
+    AdminSystemEvalRunListResponse,
+    AdminSystemEvalRunRequest,
+    AdminSystemEvalRunResponse,
     AdminToolExecutionSettings,
     AdminUserCreateRequest,
     AdminUserSummary,
@@ -53,6 +58,7 @@ from ..models import (
 )
 from ..news import GuardianNewsService
 from ..observability import ObservabilityClient
+from ..repositories.evaluations import PostgresEvaluationRepository
 from ..retrieval import RetrievalService
 from ..secrets import EnvSecretProvider, SecretProvider
 from ..storage import DocumentStore, LocalDocumentStore
@@ -65,6 +71,24 @@ from ..twilio_whatsapp import (
     twiml_message,
     user_context_for_sender,
 )
+try:
+    from system_evals import (
+        EvaluationResult,
+        bundled_dataset_ids,
+        evaluate_response,
+        load_bundled_dataset,
+        markdown_report,
+    )
+    from system_evals.schema import summarize_results
+except ModuleNotFoundError:  # pragma: no cover - local repo import layout
+    from backend.system_evals import (
+        EvaluationResult,
+        bundled_dataset_ids,
+        evaluate_response,
+        load_bundled_dataset,
+        markdown_report,
+    )
+    from backend.system_evals.schema import summarize_results
 
 
 SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
@@ -137,6 +161,11 @@ def get_history_repository():
 
 
 @lru_cache
+def get_evaluation_repository() -> PostgresEvaluationRepository:
+    return PostgresEvaluationRepository(get_settings())
+
+
+@lru_cache
 def get_document_store() -> DocumentStore:
     settings = get_settings()
     if settings.use_local_resources():
@@ -188,6 +217,175 @@ def get_agent() -> KnowledgeAgent:
         documents=get_document_store(),
         observability=get_observability(),
     )
+
+
+class InProcessEvaluationChatClient:
+    def __init__(self, default_user: HealthcareUserContext):
+        self.default_user = default_user
+
+    def ask(self, case) -> dict[str, object]:
+        eval_user = _system_eval_user_context(str(case.user or ""), self.default_user)
+        result = get_agent().answer(
+            user_id=eval_user.user_id,
+            query=case.query,
+            session_id=f"system-eval-{case.id}",
+            user_context=eval_user,
+            execution_mode=None,
+        )
+        return {
+            "session_id": result.session_id,
+            "answer": result.answer,
+            "sources": list(result.sources),
+            "tools_used": list(result.tools_used),
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "latency_ms": result.latency_ms,
+            "trace_id": result.trace_id,
+            "safety": result.metadata.get("safety", {}),
+            "audit_event": result.metadata.get("audit_event", {}),
+            "performance": result.metadata.get("performance", {}),
+            "latency_breakdown": result.metadata.get("latency_breakdown", {}),
+        }
+
+
+def _prepare_system_eval_cases(request: AdminSystemEvalRunRequest):
+    cases = load_bundled_dataset(request.dataset_id)
+    selected_categories = {category.strip() for category in request.categories if category.strip()}
+    if selected_categories:
+        cases = [case for case in cases if case.category in selected_categories]
+    if request.limit:
+        cases = cases[: request.limit]
+    if not cases:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No evaluation cases match the filters")
+    effective_cases = [
+        type(case)(**{**case.as_dict(), "user": request.user_id or case.user})
+        for case in cases
+    ]
+    return selected_categories, effective_cases
+
+
+def _system_eval_progress_summary(
+    *,
+    dataset_id: str,
+    results,
+    total_cases: int,
+    current_case=None,
+    current_index: int = 0,
+    semantic_judge_enabled: bool = False,
+) -> dict[str, object]:
+    summary = summarize_results(dataset_id, list(results)).as_dict() if results else {
+        "dataset_id": dataset_id,
+        "total_cases": total_cases,
+        "passed_cases": 0,
+        "failed_cases": 0,
+        "pass_rate": 0,
+        "average_score": 0,
+        "average_latency_ms": 0,
+        "routing_accuracy": 0,
+        "tool_accuracy": 0,
+        "source_accuracy": 0,
+        "safety_accuracy": 0,
+    }
+    completed = len(results)
+    summary["total_cases"] = total_cases
+    summary["completed_cases"] = completed
+    summary["progress_total_cases"] = total_cases
+    summary["progress_completed_cases"] = completed
+    summary["progress_current_index"] = current_index
+    summary["progress_current_case_id"] = getattr(current_case, "id", "") if current_case else ""
+    summary["progress_current_query"] = getattr(current_case, "query", "") if current_case else ""
+    summary["progress_percent"] = (completed / total_cases) if total_cases else 0
+    if semantic_judge_enabled:
+        summary["semantic_judge_enabled"] = True
+        summary["semantic_judge_note"] = "Semantic judge is reserved for a future extension; hard assertions were used."
+    return summary
+
+
+def _run_system_eval_to_repository(
+    *,
+    run_id: str,
+    dataset_id: str,
+    cases,
+    user: HealthcareUserContext,
+    semantic_judge_enabled: bool,
+) -> None:
+    repository = get_evaluation_repository()
+    client = InProcessEvaluationChatClient(user)
+    results = []
+    total_cases = len(cases)
+    try:
+        repository.update_run_progress(
+            run_id=run_id,
+            summary=_system_eval_progress_summary(
+                dataset_id=dataset_id,
+                results=results,
+                total_cases=total_cases,
+                current_case=cases[0] if cases else None,
+                current_index=1 if cases else 0,
+                semantic_judge_enabled=semantic_judge_enabled,
+            ),
+        )
+        for index, case in enumerate(cases, start=1):
+            repository.update_run_progress(
+                run_id=run_id,
+                summary=_system_eval_progress_summary(
+                    dataset_id=dataset_id,
+                    results=results,
+                    total_cases=total_cases,
+                    current_case=case,
+                    current_index=index,
+                    semantic_judge_enabled=semantic_judge_enabled,
+                ),
+            )
+            try:
+                response = client.ask(case)
+                result = evaluate_response(case, response)
+            except Exception as exc:
+                result = EvaluationResult(
+                    case=case,
+                    passed=False,
+                    score=0.0,
+                    failure_reasons=(f"evaluation_error: {type(exc).__name__}: {exc}",),
+                )
+            results.append(result)
+            repository.store_case_result(run_id=run_id, result=result.as_dict())
+            repository.update_run_progress(
+                run_id=run_id,
+                summary=_system_eval_progress_summary(
+                    dataset_id=dataset_id,
+                    results=results,
+                    total_cases=total_cases,
+                    current_case=cases[index] if index < total_cases else None,
+                    current_index=min(index + 1, total_cases),
+                    semantic_judge_enabled=semantic_judge_enabled,
+                ),
+            )
+        summary = summarize_results(dataset_id, results).as_dict()
+        summary["completed_cases"] = total_cases
+        summary["progress_total_cases"] = total_cases
+        summary["progress_completed_cases"] = total_cases
+        summary["progress_current_index"] = total_cases
+        summary["progress_current_case_id"] = ""
+        summary["progress_current_query"] = ""
+        summary["progress_percent"] = 1
+        if semantic_judge_enabled:
+            summary["semantic_judge_enabled"] = True
+            summary["semantic_judge_note"] = "Semantic judge is reserved for a future extension; hard assertions were used."
+        report = markdown_report(run_id=run_id, summary=summary, results=results)
+        status_value = "completed" if all(result.passed for result in results) else "completed_with_failures"
+        repository.complete_run(
+            run_id=run_id,
+            status=status_value,
+            summary=summary,
+            report_markdown=report,
+            results=[],
+        )
+    except Exception as exc:
+        logger.exception("system_eval_run_failed run_id=%s", run_id)
+        try:
+            repository.fail_run(run_id, f"{type(exc).__name__}: {exc}")
+        except Exception:
+            pass
 
 
 def _sync_table_metadata_manifest() -> dict[str, object]:
@@ -769,6 +967,24 @@ def admin_user_context(
         return user
     except AuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+def _system_eval_user_context(user_id: str, fallback: HealthcareUserContext) -> HealthcareUserContext:
+    requested = str(user_id or "").strip()
+    if not requested:
+        return fallback
+    try:
+        for managed_user in get_auth_service().list_users():
+            if managed_user.username == requested:
+                return HealthcareUserContext(
+                    user_id=managed_user.username,
+                    roles=tuple(managed_user.roles),
+                    departments=tuple(managed_user.departments),
+                    password_change_required=managed_user.password_change_required,
+                )
+    except Exception:
+        pass
+    return fallback
 
 
 def current_user(user: HealthcareUserContext = Depends(active_user_context)) -> str:
@@ -1368,6 +1584,145 @@ def admin_dashboard(
             "users": registered_users,
         },
     }
+
+
+@app.get("/admin/evaluations/datasets", response_model=AdminSystemEvalDatasetsResponse)
+def admin_evaluation_datasets(
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> AdminSystemEvalDatasetsResponse:
+    datasets: list[AdminSystemEvalDataset] = []
+    for dataset_id in bundled_dataset_ids():
+        try:
+            cases = load_bundled_dataset(dataset_id)
+            datasets.append(
+                AdminSystemEvalDataset(
+                    dataset_id=dataset_id,
+                    case_count=len(cases),
+                    categories=sorted({case.category for case in cases}),
+                )
+            )
+        except Exception:
+            logger.exception("system_eval_dataset_load_failed dataset=%s", dataset_id)
+    return AdminSystemEvalDatasetsResponse(datasets=datasets)
+
+
+@app.post("/admin/evaluations/runs", response_model=AdminSystemEvalRunResponse)
+def admin_create_evaluation_run(
+    request: AdminSystemEvalRunRequest,
+    background_tasks: BackgroundTasks,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> AdminSystemEvalRunResponse:
+    run_id = ""
+    try:
+        selected_categories, effective_cases = _prepare_system_eval_cases(request)
+
+        runtime_settings = get_runtime_settings()
+        repository = get_evaluation_repository()
+        run_id = repository.create_run(
+            dataset_id=request.dataset_id,
+            dataset_version=request.dataset_id,
+            environment=get_settings().app_env,
+            tool_mode=runtime_settings.tool_execution_mode,
+            requested_by=user.user_id,
+            semantic_judge_enabled=request.semantic_judge_enabled,
+            category_filter=sorted(selected_categories),
+            user_filter=request.user_id,
+        )
+        initial_summary = _system_eval_progress_summary(
+            dataset_id=request.dataset_id,
+            results=[],
+            total_cases=len(effective_cases),
+            current_case=effective_cases[0],
+            current_index=1,
+            semantic_judge_enabled=request.semantic_judge_enabled,
+        )
+        repository.update_run_progress(run_id=run_id, summary=initial_summary)
+        if request.async_run:
+            background_tasks.add_task(
+                _run_system_eval_to_repository,
+                run_id=run_id,
+                dataset_id=request.dataset_id,
+                cases=effective_cases,
+                user=user,
+                semantic_judge_enabled=request.semantic_judge_enabled,
+            )
+            return AdminSystemEvalRunResponse(
+                run_id=run_id,
+                dataset_id=request.dataset_id,
+                status="running",
+                summary=initial_summary,
+                cases=[],
+            )
+
+        _run_system_eval_to_repository(
+            run_id=run_id,
+            dataset_id=request.dataset_id,
+            cases=effective_cases,
+            user=user,
+            semantic_judge_enabled=request.semantic_judge_enabled,
+        )
+        stored = repository.get_run(run_id) or {}
+        return AdminSystemEvalRunResponse(
+            run_id=run_id,
+            dataset_id=request.dataset_id,
+            status=str(stored.get("status") or status_value),
+            summary=dict(stored.get("summary") or summary),
+            cases=list(stored.get("cases") or []),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if run_id:
+            try:
+                get_evaluation_repository().fail_run(run_id, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.get("/admin/evaluations/runs", response_model=AdminSystemEvalRunListResponse)
+def admin_list_evaluation_runs(
+    limit: int = Query(default=25, ge=1, le=100),
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> AdminSystemEvalRunListResponse:
+    try:
+        return AdminSystemEvalRunListResponse(runs=get_evaluation_repository().list_runs(limit=limit))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.get("/admin/evaluations/runs/{run_id}/report")
+def admin_get_evaluation_report(
+    run_id: str,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> Response:
+    try:
+        report = get_evaluation_repository().get_report(run_id)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evaluation run not found")
+    return Response(content=report, media_type="text/markdown")
+
+
+@app.get("/admin/evaluations/runs/{run_id}", response_model=AdminSystemEvalRunResponse)
+def admin_get_evaluation_run(
+    run_id: str,
+    user: HealthcareUserContext = Depends(admin_user_context),
+) -> AdminSystemEvalRunResponse:
+    try:
+        stored = get_evaluation_repository().get_run(run_id)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if stored is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evaluation run not found")
+    return AdminSystemEvalRunResponse(
+        run_id=str(stored.get("run_id") or run_id),
+        dataset_id=str(stored.get("dataset_id") or ""),
+        status=str(stored.get("status") or ""),
+        summary=dict(stored.get("summary") or {}),
+        cases=list(stored.get("cases") or []),
+    )
 
 
 @app.post("/admin/warmup")

@@ -5,6 +5,7 @@ import queue
 import re
 import textwrap
 import threading
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -1764,6 +1765,305 @@ def render_admin_dashboard() -> None:
         st.info("No chat queries found yet.")
 
 
+def _percent_label(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except Exception:
+        return "0.0%"
+
+
+def _evaluation_report_text(run_id: str) -> str:
+    response = requests.get(
+        f"{BACKEND_URL}/admin/evaluations/runs/{quote(run_id, safe='')}/report",
+        headers=api_headers(),
+        timeout=30,
+    )
+    raise_for_api_error(response)
+    return response.text
+
+
+def render_evaluation_case_detail(case: dict[str, Any]) -> None:
+    st.caption(f"Case ID: {case.get('case_id') or 'unknown'}")
+    st.caption(f"Trace ID: {case.get('trace_id') or 'unavailable'}")
+    st.caption(f"Tool execution: {case.get('tool_execution_location') or 'unknown'}")
+    st.markdown("**Question**")
+    st.write(case.get("query") or "")
+    st.markdown("**Answer**")
+    st.write(case.get("answer") or "")
+
+    expected = case.get("expected") if isinstance(case.get("expected"), dict) else {}
+    actual = case.get("actual") if isinstance(case.get("actual"), dict) else {}
+    comparison_rows = [
+        {
+            "Check": "Agents",
+            "Expected": ", ".join(expected.get("agents") or []),
+            "Actual": ", ".join(actual.get("agents") or case.get("agents") or []),
+        },
+        {
+            "Check": "Tools",
+            "Expected": ", ".join(expected.get("tools") or []),
+            "Actual": ", ".join(actual.get("tools") or case.get("tools") or []),
+        },
+        {
+            "Check": "Sources",
+            "Expected": ", ".join(expected.get("sources") or []),
+            "Actual": ", ".join(actual.get("sources") or []),
+        },
+        {
+            "Check": "Safety flags",
+            "Expected": ", ".join(expected.get("required_safety_flags") or []),
+            "Actual": ", ".join(actual.get("safety_flags") or []),
+        },
+    ]
+    st.markdown("**Expected vs actual**")
+    st.dataframe(comparison_rows, hide_index=True, use_container_width=True)
+
+    failures = case.get("failure_reasons") or []
+    if failures:
+        st.markdown("**Failure reasons**")
+        for reason in failures:
+            st.error(str(reason))
+
+    with st.expander("Sources", expanded=False):
+        st.json(case.get("sources") or [])
+    with st.expander("Tool execution records", expanded=False):
+        st.json(case.get("tool_execution_records") or [])
+    with st.expander("Raw response", expanded=False):
+        st.json(case.get("raw_response") or {})
+
+
+def render_system_eval_progress(run_payload: dict[str, Any]) -> None:
+    summary = run_payload.get("summary") if isinstance(run_payload.get("summary"), dict) else {}
+    status_value = str(run_payload.get("status") or "running")
+    total = int(summary.get("progress_total_cases") or summary.get("total_cases") or 0)
+    completed = int(summary.get("progress_completed_cases") or summary.get("completed_cases") or 0)
+    current_index = int(summary.get("progress_current_index") or min(completed + 1, total) or 0)
+    current_case_id = str(summary.get("progress_current_case_id") or "")
+    current_query = str(summary.get("progress_current_query") or "")
+    progress_value = (completed / total) if total else 0
+    st.progress(
+        min(1.0, max(0.0, progress_value)),
+        text=f"{completed} of {total} completed",
+    )
+    if status_value == "running":
+        st.markdown(f"**Testing case {current_index} of {total}:** `{current_case_id or 'preparing'}`")
+        if current_query:
+            st.caption(current_query)
+    else:
+        st.markdown(f"**Run status:** `{status_value}`")
+    status_cols = st.columns(4)
+    status_cols[0].metric("Completed", completed)
+    status_cols[1].metric("Total", total)
+    status_cols[2].metric("Passed so far", summary.get("passed_cases", 0))
+    status_cols[3].metric("Failed so far", summary.get("failed_cases", 0))
+
+
+def render_evaluations_app_page() -> None:
+    with st.sidebar:
+        render_common_sidebar()
+    render_page_title("Evaluations")
+
+    try:
+        datasets_payload = get_json("/admin/evaluations/datasets")
+        runs_payload = get_json("/admin/evaluations/runs", params={"limit": 50})
+    except Exception as exc:
+        st.error(f"Unable to load evaluations: {exc}")
+        return
+
+    datasets = datasets_payload.get("datasets", []) if isinstance(datasets_payload, dict) else []
+    runs = runs_payload.get("runs", []) if isinstance(runs_payload, dict) else []
+    latest = runs[0] if runs else {}
+    latest_summary = latest.get("summary") if isinstance(latest.get("summary"), dict) else {}
+
+    metric_columns = st.columns(6)
+    metric_columns[0].metric("Latest pass rate", _percent_label(latest_summary.get("pass_rate", 0)))
+    metric_columns[1].metric("Failed cases", latest_summary.get("failed_cases", 0))
+    metric_columns[2].metric("Avg latency", f"{latest_summary.get('average_latency_ms', 0)} ms")
+    metric_columns[3].metric("Routing", _percent_label(latest_summary.get("routing_accuracy", 0)))
+    metric_columns[4].metric("Sources", _percent_label(latest_summary.get("source_accuracy", 0)))
+    metric_columns[5].metric("Safety", _percent_label(latest_summary.get("safety_accuracy", 0)))
+
+    st.divider()
+    st.subheader("Run evaluation")
+    if not datasets:
+        st.warning("No bundled evaluation datasets are available.")
+    else:
+        dataset_ids = [str(dataset.get("dataset_id")) for dataset in datasets if dataset.get("dataset_id")]
+        dataset_lookup = {str(dataset.get("dataset_id")): dataset for dataset in datasets}
+        controls = st.columns([1.4, 1.8, 1.2, 1, 1])
+        selected_dataset = controls[0].selectbox("Dataset", dataset_ids, key="system_eval_dataset")
+        categories = dataset_lookup.get(selected_dataset, {}).get("categories") or []
+        selected_categories = controls[1].multiselect("Categories", categories, key="system_eval_categories")
+        user_options = [""]
+        try:
+            users_payload = get_json("/admin/users")
+            if isinstance(users_payload, list):
+                user_options.extend(
+                    str(item.get("username"))
+                    for item in users_payload
+                    if isinstance(item, dict) and item.get("username")
+                )
+        except Exception:
+            pass
+        user_labels = ["Current admin user", *[user for user in user_options if user]]
+        selected_user_label = controls[2].selectbox("Run as", user_labels, key="system_eval_user")
+        selected_user = "" if selected_user_label == "Current admin user" else selected_user_label
+        selected_case_count = int(dataset_lookup.get(selected_dataset, {}).get("case_count") or 40)
+        limit = controls[3].number_input(
+            "Limit",
+            min_value=1,
+            max_value=200,
+            value=min(200, selected_case_count),
+            step=1,
+            key=f"system_eval_limit_{selected_dataset}",
+        )
+        semantic_judge = controls[4].checkbox("Judge", value=False, help="Reserved for future LLM-as-judge scoring. Hard assertions are always used.")
+        if st.button("Run system evaluation", type="primary"):
+            try:
+                run_result = post_json(
+                    "/admin/evaluations/runs",
+                    {
+                        "dataset_id": selected_dataset,
+                        "categories": selected_categories,
+                        "user_id": selected_user,
+                        "semantic_judge_enabled": semantic_judge,
+                        "limit": int(limit),
+                        "async_run": True,
+                    },
+                )
+                run_id = str(run_result.get("run_id") or "")
+                if not run_id:
+                    raise RuntimeError("Evaluation run did not return a run id")
+                st.session_state.selected_eval_run_id = run_id
+                progress_placeholder = st.empty()
+                latest_run_payload = run_result
+                with progress_placeholder.container():
+                    render_system_eval_progress(latest_run_payload)
+                for _ in range(3600):
+                    latest_run_payload = get_json(f"/admin/evaluations/runs/{quote(run_id, safe='')}")
+                    progress_placeholder.empty()
+                    with progress_placeholder.container():
+                        render_system_eval_progress(latest_run_payload)
+                    if str(latest_run_payload.get("status") or "") != "running":
+                        break
+                    time.sleep(1)
+                st.success("Evaluation run completed.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Evaluation run failed: {exc}")
+
+    st.divider()
+    st.subheader("Historical runs")
+    if not runs:
+        st.info("No evaluation runs have been recorded yet.")
+        return
+
+    run_labels = []
+    run_id_by_label = {}
+    for run in runs:
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        label = (
+            f"{run.get('started_at', '')} | {run.get('dataset_id', '')} | "
+            f"{run.get('status', '')} | pass {_percent_label(summary.get('pass_rate', 0))}"
+        )
+        run_labels.append(label)
+        run_id_by_label[label] = str(run.get("run_id"))
+    preferred_run_id = st.session_state.get("selected_eval_run_id")
+    default_index = 0
+    if preferred_run_id:
+        for index, label in enumerate(run_labels):
+            if run_id_by_label[label] == preferred_run_id:
+                default_index = index
+                break
+    selected_label = st.selectbox("Run", run_labels, index=default_index, key="system_eval_run_selector")
+    selected_run_id = run_id_by_label[selected_label]
+    st.session_state.selected_eval_run_id = selected_run_id
+
+    try:
+        run_detail = get_json(f"/admin/evaluations/runs/{quote(selected_run_id, safe='')}")
+    except Exception as exc:
+        st.error(f"Unable to load evaluation run: {exc}")
+        return
+    if not isinstance(run_detail, dict):
+        st.error("Unexpected evaluation run response")
+        return
+
+    detail_summary = run_detail.get("summary") if isinstance(run_detail.get("summary"), dict) else {}
+    detail_columns = st.columns(5)
+    detail_columns[0].metric("Cases", detail_summary.get("total_cases", 0))
+    detail_columns[1].metric("Passed", detail_summary.get("passed_cases", 0))
+    detail_columns[2].metric("Failed", detail_summary.get("failed_cases", 0))
+    detail_columns[3].metric("Avg score", _percent_label(detail_summary.get("average_score", 0)))
+    detail_columns[4].metric("Tool accuracy", _percent_label(detail_summary.get("tool_accuracy", 0)))
+
+    try:
+        report_text = _evaluation_report_text(selected_run_id)
+        st.download_button(
+            "Download markdown report",
+            data=report_text,
+            file_name=f"system-eval-{selected_run_id}.md",
+            mime="text/markdown",
+        )
+    except Exception:
+        pass
+
+    cases = run_detail.get("cases") if isinstance(run_detail.get("cases"), list) else []
+    rows = []
+    for case in cases:
+        rows.append(
+            {
+                "Case": case.get("case_id", ""),
+                "Category": case.get("category", ""),
+                "Status": "Pass" if case.get("passed") else "Fail",
+                "Score": float(case.get("score") or 0),
+                "Agents": ", ".join(case.get("agents") or []),
+                "Tools": ", ".join(case.get("tools") or []),
+                "Latency ms": int(case.get("latency_ms") or 0),
+                "Failures": len(case.get("failure_reasons") or []),
+            }
+        )
+    if not rows:
+        st.info("This run has no case results.")
+        return
+    st.caption("Click a row to inspect the full evaluation case.")
+    table_event = st.dataframe(
+        rows,
+        hide_index=True,
+        use_container_width=True,
+        height=430,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "Case": st.column_config.TextColumn("Case", width="medium"),
+            "Category": st.column_config.TextColumn("Category", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Score": st.column_config.NumberColumn("Score", width="small", format="%.2f"),
+            "Agents": st.column_config.TextColumn("Agents", width="large"),
+            "Tools": st.column_config.TextColumn("Tools", width="large"),
+            "Latency ms": st.column_config.NumberColumn("Latency ms", width="small"),
+            "Failures": st.column_config.NumberColumn("Failures", width="small"),
+        },
+    )
+    selected_rows = []
+    try:
+        selected_rows = list(table_event.selection.rows)
+    except Exception:
+        selected_rows = []
+    if selected_rows:
+        selected_index = int(selected_rows[0])
+        if 0 <= selected_index < len(cases):
+            selected_case = cases[selected_index]
+            if hasattr(st, "dialog"):
+
+                @st.dialog("Evaluation case details", width="large")
+                def evaluation_case_dialog() -> None:
+                    render_evaluation_case_detail(selected_case)
+
+                evaluation_case_dialog()
+            else:
+                render_evaluation_case_detail(selected_case)
+
+
 CRM_SECTION_LABELS = {
     "patients": "Patients",
     "doctors": "Doctors",
@@ -3207,6 +3507,7 @@ elif "admin" in st.session_state.get("roles", []):
                 ),
                 st.Page(render_users_app_page, title="Users", icon=":material/group:"),
                 st.Page(render_documents_app_page, title="Documents", icon=":material/folder:"),
+                st.Page(render_evaluations_app_page, title="Evaluations", icon=":material/rule_settings:"),
                 st.Page(render_settings_app_page, title="Settings", icon=":material/settings:"),
             ],
         },
