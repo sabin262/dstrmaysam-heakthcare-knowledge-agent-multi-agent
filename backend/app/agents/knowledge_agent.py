@@ -923,6 +923,11 @@ def _has_staff_rota_lookup_intent(text: str) -> bool:
             "shifts",
             "today",
             "tomorrow",
+            "yesterday",
+            "this week",
+            "next week",
+            "last week",
+            "previous week",
         )
     )
     generic_on_call = bool(terms & {"who", "which"}) and any(
@@ -1137,6 +1142,25 @@ def _safety_should_suppress_deterministic(text: str) -> bool:
     if _has_contact_intent(text) or _has_staff_rota_lookup_intent(text) or _has_patient_appointment_lookup_intent(text):
         return False
     return True
+
+
+def _is_direct_answer_only_query(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\s]", " ", str(text or "").lower()).strip()
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return True
+    return normalized in {
+        "hi",
+        "hello",
+        "hey",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+    }
 
 
 def _needs_deterministic_specialist(text: str) -> bool:
@@ -2018,7 +2042,7 @@ def _tools_for_query_part(part: str) -> list[str]:
         tools.append("policy_search")
     if deterministic and not policy and "postgres_deterministic_lookup" not in tools:
         tools.append("postgres_deterministic_lookup")
-    return tools or ["rag_search"]
+    return tools or ["policy_search"]
 
 
 def _tool_for_query_part(part: str) -> str:
@@ -2035,6 +2059,8 @@ def _unique_route_tools(routes: list[dict[str, str]]) -> list[str]:
 
 
 def _planned_tool_routes(query: str) -> list[dict[str, str]]:
+    if _is_direct_answer_only_query(query):
+        return []
     routes: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for part in _query_parts(query):
@@ -2876,10 +2902,10 @@ class SupervisorAgent:
             "Supervisor routing task:\n"
             "- Choose specialist agent(s) only; do not choose backend tools.\n"
             "- Use deterministic_lookup_agent for exact structured facts, counts, lists, rota, patients, appointments, wards, contacts, departments, Postgres table rows, and formulary rows.\n"
-            "- Use policy_agent for policies, SOPs, pathways, guidelines, compliance, privacy, confidentiality, research data, retention, and governance.\n"
+            "- Use policy_agent first for document-content questions, including policies, SOPs, pathways, guidelines, compliance, privacy, confidentiality, research data, retention, governance, and broad hospital knowledge. If policy_agent reports no evidence, the supervisor may call rag_agent for broader retrieval.\n"
             "- Use catalog_agent for document inventory and metadata questions.\n"
             "- Use safety_agent for urgent clinical risk, escalation, PHI, or unsafe requests.\n"
-            "- Use rag_agent for general document retrieval.\n"
+            "- Use rag_agent only as broader document retrieval after policy_agent cannot find answerable evidence, unless a follow-up specialist report explicitly recommends rag_agent.\n"
             "- Generic 'info on X' or 'information on X' questions should use rag_agent or policy_agent unless X is clearly an exact structured lookup target.\n"
             "- For any operational, patient, appointment, rota, equipment, formulary, contact, ward, or policy fact, call a specialist agent; do not answer from memory.\n"
             "- If the query has multiple parts, call every relevant specialist before synthesis.\n"
@@ -2925,6 +2951,13 @@ class SupervisorAgent:
                 )
             routes = self.apply_planned_guard_to_routes(routes)
             if tasks:
+                tasks = [
+                    self.normalize_task_for_guardrails(
+                        task,
+                        reason=str(task.constraints.get("reason") or "llm_supervisor_agent_call"),
+                    )
+                    for task in tasks
+                ]
                 existing_task_keys = {_task_key(task) for task in tasks}
                 existing_agent_intents = {
                     (task.agent, _canonical_tool_name(str(task.constraints.get("planned_tool") or task.intent)))
@@ -3015,6 +3048,7 @@ class SupervisorAgent:
         return self.route_to_task(state, task, reason=reason)
 
     def route_to_task(self, state: dict[str, Any], task: SpecialistTask, *, reason: str) -> dict[str, Any]:
+        task = self.normalize_task_for_guardrails(task, reason=reason)
         decision = {
             "agent": self.agent_name,
             "kind": "supervisor",
@@ -3034,6 +3068,43 @@ class SupervisorAgent:
             "next_node": _node_for_agent(task.agent),
             "agent_flow": list(state.get("agent_flow") or []) + [decision],
         }
+
+    def normalize_task_for_guardrails(self, task: SpecialistTask, *, reason: str) -> SpecialistTask:
+        task = replace(task)
+        if task.agent == "DeterministicLookupAgent":
+            task.query = self.deterministic_specialist_query(task.query)
+            task.intent = "postgres_deterministic_lookup"
+            task.constraints = {**task.constraints, "planned_tool": "postgres_deterministic_lookup"}
+            return task
+
+        allow_rag_fallback = reason in {
+            "policy_no_evidence_rag_fallback",
+            "supervisor_report_arbitration",
+            "specialist_recommended_next_agent",
+            "deterministic_no_evidence_rag_fallback",
+        } or str(task.constraints.get("reason") or "") in {
+            "policy_no_evidence_rag_fallback",
+            "specialist_recommended_next_agent",
+        }
+        if task.agent == "RAGAgent" and not allow_rag_fallback:
+            for planned_route in self.context.planned_guard_routes:
+                if planned_route.get("tool") != "policy_search":
+                    continue
+                if not self.route_queries_match(
+                    {"tool": "policy_search", "query": task.query},
+                    planned_route,
+                ):
+                    continue
+                task.agent = "PolicyAgent"
+                task.query = str(planned_route.get("query") or task.query or self.context.original_query)
+                task.intent = "policy_search"
+                task.constraints = {
+                    **task.constraints,
+                    "planned_tool": "policy_search",
+                    "reason": "supervisor_policy_first_guard",
+                }
+                return task
+        return task
 
     def deterministic_guard_needed(self, state: dict[str, Any]) -> bool:
         if not self.context.deterministic_guard_queries:
@@ -3130,6 +3201,12 @@ class SupervisorAgent:
         return _planned_tool_names(self.context.original_query) == ["postgres_deterministic_lookup"]
 
     def deterministic_specialist_query(self, query: str) -> str:
+        normalized_query = " ".join(str(query or "").lower().split())
+        guard_queries = [guard for guard in self.context.deterministic_guard_queries if guard.strip()]
+        if guard_queries:
+            normalized_guards = {" ".join(guard.lower().split()) for guard in guard_queries}
+            if normalized_query not in normalized_guards:
+                return guard_queries[0]
         if (
             not query.strip()
             or _is_sqlish_tool_query(query)
@@ -3252,14 +3329,20 @@ class SupervisorAgent:
                         "query": str(task.get("query") or ""),
                     }
                 )
-        if not covered_routes:
-            covered_routes = [
-                {"tool": str(tool), "query": self.context.original_query}
-                for tool in list(state.get("tools_used") or [])
-            ]
+        covered_routes.extend(
+            {"tool": str(tool), "query": self.context.original_query}
+            for tool in list(state.get("tools_used") or [])
+        )
 
         missing: list[dict[str, str]] = []
+        completed_tools = {
+            _canonical_tool_name(str(tool))
+            for tool in list(state.get("tools_used") or [])
+        }
         for planned_route in self.context.planned_guard_routes:
+            planned_tool = _canonical_tool_name(str(planned_route.get("tool") or ""))
+            if planned_tool == "policy_search" and planned_tool in completed_tools:
+                continue
             if any(self.route_matches_planned(route, planned_route) for route in covered_routes):
                 continue
             route_reason = reason
@@ -3571,8 +3654,8 @@ class PolicyAgent(SpecialistGraphAgent):
     ) -> SpecialistReport:
         report = super().validate_report(task=task, tool_results=tool_results, started_at=started_at)
         if report.status == "no_evidence":
-            report.recommended_next_agents = ["CatalogAgent", "RAGAgent"]
-            report.warnings.append("No policy chunks found; catalog or broader document retrieval may be needed.")
+            report.recommended_next_agents = ["RAGAgent"]
+            report.warnings.append("No policy chunks found; broader document retrieval may be needed.")
         return report
 
 
@@ -4775,7 +4858,9 @@ class KnowledgeAgent:
             "User question:\n"
             f"{query}\n\n"
             "Tool selection rules:\n"
-            "- Use RAG document search for policy, procedure, SOP, guideline, privacy, confidentiality, and governance questions.\n"
+            "- Use PolicyAgent/policy search first for document-content questions, including policy, procedure, SOP, guideline, privacy, confidentiality, governance, retention, research data, and broad hospital knowledge questions.\n"
+            "- Use RAG/document search only after policy search cannot find answerable evidence and broader retrieval is needed.\n"
+            "- Use CatalogAgent/catalogue search for document inventory or metadata questions such as what documents exist, list documents, document categories, document types, or available guidelines.\n"
             "- Use deterministic Postgres lookup for exact structured facts such as doctors on call, patients, appointments, wards, contacts, departments, CSV lookup rows, and formulary rows.\n"
             "- Use deterministic Postgres lookup for count, total, inventory, equipment, asset, device, stock, or availability questions that may be answered by uploaded CSV row values.\n"
             "- Do not treat 'info on X' or 'information on X' as automatically deterministic. Use deterministic lookup only when X is clearly a medication, asset, contact, rota, patient, appointment, ward, count/list target, or uploaded CSV row value; otherwise use RAG or policy search.\n"
