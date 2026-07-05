@@ -721,6 +721,8 @@ def _requested_rota_dates(query: str, today: date | None = None) -> list[str]:
         requested.append(base_date)
     if "tomorrow" in q:
         requested.append(base_date + timedelta(days=1))
+    if "yesterday" in q:
+        requested.append(base_date - timedelta(days=1))
     week_start = base_date - timedelta(days=base_date.weekday())
     if "next week" in q:
         requested.extend(week_start + timedelta(days=offset) for offset in range(7, 14))
@@ -788,7 +790,19 @@ def _is_staff_rota_query(query: str) -> bool:
     )
     dated_on_call_requested = any(marker in q for marker in ["on call", "on-call", "oncall"]) and any(
         marker in q
-        for marker in ["today", "tomorrow", "this week", "next week", "last week", "this month", "next month", "last month"]
+        for marker in [
+            "today",
+            "tomorrow",
+            "yesterday",
+            "this week",
+            "next week",
+            "last week",
+            "previous week",
+            "this month",
+            "next month",
+            "last month",
+            "previous month",
+        ]
     )
     mentions_staff_rota = "staff_rota" in q or "staff rota" in q
     return mentions_staff_rota or generic_on_call_requested or dated_on_call_requested or (role_requested and rota_requested)
@@ -807,6 +821,7 @@ def _staff_rota_query_focus(query: str) -> str:
     date_only_terms = {
         "today",
         "tomorrow",
+        "yesterday",
         "this week",
         "next week",
         "last week",

@@ -720,8 +720,100 @@ class AgentContractTests(unittest.TestCase):
         self.assertIn("Dr Smith", result.answer)
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertEqual(len(fake_llm.messages), 1)
-        self.assertEqual(lookup.calls[0]["query"], "which doctor is on call")
+        self.assertEqual(lookup.calls[0]["query"], "who is on call")
         self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "llm_supervisor_tool_call_compat")
+
+    def test_consecutive_on_call_queries_use_current_date_clause_not_rewritten_history(self):
+        class EchoRotaLookup:
+            def __init__(self):
+                self.calls = []
+
+            def lookup(self, query, user, limit=10, csv_assets=None):
+                self.calls.append({"query": query, "user": user.user_id, "limit": limit})
+                requested_dates = ["2026-07-05"] if "today" in query else ["2026-07-06"]
+                staff_name = "Today Clinician" if "today" in query else "Tomorrow Clinician"
+                return FakeLookupResult(
+                    {
+                        "category": "staff_rota",
+                        "message": "Found 1 matching staff_schedule row(s).",
+                        "rows": [
+                            {
+                                "source_table": "staff_schedule",
+                                "source_filename": "staff_schedule",
+                                "row": {
+                                    "date": requested_dates[0],
+                                    "department": "Emergency Department",
+                                    "role": "Clinical Site Manager",
+                                    "staff_name": staff_name,
+                                    "shift_start": "08:00",
+                                    "shift_end": "20:00",
+                                    "on_call": "Yes",
+                                    "contact": "oncall@example.nhs",
+                                },
+                            }
+                        ],
+                        "lookup_plan": {"requested_rota_dates": requested_dates},
+                    }
+                )
+
+        fake_llm = FakeLLM(
+            [
+                fake_ai_message(
+                    tool_calls=[
+                        {
+                            "name": "postgres_deterministic_lookup",
+                            "args": {"query": "who is on call"},
+                            "id": "call-1",
+                        }
+                    ]
+                ),
+                fake_ai_message(
+                    tool_calls=[
+                        {
+                            "name": "postgres_deterministic_lookup",
+                            "args": {"query": "who is on call"},
+                            "id": "call-2",
+                        }
+                    ]
+                ),
+            ]
+        )
+        lookup = EchoRotaLookup()
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        today_result = agent.answer("user", "who is on call today", session_id="rota-session")
+        tomorrow_result = agent.answer("user", "who is on call tomorrow", session_id="rota-session")
+
+        self.assertEqual([call["query"] for call in lookup.calls], ["who is on call today", "who is on call tomorrow"])
+        self.assertIn("On-call staff for 2026-07-05:", today_result.answer)
+        self.assertIn("Today Clinician", today_result.answer)
+        self.assertIn("On-call staff for 2026-07-06:", tomorrow_result.answer)
+        self.assertIn("Tomorrow Clinician", tomorrow_result.answer)
+
+    def test_supervisor_rag_selection_is_normalized_to_policy_first_for_content_queries(self):
+        fake_llm = FakeLLM(
+            [
+                fake_ai_message(
+                    tool_calls=[
+                        {
+                            "name": "rag_agent",
+                            "args": {"query": "information on IoT in healthcare"},
+                            "id": "call-1",
+                        }
+                    ]
+                ),
+                fake_ai_message("IoT in healthcare should follow approved policy evidence."),
+            ]
+        )
+        agent = make_agent(fake_llm)
+
+        result = agent.answer("user", "information on IoT in healthcare", session_id="session")
+
+        self.assertEqual(result.tools_used, ["policy_search"])
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["selected_agent"], "PolicyAgent")
+        self.assertIn("PolicyAgent", result.metadata["agents_used"])
+        self.assertNotIn("RAGAgent", result.metadata["agents_used"])
 
     def test_compact_oncall_direct_answer_is_forced_to_deterministic_specialist(self):
         fake_llm = FakeLLM([fake_ai_message("Someone is probably on call.")])

@@ -877,6 +877,7 @@ class DeterministicLookupToolTests(unittest.TestCase):
     def test_relative_rota_dates_use_supplied_system_date(self):
         base = date(2026, 6, 28)
         self.assertEqual(_requested_rota_dates("who is on call tomorrow?", today=base), ["2026-06-29"])
+        self.assertEqual(_requested_rota_dates("who is on call yesterday?", today=base), ["2026-06-27"])
 
         next_week_start = base + timedelta(days=1)
         next_week = [(next_week_start + timedelta(days=offset)).isoformat() for offset in range(7)]
