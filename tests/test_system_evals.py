@@ -1,7 +1,25 @@
+import io
+import json
+import urllib.error
+
 from backend.system_evals.dataset import load_bundled_dataset
-from backend.system_evals.evaluator import EvaluationRunner, StaticChatClient, evaluate_response
+from backend.system_evals.evaluator import EvaluationRunner, HttpChatClient, StaticChatClient, evaluate_response
 from backend.system_evals.reporting import markdown_report
 from backend.system_evals.schema import summarize_results
+
+
+class FakeHttpResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 def test_bundled_system_golden_dataset_has_required_coverage():
@@ -161,3 +179,44 @@ def test_markdown_report_contains_summary_and_case_details():
     assert "# System Evaluation Report: run-1" in report
     assert "det_on_call_today" in report
     assert "On call staff" in report
+
+
+def test_http_chat_client_retries_transient_chat_http_errors(monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        if request.full_url.endswith("/auth/login"):
+            return FakeHttpResponse({"access_token": "token"})
+        if len([url for url in calls if url.endswith("/chat")]) == 1:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                hdrs={"Retry-After": "0"},
+                fp=io.BytesIO(b"rate limited"),
+            )
+        return FakeHttpResponse(
+            {
+                "answer": "ok",
+                "tools_used": [],
+                "sources": [],
+                "performance": {},
+            }
+        )
+
+    monkeypatch.setattr("backend.system_evals.evaluator.urllib.request.urlopen", fake_urlopen)
+    client = HttpChatClient(
+        base_url="http://backend",
+        username="admin",
+        password="password",
+        retry_attempts=2,
+        retry_initial_seconds=0,
+        retry_max_seconds=0,
+    )
+
+    response = client.ask(load_bundled_dataset("system_golden_v1")[0])
+
+    assert response["answer"] == "ok"
+    assert response["performance"]["system_eval_http_retry_count"] == 1
+    assert len([url for url in calls if url.endswith("/chat")]) == 2

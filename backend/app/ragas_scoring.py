@@ -231,7 +231,8 @@ def _build_ragas_azure_clients(
     from ragas.run_config import RunConfig
 
     secrets = secret_provider.load_azure_openai()
-    run_config = RunConfig(timeout=90, max_retries=2, max_workers=1)
+    max_retries = max(0, int(settings.llm_client_max_retries or 0))
+    run_config = RunConfig(timeout=90, max_retries=max_retries, max_workers=1)
     llm = AzureChatOpenAI(
         azure_endpoint=secrets.endpoint,
         api_key=secrets.api_key,
@@ -240,7 +241,7 @@ def _build_ragas_azure_clients(
         temperature=0,
         n=1,
         timeout=60,
-        max_retries=2,
+        max_retries=max_retries,
     )
     embeddings = AzureOpenAIEmbeddings(
         azure_endpoint=secrets.endpoint,
@@ -248,7 +249,7 @@ def _build_ragas_azure_clients(
         api_version=secrets.api_version,
         azure_deployment=secrets.embedding_deployment,
         timeout=60,
-        max_retries=2,
+        max_retries=max_retries,
     )
     return (
         LangchainLLMWrapper(llm, run_config=run_config, bypass_n=True),

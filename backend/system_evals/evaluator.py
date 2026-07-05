@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 import urllib.error
@@ -25,6 +26,17 @@ class StaticChatClient:
 
 
 class HttpChatClient:
+    RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+    RETRYABLE_URL_ERROR_MARKERS = (
+        "connection aborted",
+        "connection refused",
+        "connection reset",
+        "server disconnected",
+        "temporarily unavailable",
+        "timed out",
+        "timeout",
+    )
+
     def __init__(
         self,
         *,
@@ -32,11 +44,20 @@ class HttpChatClient:
         username: str,
         password: str,
         timeout_seconds: int = 120,
+        retry_attempts: int = 4,
+        retry_initial_seconds: float = 1.0,
+        retry_max_seconds: float = 20.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
         self.timeout_seconds = timeout_seconds
+        self.retry_attempts = max(1, int(retry_attempts or 1))
+        self.retry_initial_seconds = max(0.0, float(retry_initial_seconds or 0.0))
+        self.retry_max_seconds = max(
+            self.retry_initial_seconds,
+            float(retry_max_seconds or self.retry_initial_seconds),
+        )
         self._token: str | None = None
 
     def ask(self, case: EvaluationCase) -> dict[str, Any]:
@@ -70,12 +91,55 @@ class HttpChatClient:
             headers=headers,
             method="POST",
         )
+        for attempt in range(self.retry_attempts):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                    if attempt and path == "/chat":
+                        performance = result.setdefault("performance", {})
+                        if isinstance(performance, dict):
+                            performance["system_eval_http_retry_count"] = attempt
+                    return result
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if attempt >= self.retry_attempts - 1 or not self._should_retry_http_error(exc):
+                    raise RuntimeError(
+                        f"{exc.code} {exc.reason} after {attempt + 1} attempt(s): {body}"
+                    ) from exc
+                self._sleep_before_retry(attempt, retry_after=self._retry_after_seconds(exc))
+            except urllib.error.URLError as exc:
+                if attempt >= self.retry_attempts - 1 or not self._should_retry_url_error(exc):
+                    raise RuntimeError(
+                        f"{type(exc).__name__} after {attempt + 1} attempt(s): {exc}"
+                    ) from exc
+                self._sleep_before_retry(attempt)
+        raise RuntimeError("HTTP request failed after retry loop")
+
+    def _should_retry_http_error(self, exc: urllib.error.HTTPError) -> bool:
+        return int(exc.code or 0) in self.RETRYABLE_HTTP_STATUS_CODES
+
+    def _should_retry_url_error(self, exc: urllib.error.URLError) -> bool:
+        text = f"{type(exc).__name__}: {exc}".lower()
+        return any(marker in text for marker in self.RETRYABLE_URL_ERROR_MARKERS)
+
+    def _retry_after_seconds(self, exc: urllib.error.HTTPError) -> float | None:
+        value = exc.headers.get("Retry-After") if exc.headers else None
+        if not value:
+            return None
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{exc.code} {exc.reason}: {body}") from exc
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _sleep_before_retry(self, attempt: int, *, retry_after: float | None = None) -> None:
+        delay = min(self.retry_max_seconds, retry_after) if retry_after is not None else min(
+            self.retry_max_seconds,
+            self.retry_initial_seconds * (2**attempt),
+        )
+        if delay <= 0:
+            return
+        delay += random.uniform(0, min(0.5, delay * 0.25))
+        time.sleep(delay)
 
 
 class EvaluationRunner:

@@ -212,6 +212,21 @@ class FakeLLM:
         return self.responses.pop(0)
 
 
+class FlakyLLM:
+    def __init__(self, failures_before_success=1, error=None):
+        self.failures_before_success = failures_before_success
+        self.error = error or RuntimeError("429 rate limit")
+        self.calls = 0
+        self.messages = []
+
+    def invoke(self, messages, config=None):
+        self.calls += 1
+        self.messages.append({"messages": messages, "config": config})
+        if self.calls <= self.failures_before_success:
+            raise self.error
+        return fake_ai_message("Recovered")
+
+
 class FakeLookupResult:
     def __init__(self, payload=None):
         self.payload = payload or {
@@ -368,6 +383,36 @@ class AgentContractTests(unittest.TestCase):
         self.assertIn("llm_warmup_call_ms", status)
         self.assertEqual(status["document_count"], 6)
         self.assertTrue(agent.warmup_status()["total_ms"] >= 0)
+
+    def test_llm_invoke_retries_transient_rate_limit_error(self):
+        flaky_llm = FlakyLLM(failures_before_success=1)
+        agent = make_agent(
+            app_settings=settings(
+                llm_retry_attempts=2,
+                llm_retry_initial_seconds=0,
+                llm_retry_max_seconds=0,
+            )
+        )
+
+        response = agent._invoke_model(flaky_llm, [{"role": "user", "content": "hello"}], None)
+
+        self.assertEqual(message_content(response), "Recovered")
+        self.assertEqual(flaky_llm.calls, 2)
+
+    def test_llm_invoke_does_not_retry_non_transient_auth_error(self):
+        flaky_llm = FlakyLLM(error=RuntimeError("401 unauthorized"))
+        agent = make_agent(
+            app_settings=settings(
+                llm_retry_attempts=3,
+                llm_retry_initial_seconds=0,
+                llm_retry_max_seconds=0,
+            )
+        )
+
+        with self.assertRaises(RuntimeError):
+            agent._invoke_model(flaky_llm, [{"role": "user", "content": "hello"}], None)
+
+        self.assertEqual(flaky_llm.calls, 1)
 
     def test_fake_llm_records_one_selected_tool(self):
         fake_llm = FakeLLM(

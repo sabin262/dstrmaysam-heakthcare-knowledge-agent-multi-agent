@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .dataset import DEFAULT_DATASET_ID, load_bundled_dataset, load_dataset
 from .evaluator import EvaluationRunner, HttpChatClient
 from .reporting import markdown_report
 from .schema import summarize_results
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
 
 def main() -> int:
@@ -21,6 +36,18 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--json-output", default="")
     parser.add_argument("--markdown-output", default="")
+    parser.add_argument("--timeout-seconds", type=int, default=_env_int("SYSTEM_EVAL_TIMEOUT_SECONDS", 120))
+    parser.add_argument("--retry-attempts", type=int, default=_env_int("SYSTEM_EVAL_RETRY_ATTEMPTS", 4))
+    parser.add_argument(
+        "--retry-initial-seconds",
+        type=float,
+        default=_env_float("SYSTEM_EVAL_RETRY_INITIAL_SECONDS", 1.0),
+    )
+    parser.add_argument(
+        "--retry-max-seconds",
+        type=float,
+        default=_env_float("SYSTEM_EVAL_RETRY_MAX_SECONDS", 20.0),
+    )
     args = parser.parse_args()
 
     cases = load_dataset(args.dataset_path) if args.dataset_path else load_bundled_dataset(args.dataset_id)
@@ -30,7 +57,15 @@ def main() -> int:
     if args.limit:
         cases = cases[: args.limit]
 
-    client = HttpChatClient(base_url=args.api_url, username=args.username, password=args.password)
+    client = HttpChatClient(
+        base_url=args.api_url,
+        username=args.username,
+        password=args.password,
+        timeout_seconds=args.timeout_seconds,
+        retry_attempts=args.retry_attempts,
+        retry_initial_seconds=args.retry_initial_seconds,
+        retry_max_seconds=args.retry_max_seconds,
+    )
     results = EvaluationRunner(client).run(cases)
     summary = summarize_results(args.dataset_id, results)
     payload = {
