@@ -481,14 +481,12 @@ def inject_app_theme() -> None:
         .hka-chat-history-marker {
             display: none;
         }
-        .hka-chat-history-list {
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
-            margin-top: 0.35rem;
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-chat-history-marker) div[data-testid="stButton"] {
+            margin-bottom: 0.25rem;
         }
-        .hka-chat-history-row {
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-chat-history-marker) div[data-testid="stButton"] > button {
             align-items: center;
+            background: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
             color: inherit;
@@ -499,22 +497,19 @@ def inject_app_theme() -> None:
             overflow: hidden;
             padding: 0.45rem 0.65rem;
             text-align: left;
-            text-decoration: none;
             transition: background-color 140ms ease, border-color 140ms ease;
             width: 100%;
         }
-        .hka-chat-history-row:hover {
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-chat-history-marker) div[data-testid="stButton"] > button:hover {
             background: rgba(15, 118, 110, 0.12);
             border-color: rgba(15, 118, 110, 0.24);
-            color: inherit;
-            text-decoration: none;
         }
-        .hka-chat-history-row.is-active {
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-chat-history-marker) div[data-testid="stButton"] > button[kind="primary"] {
             background: rgba(15, 118, 110, 0.18);
             border-color: rgba(15, 118, 110, 0.44);
+            color: inherit;
         }
-        .hka-chat-history-title {
-            display: block;
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-chat-history-marker) div[data-testid="stButton"] > button p {
             line-height: 1.2;
             max-width: 100%;
             overflow: hidden;
@@ -522,42 +517,36 @@ def inject_app_theme() -> None:
             white-space: nowrap;
             font-size: 0.92rem;
         }
-        .hka-sidebar-nav-list {
-            display: flex;
-            flex-direction: column;
-            gap: 0.2rem;
-            margin: 0.25rem 0 0.85rem;
+        .hka-sidebar-nav-marker {
+            display: none;
         }
-        .hka-sidebar-nav-row {
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-sidebar-nav-marker) div[data-testid="stButton"] {
+            margin-bottom: 0.2rem;
+        }
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-sidebar-nav-marker) div[data-testid="stButton"] > button {
             align-items: center;
+            background: transparent;
+            border: 0;
             border-radius: 8px;
             color: inherit;
             display: flex;
-            gap: 0.55rem;
+            font-weight: 400;
+            justify-content: flex-start;
             min-height: 2rem;
             padding: 0.38rem 0.65rem;
-            text-decoration: none;
-            transition: background-color 140ms ease, color 140ms ease;
+            text-align: left;
+            width: 100%;
         }
-        .hka-sidebar-nav-row:hover {
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-sidebar-nav-marker) div[data-testid="stButton"] > button:hover {
             background: rgba(148, 163, 184, 0.15);
-            color: inherit;
-            text-decoration: none;
         }
-        .hka-sidebar-nav-row.is-active {
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-sidebar-nav-marker) div[data-testid="stButton"] > button[kind="primary"] {
             background: rgba(148, 163, 184, 0.32);
+            border: 0;
             color: inherit;
             font-weight: 720;
         }
-        .hka-sidebar-nav-icon {
-            color: #8ea1bd;
-            flex: 0 0 auto;
-            font-size: 0.88rem;
-            line-height: 1;
-            width: 1.05rem;
-        }
-        .hka-sidebar-nav-label {
-            display: block;
+        div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]:has(.hka-sidebar-nav-marker) div[data-testid="stButton"] > button p {
             font-size: 0.94rem;
             line-height: 1.2;
             overflow: hidden;
@@ -1801,38 +1790,27 @@ CRM_PRIMARY_SECTIONS = (
 )
 
 
-CRM_SECTION_NAV_ICONS = {
-    "patients": "Pt",
-    "doctors": "Dr",
-    "departments": "Dp",
-    "schedule": "Sc",
-    "appointments": "Ap",
-    "finance": "Fi",
-}
-
-
 def render_crm_section_nav(section_keys: list[str], active_section: str) -> None:
-    rows = []
+    st.markdown('<span class="hka-sidebar-nav-marker"></span>', unsafe_allow_html=True)
     for section_key in section_keys:
         label = CRM_SECTION_LABELS.get(section_key, section_key.title())
-        active_class = " is-active" if section_key == active_section else ""
-        icon = CRM_SECTION_NAV_ICONS.get(section_key, "")
-        rows.append(
-            f"""
-            <a class="hka-sidebar-nav-row{active_class}" href="?{CRM_SECTION_QUERY_PARAM}={quote(section_key)}" target="_self">
-                <span class="hka-sidebar-nav-icon">{html.escape(icon)}</span>
-                <span class="hka-sidebar-nav-label">{html.escape(label)}</span>
-            </a>
-            """
-        )
-    st.markdown(
-        f"""
-        <div class="hka-sidebar-nav-list">
-            {''.join(rows)}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        if st.button(
+            label,
+            key=f"crm-section-nav-{section_key}",
+            type="primary" if section_key == active_section else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.crm_section = section_key
+            st.session_state["crm_all_tables_select"] = label
+            clear_query_param(CRM_SECTION_QUERY_PARAM)
+            st.rerun()
+
+
+def sync_crm_section_from_table_select(label_to_key: dict[str, str]) -> None:
+    selected_label = st.session_state.get("crm_all_tables_select")
+    selected_key = label_to_key.get(str(selected_label))
+    if selected_key:
+        st.session_state.crm_section = selected_key
 
 
 CRM_FIELD_LABELS = {
@@ -3059,32 +3037,21 @@ def load_chat_session(session_id: str) -> None:
 
 def render_chat_history_list(sessions: list[dict[str, Any]]) -> None:
     active_session_id = st.session_state.get("session_id")
-    rows = []
+    st.markdown('<span class="hka-chat-history-marker"></span>', unsafe_allow_html=True)
     for session in sessions[:20]:
         session_id = str(session.get("session_id") or "")
         if not session_id:
             continue
-        full_label = str(session.get("title") or session_id).strip()
         display_label = chat_session_sidebar_label(session)
-        active_class = " is-active" if session_id == active_session_id else ""
-        rows.append(
-            f"""
-            <a class="hka-chat-history-row{active_class}" href="?{CHAT_SESSION_QUERY_PARAM}={quote(session_id)}" target="_self" title="{html.escape(full_label, quote=True)}">
-                <span class="hka-chat-history-title">{html.escape(display_label)}</span>
-            </a>
-            """
-        )
-    if not rows:
-        return
-    st.markdown(
-        f"""
-        <span class="hka-chat-history-marker"></span>
-        <div class="hka-chat-history-list">
-            {''.join(rows)}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        if st.button(
+            display_label,
+            key=f"session-{session_id}",
+            type="primary" if session_id == active_session_id else "secondary",
+            use_container_width=True,
+        ):
+            load_chat_session(session_id)
+            clear_query_param(CHAT_SESSION_QUERY_PARAM)
+            st.rerun()
 
 
 def render_chat_sidebar() -> None:
@@ -3097,13 +3064,7 @@ def render_chat_sidebar() -> None:
     try:
         sessions = get_json("/chat/sessions")
         if sessions:
-            session_ids = {str(session.get("session_id")) for session in sessions if session.get("session_id")}
-            selected_session_id = get_query_param_value(CHAT_SESSION_QUERY_PARAM)
-            if selected_session_id and selected_session_id in session_ids:
-                if selected_session_id != st.session_state.get("session_id"):
-                    load_chat_session(selected_session_id)
-                    st.rerun()
-            elif selected_session_id:
+            if get_query_param_value(CHAT_SESSION_QUERY_PARAM):
                 clear_query_param(CHAT_SESSION_QUERY_PARAM)
             st.divider()
             st.caption("Previous chats")
@@ -3154,18 +3115,11 @@ def render_patient_details_app_page() -> None:
             st.error("Unable to load CRM tables.")
             return
         primary_section_keys = [key for key in CRM_PRIMARY_SECTIONS if key in table_keys]
-        selected_section_param = get_query_param_value(CRM_SECTION_QUERY_PARAM)
-        if selected_section_param in table_keys:
-            selected_section = selected_section_param
-            st.session_state.crm_section = selected_section
-            st.session_state["crm_all_tables_select"] = CRM_SECTION_LABELS[selected_section]
+        if get_query_param_value(CRM_SECTION_QUERY_PARAM):
             clear_query_param(CRM_SECTION_QUERY_PARAM)
-        else:
-            if selected_section_param:
-                clear_query_param(CRM_SECTION_QUERY_PARAM)
-            selected_section = st.session_state.get("crm_section") or (
-                primary_section_keys[0] if primary_section_keys else table_keys[0]
-            )
+        selected_section = st.session_state.get("crm_section") or (
+            primary_section_keys[0] if primary_section_keys else table_keys[0]
+        )
         if selected_section not in table_keys:
             selected_section = table_keys[0]
         st.session_state.crm_section = selected_section
@@ -3173,17 +3127,24 @@ def render_patient_details_app_page() -> None:
         st.caption("CRM sections")
         render_crm_section_nav(primary_section_keys, selected_section)
 
-        if selected_section in table_keys:
-            default_table_index = table_keys.index(selected_section)
-        else:
-            default_table_index = 0
+        table_labels = [CRM_SECTION_LABELS[key] for key in table_keys]
+        label_to_key = {CRM_SECTION_LABELS[key]: key for key in table_keys}
+        current_table_label = CRM_SECTION_LABELS.get(selected_section, table_labels[0])
+        if st.session_state.get("crm_all_tables_select") not in table_labels:
+            st.session_state["crm_all_tables_select"] = current_table_label
+        selected_label_from_state = st.session_state.get("crm_all_tables_select")
+        if selected_label_from_state in label_to_key:
+            selected_section = label_to_key[str(selected_label_from_state)]
+            st.session_state.crm_section = selected_section
+
         table_label = st.selectbox(
             "All tables",
-            [CRM_SECTION_LABELS[key] for key in table_keys],
-            index=default_table_index,
+            table_labels,
             key="crm_all_tables_select",
+            on_change=sync_crm_section_from_table_select,
+            args=(label_to_key,),
         )
-    section = next(key for key in table_keys if CRM_SECTION_LABELS[key] == table_label)
+    section = label_to_key.get(str(table_label), st.session_state.get("crm_section") or table_keys[0])
     st.session_state.crm_section = section
     render_manifest_status_overlay()
     render_hospital_crm_dashboard(section)
