@@ -299,6 +299,7 @@ class RetrievalService:
                     api_key=secrets.api_key,
                     api_version=secrets.api_version,
                     azure_deployment=secrets.embedding_deployment,
+                    max_retries=self.settings.llm_client_max_retries,
                 )
             cache_key = (self._normalize_query(query), self._embedding_deployment_name)
             if self.settings.rag_embedding_cache_size > 0 and cache_key in self._embedding_cache:

@@ -1360,6 +1360,20 @@ Resources:
               Value: "3"
             - Name: MAX_GRAPH_LLM_CALLS
               Value: "10"
+            - Name: LLM_RETRY_ATTEMPTS
+              Value: "4"
+            - Name: LLM_RETRY_INITIAL_SECONDS
+              Value: "1"
+            - Name: LLM_RETRY_MAX_SECONDS
+              Value: "20"
+            - Name: LLM_CLIENT_MAX_RETRIES
+              Value: "2"
+            - Name: SYSTEM_EVAL_RETRY_ATTEMPTS
+              Value: "4"
+            - Name: SYSTEM_EVAL_RETRY_INITIAL_SECONDS
+              Value: "1"
+            - Name: SYSTEM_EVAL_RETRY_MAX_SECONDS
+              Value: "20"
             - Name: RAG_TOP_K
               Value: "10"
             - Name: RAG_NEIGHBOR_CHUNKS

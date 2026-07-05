@@ -157,3 +157,34 @@ class AdminIngestionResponse(BaseModel):
     skipped_documents: int = 0
     deleted_documents: int = 0
     deleted_chunks: int = 0
+
+
+class AdminSystemEvalRunRequest(BaseModel):
+    dataset_id: str = "system_golden_v1"
+    categories: list[str] = Field(default_factory=list)
+    user_id: str = ""
+    semantic_judge_enabled: bool = False
+    limit: int | None = Field(default=None, ge=1, le=200)
+    async_run: bool = False
+
+
+class AdminSystemEvalDataset(BaseModel):
+    dataset_id: str
+    case_count: int
+    categories: list[str] = Field(default_factory=list)
+
+
+class AdminSystemEvalDatasetsResponse(BaseModel):
+    datasets: list[AdminSystemEvalDataset] = Field(default_factory=list)
+
+
+class AdminSystemEvalRunResponse(BaseModel):
+    run_id: str
+    dataset_id: str
+    status: str
+    summary: dict[str, Any] = Field(default_factory=dict)
+    cases: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AdminSystemEvalRunListResponse(BaseModel):
+    runs: list[dict[str, Any]] = Field(default_factory=list)

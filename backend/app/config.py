@@ -14,6 +14,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_float(name: str, default: str) -> float:
+    try:
+        return float(_env(name, default))
+    except ValueError:
+        return float(default)
+
+
 @dataclass(frozen=True)
 class AppSettings:
     app_env: str
@@ -40,6 +47,10 @@ class AppSettings:
     chat_fast_planned_execution_enabled: bool = False
     chat_fast_rag_min_query_terms: int = 3
     max_graph_llm_calls: int = 5
+    llm_retry_attempts: int = 4
+    llm_retry_initial_seconds: float = 1.0
+    llm_retry_max_seconds: float = 20.0
+    llm_client_max_retries: int = 2
     rag_top_k: int = 10
     rag_neighbor_chunks: int = 1
     rag_query_cache_ttl_seconds: int = 0
@@ -124,6 +135,10 @@ class AppSettings:
             chat_fast_planned_execution_enabled=_env_bool("CHAT_FAST_PLANNED_EXECUTION_ENABLED", True),
             chat_fast_rag_min_query_terms=int(_env("CHAT_FAST_RAG_MIN_QUERY_TERMS", "3")),
             max_graph_llm_calls=int(_env("MAX_GRAPH_LLM_CALLS", "10")),
+            llm_retry_attempts=max(1, int(_env("LLM_RETRY_ATTEMPTS", "4"))),
+            llm_retry_initial_seconds=max(0.0, _env_float("LLM_RETRY_INITIAL_SECONDS", "1.0")),
+            llm_retry_max_seconds=max(0.0, _env_float("LLM_RETRY_MAX_SECONDS", "20.0")),
+            llm_client_max_retries=max(0, int(_env("LLM_CLIENT_MAX_RETRIES", "2"))),
             rag_top_k=int(_env("RAG_TOP_K", "10")),
             rag_neighbor_chunks=int(_env("RAG_NEIGHBOR_CHUNKS", "1")),
             rag_query_cache_ttl_seconds=int(_env("RAG_QUERY_CACHE_TTL_SECONDS", "60")),
@@ -165,7 +180,7 @@ class AppSettings:
             guardian_news_page_size=int(_env("GUARDIAN_NEWS_PAGE_SIZE", "10")),
         )
 
-    def public_summary(self) -> dict[str, str | int]:
+    def public_summary(self) -> dict[str, str | int | float]:
         return {
             "app_env": self.app_env,
             "aws_region": self.aws_region,
@@ -186,6 +201,10 @@ class AppSettings:
             "chat_fast_planned_execution_enabled": str(self.chat_fast_planned_execution_enabled),
             "chat_fast_rag_min_query_terms": self.chat_fast_rag_min_query_terms,
             "max_graph_llm_calls": self.max_graph_llm_calls,
+            "llm_retry_attempts": self.llm_retry_attempts,
+            "llm_retry_initial_seconds": self.llm_retry_initial_seconds,
+            "llm_retry_max_seconds": self.llm_retry_max_seconds,
+            "llm_client_max_retries": self.llm_client_max_retries,
             "rag_top_k": self.rag_top_k,
             "rag_neighbor_chunks": self.rag_neighbor_chunks,
             "rag_query_cache_ttl_seconds": self.rag_query_cache_ttl_seconds,

@@ -562,6 +562,7 @@ class IngestionJob:
                     api_key=secrets.api_key,
                     api_version=secrets.api_version,
                     azure_deployment=secrets.embedding_deployment,
+                    max_retries=self.settings.llm_client_max_retries,
                 )
             return list(self._embeddings.embed_query(text))
         except Exception as exc:

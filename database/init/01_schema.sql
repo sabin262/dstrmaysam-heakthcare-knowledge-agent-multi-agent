@@ -183,3 +183,49 @@ CREATE INDEX IF NOT EXISTS idx_formulary_name ON formulary (lower(medicine_name)
 CREATE INDEX IF NOT EXISTS idx_equipment_assets_type ON equipment_assets (lower(equipment_type));
 CREATE INDEX IF NOT EXISTS idx_equipment_assets_status ON equipment_assets (lower(status));
 CREATE INDEX IF NOT EXISTS idx_finance_records_patient ON finance_records (lower(patient_name), lower(patient_mrn));
+
+CREATE TABLE IF NOT EXISTS system_eval_runs (
+    run_id TEXT PRIMARY KEY,
+    dataset_id TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    tool_mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    requested_by TEXT NOT NULL,
+    semantic_judge_enabled BOOLEAN NOT NULL DEFAULT false,
+    category_filter JSONB NOT NULL DEFAULT '[]'::jsonb,
+    user_filter TEXT NOT NULL DEFAULT '',
+    summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    report_markdown TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS system_eval_case_results (
+    run_id TEXT NOT NULL REFERENCES system_eval_runs(run_id) ON DELETE CASCADE,
+    case_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    query TEXT NOT NULL,
+    expected JSONB NOT NULL DEFAULT '{}'::jsonb,
+    actual JSONB NOT NULL DEFAULT '{}'::jsonb,
+    answer TEXT NOT NULL DEFAULT '',
+    sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+    agents JSONB NOT NULL DEFAULT '[]'::jsonb,
+    safety JSONB NOT NULL DEFAULT '{}'::jsonb,
+    score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    passed BOOLEAN NOT NULL DEFAULT false,
+    failure_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    trace_id TEXT NOT NULL DEFAULT '',
+    tool_execution_location TEXT NOT NULL DEFAULT '',
+    tool_execution_records JSONB NOT NULL DEFAULT '[]'::jsonb,
+    raw_response JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (run_id, case_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_eval_runs_started_at
+ON system_eval_runs (started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_system_eval_case_results_run
+ON system_eval_case_results (run_id, case_id);
