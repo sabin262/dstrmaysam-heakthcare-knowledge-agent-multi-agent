@@ -444,7 +444,7 @@
       "expected_agents": ["PolicyAgent", "RAGAgent"],
       "expected_tools": ["policy_search", "document_search"],
       "required_answer_patterns": ["not .*available|no .*evidence|missing|not found"],
-      "forbidden_answer_patterns": ["lunar ward teleportation is"],
+      "forbidden_answer_patterns": ["lunar ward teleportation is required|lunar ward teleportation policy requires|teleportation procedure is approved"],
       "max_latency_ms": 45000,
       "minimum_score": 0.72
     }

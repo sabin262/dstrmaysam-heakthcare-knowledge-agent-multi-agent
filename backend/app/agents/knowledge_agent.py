@@ -435,11 +435,13 @@ DOCUMENT_CONTENT_MARKERS = {
     "what does",
 }
 SAFETY_QUERY_MARKERS = {
+    "abnormal lab",
     "anaphylaxis",
     "breach",
     "cardiac arrest",
     "chest pain",
     "clinical deterioration",
+    "critical result",
     "data breach",
     "deteriorating",
     "diagnose",
@@ -449,9 +451,12 @@ SAFETY_QUERY_MARKERS = {
     "escalation",
     "gave the wrong",
     "medication error",
+    "medication safety incident",
     "not breathing",
     "overdose",
+    "patient details",
     "patient identifier",
+    "personal account",
     "safeguarding",
     "safeguarding concern",
     "self harm",
@@ -461,8 +466,10 @@ SAFETY_QUERY_MARKERS = {
     "stroke",
     "symptoms",
     "suicide",
+    "treatment",
     "urgent",
     "unsafe",
+    "whatsapp",
     "wrong medication",
 }
 MULTIPART_QUERY_PATTERN = re.compile(
@@ -1065,15 +1072,22 @@ def _has_active_safety_or_privacy_intent(text: str) -> bool:
         for marker in (
             "deteriorating",
             "clinical deterioration",
+            "abnormal lab",
+            "critical result",
             "wrong medication",
             "medication error",
+            "medication safety incident",
             "gave the wrong",
             "data breach",
             "diagnose",
             "diagnosis",
+            "treatment",
             "symptoms",
+            "patient details",
             "patient identifier",
             "nhs number",
+            "whatsapp",
+            "personal account",
             "share this patient",
             "share patient",
             "safeguarding concern",
@@ -1443,11 +1457,60 @@ def _format_contact_answer(query: str, row_payloads: list[dict[str, Any]]) -> st
     return "\n".join(lines) + _expandable_all_rows(contact_payloads, summary="Show all contact options")
 
 
-def _format_on_call_answer(query: str, row_payloads: list[dict[str, Any]]) -> str:
+def _format_date_scope(dates: list[str]) -> str:
+    cleaned = [str(value) for value in dates if str(value)]
+    if not cleaned:
+        return ""
+    unique = list(dict.fromkeys(cleaned))
+    if len(unique) == 1:
+        return unique[0]
+    return f"{unique[0]} to {unique[-1]}"
+
+
+def _on_call_date_scope(lookup_plan: dict[str, Any], row_payloads: list[dict[str, Any]]) -> str:
+    requested_dates = lookup_plan.get("requested_rota_dates") if isinstance(lookup_plan, dict) else None
+    if isinstance(requested_dates, list) and requested_dates:
+        return _format_date_scope([str(value) for value in requested_dates])
+    row_dates = [str(payload.get("date") or payload.get("shift_date") or "") for payload in row_payloads]
+    return _format_date_scope([value for value in row_dates if value])
+
+
+def _on_call_requested_dates(lookup_plan: dict[str, Any]) -> set[str]:
+    requested_dates = lookup_plan.get("requested_rota_dates") if isinstance(lookup_plan, dict) else None
+    if not isinstance(requested_dates, list):
+        return set()
+    return {str(value) for value in requested_dates if str(value)}
+
+
+def _is_staff_rota_payload(payload: dict[str, Any], rows: Any) -> bool:
+    category = str(payload.get("category") or "").lower()
+    if category == "staff_rota":
+        return True
+    if not isinstance(rows, list):
+        return False
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("source_table") or "").lower() == "staff_schedule":
+            return True
+    return False
+
+
+def _format_on_call_answer(
+    query: str,
+    row_payloads: list[dict[str, Any]],
+    *,
+    date_scope: str = "",
+    requested_dates: set[str] | None = None,
+) -> str:
+    requested_dates = requested_dates or set()
     on_call_payloads = [
         payload
         for payload in row_payloads
         if payload.get("staff_name") not in (None, "", [])
+        and (
+            not requested_dates
+            or str(payload.get("date") or payload.get("shift_date") or "") in requested_dates
+        )
+        and str(payload.get("on_call") or "yes").strip().lower() not in {"no", "false", "0", "n"}
         and (
             payload.get("shift_start") not in (None, "", [])
             or payload.get("shift_end") not in (None, "", [])
@@ -1457,12 +1520,13 @@ def _format_on_call_answer(query: str, row_payloads: list[dict[str, Any]]) -> st
     if not on_call_payloads:
         return ""
 
-    lines = ["On-call staff:"]
+    title = f"On-call staff for {date_scope}:" if date_scope else "On-call staff:"
+    lines = [title]
     lines.append("")
     for index, payload in enumerate(on_call_payloads[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
         staff_name = str(payload.get("staff_name") or "Staff member")
         lines.append(f"{index}. {staff_name}")
-        for field in ("department_name", "role", "shift_start", "shift_end", "contact"):
+        for field in ("date", "shift_date", "department", "department_name", "role", "shift_start", "shift_end", "contact"):
             value = payload.get(field)
             if value in (None, "", []):
                 continue
@@ -1817,12 +1881,22 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
 
     rows = payload.get("rows")
     if not isinstance(rows, list) or not rows:
+        if _is_staff_rota_payload(payload, rows):
+            date_scope = _on_call_date_scope(lookup_plan, [])
+            if date_scope:
+                return f"No matching on-call staff found for {date_scope}."
         return str(payload.get("message") or "No matching deterministic database rows were found.")
 
     row_payloads = [_lookup_row_payload(row) for row in rows if isinstance(row, dict)]
     on_call_list_intent = _has_on_call_intent(query)
-    if on_call_list_intent:
-        on_call_answer = _format_on_call_answer(query, row_payloads)
+    is_staff_rota_payload = _is_staff_rota_payload(payload, rows)
+    if on_call_list_intent or is_staff_rota_payload:
+        on_call_answer = _format_on_call_answer(
+            query,
+            row_payloads,
+            date_scope=_on_call_date_scope(lookup_plan, row_payloads),
+            requested_dates=_on_call_requested_dates(lookup_plan),
+        )
         if on_call_answer:
             return on_call_answer
 
@@ -2637,6 +2711,16 @@ class SupervisorAgent:
                 state,
                 _specialist_task_from_dict(task_data, parent_query=original_query),
                 reason=str(task_data.get("constraints", {}).get("reason") or "queued_specialist_task"),
+            )
+        remaining_routes = list(state.get("remaining_routes") or [])
+        if remaining_routes:
+            route = dict(remaining_routes.pop(0))
+            state["remaining_routes"] = remaining_routes
+            return self.route_to_tool(
+                state,
+                tool_name=str(route.get("tool") or ""),
+                query=str(route.get("query") or original_query),
+                reason=str(route.get("reason") or "queued_guard_route"),
             )
 
         if state.get("tool_outputs") or state.get("specialist_reports"):
@@ -3556,7 +3640,9 @@ class SynthesisAgent:
             ragas_contexts = owner._ragas_contexts_from_evidence(tool_context)
         else:
             policy_context = "\n\n".join(non_deterministic_outputs)
-            fixed_deterministic_answer = "\n\n".join(deterministic_sections).strip()
+            fixed_deterministic_answer = "\n\n".join(
+                [*deterministic_sections, *deterministic_no_result_sections]
+            ).strip()
             bounded_policy_context = owner._bounded_context(
                 policy_context or "No non-deterministic specialist evidence was returned."
             )

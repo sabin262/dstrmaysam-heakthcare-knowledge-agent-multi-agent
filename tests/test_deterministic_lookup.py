@@ -366,6 +366,48 @@ class FakeGenericOnCallRowsLookup(DeterministicLookupService):
         return []
 
 
+class FakeStaffScheduleTableLookup(DeterministicLookupService):
+    def __init__(self):
+        super().__init__(FakeSettings())
+        self.schedule_calls = []
+
+    def _query_staff_schedule_table(
+        self,
+        query,
+        scopes,
+        limit,
+        *,
+        requested_dates=None,
+        requested_groups=None,
+        department_terms=None,
+    ):
+        self.schedule_calls.append(
+            {
+                "query": query,
+                "requested_dates": list(requested_dates or []),
+                "requested_groups": set(requested_groups or set()),
+                "department_terms": list(department_terms or []),
+            }
+        )
+        return [
+            {
+                "source_table": "staff_schedule",
+                "row_number": "SCH-TEST",
+                "row": {
+                    "date": date.today().isoformat(),
+                    "department": "Emergency Department",
+                    "role": "Clinical Site Manager",
+                    "staff_name": "Aisha Malik",
+                    "shift_start": "08:00",
+                    "shift_end": "20:00",
+                    "on_call": "Yes",
+                    "contact": "emergency_department.oncall@example.nhs",
+                },
+                "access_level": "all_staff",
+            }
+        ]
+
+
 class DeterministicLookupToolTests(unittest.TestCase):
     def test_postgres_lookup_tool_returns_structured_rows(self):
         tools = build_healthcare_agent_tools(
@@ -709,6 +751,26 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertTrue(_is_staff_rota_query("who is on call"))
         self.assertEqual(_requested_rota_role_groups("who is on call"), set())
 
+    def test_multipart_on_call_query_uses_only_rota_clause_for_filters(self):
+        service = FakeStaffScheduleTableLookup()
+        user = HealthcareUserContext(user_id="doctor", roles=("doctor",))
+
+        result = service.lookup("who is on call today and how do i apply for leave", user)
+
+        self.assertEqual(result.category, "staff_rota")
+        self.assertEqual(len(result.rows), 1)
+        self.assertEqual(service.schedule_calls[0]["query"], "who is on call today")
+        self.assertEqual(service.schedule_calls[0]["requested_dates"], [date.today().isoformat()])
+        self.assertEqual(service.schedule_calls[0]["department_terms"], [])
+
+    def test_this_week_on_call_query_does_not_filter_by_this(self):
+        service = FakeStaffScheduleTableLookup()
+        user = HealthcareUserContext(user_id="doctor", roles=("doctor",))
+
+        service.lookup("who is on call this week", user)
+
+        self.assertEqual(service.schedule_calls[0]["department_terms"], [])
+
     def test_staff_rota_lookup_expands_general_staff_scope(self):
         scopes = _staff_rota_access_scopes(("all_staff",))
 
@@ -770,7 +832,7 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(service.category_calls[0]["category"], "patients")
         self.assertEqual(service.row_search_calls, [])
 
-    def test_patient_lookup_falls_back_to_uploaded_csv_when_patient_table_misses(self):
+    def test_patient_lookup_does_not_broaden_when_patient_table_misses(self):
         service = FakePatientPreferredLookup([])
 
         result = service.lookup(
@@ -786,8 +848,9 @@ class DeterministicLookupToolTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(result.rows[0]["row"]["equipment_type"], "Patient hoist")
-        self.assertEqual(service.row_search_calls[0]["source_filenames"], ["equipment_assets.csv"])
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.message, "No matching patient found.")
+        self.assertEqual(service.row_search_calls, [])
 
     def test_today_doctor_rota_query_does_not_fall_back_to_other_dates_or_tables(self):
         service = FakeNoRotaRowsLookup()

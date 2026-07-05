@@ -322,6 +322,28 @@ INSERT INTO staff_schedule VALUES
 ('SCH-022','2026-07-03','DEP-THER','Therapies','Senior Physiotherapist','Amelia Scott','08:00','16:00',false,'therapies@example.nhs','all_staff')
 ON CONFLICT (schedule_id) DO NOTHING;
 
+INSERT INTO staff_schedule
+    (schedule_id, shift_date, department_id, department_name, role, staff_name,
+     shift_start, shift_end, on_call, contact, access_level)
+VALUES
+('SCH-DYN-TODAY-ED', CURRENT_DATE, 'DEP-ED', 'Emergency Department', 'Clinical Site Manager', 'Aisha Malik', '08:00', '20:00', true, 'emergency_department.oncall@example.nhs', 'clinical'),
+('SCH-DYN-TODAY-ICU', CURRENT_DATE, 'DEP-ICU', 'Intensive Care Unit', 'Consultant Intensivist', 'Helen Carter', '20:00', '08:00', true, 'icu.oncall@example.nhs', 'clinical'),
+('SCH-DYN-TOMORROW-RAD', CURRENT_DATE + 1, 'DEP-RAD', 'Radiology', 'Consultant Radiologist', 'Dr James Wilson', '08:00', '20:00', true, 'radiology.oncall@example.nhs', 'clinical'),
+('SCH-DYN-TOMORROW-PHAR', CURRENT_DATE + 1, 'DEP-PHAR', 'Pharmacy', 'Pharmacist', 'Chloe Ward', '09:00', '17:00', true, 'pharmacy.oncall@example.nhs', 'clinical'),
+('SCH-DYN-NEXTWEEK-PAED', CURRENT_DATE + 7, 'DEP-PAED', 'Paediatrics', 'Consultant Paediatrician', 'Dr Omar Hussain', '08:00', '18:00', true, 'paediatrics.oncall@example.nhs', 'clinical'),
+('SCH-DYN-NEXTWEEK-RESP', CURRENT_DATE + 8, 'DEP-RESP', 'Respiratory', 'Registrar', 'Ella Cooper', '19:00', '07:00', true, 'respiratory.oncall@example.nhs', 'clinical')
+ON CONFLICT (schedule_id) DO UPDATE SET
+    shift_date = EXCLUDED.shift_date,
+    department_id = EXCLUDED.department_id,
+    department_name = EXCLUDED.department_name,
+    role = EXCLUDED.role,
+    staff_name = EXCLUDED.staff_name,
+    shift_start = EXCLUDED.shift_start,
+    shift_end = EXCLUDED.shift_end,
+    on_call = EXCLUDED.on_call,
+    contact = EXCLUDED.contact,
+    access_level = EXCLUDED.access_level;
+
 INSERT INTO clinic_sessions VALUES
 ('CLN-011','Dermatology Biologics Clinic','2026-07-01','10:00','Dr Isla Moore',14,6,'Routine','clinical'),
 ('CLN-012','Endocrine Diabetes Clinic','2026-07-01','13:00','Dr Ethan Clarke',16,4,'Urgent','clinical'),

@@ -3,6 +3,7 @@ from dataclasses import replace
 from threading import Event
 
 from backend.app.agent import KnowledgeAgent
+from backend.app.agent import _format_deterministic_lookup_payload
 from backend.app.agent import _planned_tool_names
 from backend.app.config import AppSettings
 from backend.app.history import InMemoryChatHistoryRepository
@@ -675,7 +676,7 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertEqual(len(fake_llm.messages), 1)
         self.assertEqual(lookup.calls[0]["query"], "which doctor is on call")
-        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "llm_supervisor_tool_call")
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "llm_supervisor_tool_call_compat")
 
     def test_compact_oncall_direct_answer_is_forced_to_deterministic_specialist(self):
         fake_llm = FakeLLM([fake_ai_message("Someone is probably on call.")])
@@ -716,9 +717,13 @@ class AgentContractTests(unittest.TestCase):
 
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertEqual(lookup.calls[0]["query"], "who is oncall")
-        self.assertIn("On-call staff returned by deterministic lookup:", result.answer)
-        self.assertIn("Aisha Malik (Emergency Department, Consultant Physician)", result.answer)
-        self.assertIn("Marcus Reed (ICU, Staff Nurse)", result.answer)
+        self.assertIn("On-call staff:", result.answer)
+        self.assertIn("Aisha Malik", result.answer)
+        self.assertIn("Department: Emergency Department", result.answer)
+        self.assertIn("Role: Consultant Physician", result.answer)
+        self.assertIn("Marcus Reed", result.answer)
+        self.assertIn("Department: ICU", result.answer)
+        self.assertIn("Role: Staff Nurse", result.answer)
         self.assertEqual(
             result.metadata["performance"]["agent_flow"][0]["reason"],
             "supervisor_deterministic_guard_direct_answer",
@@ -773,16 +778,74 @@ class AgentContractTests(unittest.TestCase):
 
         result = agent.answer(
             "user",
-            "where in IPD is Leo Bennett and who is oncall",
+            "where in IPD is Leo Bennett and who is on call",
             session_id="session",
         )
 
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup", "postgres_deterministic_lookup"])
-        self.assertEqual([call["query"] for call in lookup.calls], ["where in IPD is Leo Bennett", "who is oncall"])
+        self.assertEqual([call["query"] for call in lookup.calls], ["where in IPD is Leo Bennett", "who is on call"])
         self.assertIn("Leo Bennett details are as follows:", result.answer)
         self.assertIn("- Ward: IPD Ward 4", result.answer)
-        self.assertIn("Aisha Malik details are as follows:", result.answer)
-        self.assertIn("- On call: Yes", result.answer)
+        self.assertIn("On-call staff:", result.answer)
+        self.assertIn("Aisha Malik", result.answer)
+        self.assertIn("Department: Emergency Department", result.answer)
+        self.assertIn("Role: Consultant Physician", result.answer)
+
+    def test_rota_formatter_clamps_broad_payload_to_requested_date(self):
+        rows = [
+            {
+                "source_table": "staff_schedule",
+                "row": {
+                    "date": "2026-07-05",
+                    "department": "Emergency Department",
+                    "role": "Clinical Site Manager",
+                    "staff_name": "Aisha Malik",
+                    "shift_start": "08:00:00",
+                    "shift_end": "20:00:00",
+                    "on_call": "Yes",
+                    "contact": "emergency_department.oncall@example.nhs",
+                },
+            },
+            {
+                "source_table": "staff_schedule",
+                "row": {
+                    "date": "2026-07-06",
+                    "department": "Radiology",
+                    "role": "Consultant Radiologist",
+                    "staff_name": "Dr James Wilson",
+                    "shift_start": "08:00:00",
+                    "shift_end": "20:00:00",
+                    "on_call": "Yes",
+                    "contact": "radiology.oncall@example.nhs",
+                },
+            },
+            {
+                "source_table": "staff_schedule",
+                "row": {
+                    "date": "2026-07-06",
+                    "department": "Cardiology",
+                    "role": "Consultant Physician",
+                    "staff_name": "Ravi Singh",
+                    "shift_start": "07:00:00",
+                    "shift_end": "07:00:00",
+                    "on_call": "No",
+                    "contact": "cardiology.oncall@example.nhs",
+                },
+            },
+        ]
+        payload = {
+            "category": "staff_rota",
+            "message": "Found 37 matching staff_schedule row(s).",
+            "rows": rows,
+            "lookup_plan": {"requested_rota_dates": ["2026-07-06"]},
+        }
+
+        answer = _format_deterministic_lookup_payload("who is on call tomorrow", payload)
+
+        self.assertIn("On-call staff for 2026-07-06:", answer)
+        self.assertIn("Dr James Wilson", answer)
+        self.assertNotIn("Aisha Malik", answer)
+        self.assertNotIn("Ravi Singh", answer)
 
     def test_sqlish_supervisor_query_uses_original_text_for_deterministic_lookup(self):
         fake_llm = FakeLLM(
@@ -837,8 +900,12 @@ class AgentContractTests(unittest.TestCase):
 
         result = agent.answer("user", "who is on call", session_id="session")
 
-        self.assertIn("Aisha Malik (Emergency Department, Consultant Physician)", result.answer)
-        self.assertIn("Marcus Reed (ICU, Staff Nurse)", result.answer)
+        self.assertIn("Aisha Malik", result.answer)
+        self.assertIn("Department: Emergency Department", result.answer)
+        self.assertIn("Role: Consultant Physician", result.answer)
+        self.assertIn("Marcus Reed", result.answer)
+        self.assertIn("Department: ICU", result.answer)
+        self.assertIn("Role: Staff Nurse", result.answer)
         self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
         self.assertEqual(lookup.calls[0]["query"], "who is on call")
         self.assertEqual(result.metadata["performance"]["agent_flow"][0]["query"], "who is on call")

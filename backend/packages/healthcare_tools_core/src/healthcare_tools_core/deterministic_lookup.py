@@ -294,10 +294,12 @@ BASE_STOPWORDS = {
     "next",
     "somebody",
     "someone",
+    "this",
     "what",
     "which",
     "who",
     "week",
+    "previous",
     "does",
     "do",
     "did",
@@ -485,6 +487,16 @@ def _name_search_terms(terms: list[str], stopwords: set[str] | None = None) -> l
         and not re.fullmatch(r"(w\d+|dep-[a-z0-9-]+|\d+)", term.lower())
     ]
     return [term for term in useful if re.fullmatch(r"[a-z][a-z'-]+", term)]
+
+
+def _is_explicit_patient_lookup(query: str) -> bool:
+    q = query.lower()
+    if not any(marker in q for marker in ("patient", "mrn", "nhs number", "nhs_number")):
+        return False
+    terms = _terms(query)
+    if any(re.fullmatch(r"(mrn)?\d{4,}|mrn\d+", term.lower()) for term in terms):
+        return True
+    return _has_person_name_hint(terms)
 
 
 def _has_count_intent(query: str) -> bool:
@@ -780,6 +792,43 @@ def _is_staff_rota_query(query: str) -> bool:
     )
     mentions_staff_rota = "staff_rota" in q or "staff rota" in q
     return mentions_staff_rota or generic_on_call_requested or dated_on_call_requested or (role_requested and rota_requested)
+
+
+def _staff_rota_query_focus(query: str) -> str:
+    """Return the rota-specific clause from a multipart question."""
+    q = str(query or "").strip()
+    if not q:
+        return q
+    parts = [part.strip(" .?") for part in re.split(r"\s*[;?]\s*|\b(?:and|also|plus)\b", q, flags=re.IGNORECASE)]
+    parts = [part for part in parts if part]
+    if len(parts) <= 1:
+        return q
+
+    date_only_terms = {
+        "today",
+        "tomorrow",
+        "this week",
+        "next week",
+        "last week",
+        "previous week",
+        "this month",
+        "next month",
+        "last month",
+        "previous month",
+    }
+    tail_parts = parts[1:]
+    if tail_parts and all(part.lower() in date_only_terms for part in tail_parts):
+        return q
+
+    for part in parts:
+        lowered = part.lower()
+        if (
+            "staff_rota" in lowered
+            or "staff rota" in lowered
+            or any(marker in lowered for marker in ("on call", "on-call", "oncall", "rota", "schedule", "shift"))
+        ):
+            return part
+    return q
 
 
 def _requires_on_call(query: str) -> bool:
@@ -1095,6 +1144,7 @@ class DeterministicLookupService:
         matched_terms: list[str] = []
         matched_columns: list[str] = []
         distinct_field = ""
+        authoritative_patient_lookup = category == "patients" and _is_explicit_patient_lookup(query)
         category_first = (
             category in AUTHORITATIVE_LOOKUP_CATEGORIES
             and aggregate_intent != "count"
@@ -1152,14 +1202,15 @@ class DeterministicLookupService:
             if handled_distinct_lookup:
                 pass
             elif _is_staff_rota_query(query):
-                requested_rota_dates = _requested_rota_dates(query)
+                rota_query = _staff_rota_query_focus(query)
+                requested_rota_dates = _requested_rota_dates(rota_query)
                 rows = self._query_staff_rota_rows(
-                    query,
+                    rota_query,
                     scopes,
                     limit,
-                    source_filenames=_rota_csv_filenames(query, table_assets or csv_assets or [], selected_tables),
+                    source_filenames=_rota_csv_filenames(rota_query, table_assets or csv_assets or [], selected_tables),
                 )
-                role_groups = _requested_rota_role_groups(query)
+                role_groups = _requested_rota_role_groups(rota_query)
                 if not rows and role_groups == {"doctor"} and not requested_rota_dates:
                     rows.extend(
                         self._lookup_category(
@@ -1182,7 +1233,7 @@ class DeterministicLookupService:
                     )
             elif selected_tables and category_first:
                 rows = self._lookup_category(category, query, scopes, limit, stopwords=lookup_stopwords)
-                if not rows:
+                if not rows and not authoritative_patient_lookup:
                     row_value_search_used = True
                     rows = self._query_table_value_rows(
                         query,
@@ -1240,7 +1291,11 @@ class DeterministicLookupService:
                     rows = table_rows
                 if not rows:
                     rows = self._lookup_category(category, query, scopes, limit, stopwords=lookup_stopwords)
-                    if not authoritative_list_query and not (rows and category_first):
+                    if (
+                        not authoritative_patient_lookup
+                        and not authoritative_list_query
+                        and not (rows and category_first)
+                    ):
                         table_rows = self._query_table_value_rows(
                             query,
                             scopes,
@@ -1312,6 +1367,8 @@ class DeterministicLookupService:
 
         if category == "staff_rota":
             message = self._staff_rota_message(query, rows)
+        elif authoritative_patient_lookup and not rows:
+            message = "No matching patient found."
         else:
             message = "No matching rows found." if not rows else f"Found {len(rows)} matching row(s)."
         legacy_matched_sources = _source_tables(rows) or matched_table_sources
@@ -1341,8 +1398,9 @@ class DeterministicLookupService:
         )
 
     def _staff_rota_message(self, query: str, rows: Sequence[dict[str, Any]]) -> str:
-        requested_dates = _requested_rota_dates(query)
-        requested_groups = _requested_rota_role_groups(query)
+        rota_query = _staff_rota_query_focus(query)
+        requested_dates = _requested_rota_dates(rota_query)
+        requested_groups = _requested_rota_role_groups(rota_query)
         if not rows:
             if requested_dates:
                 return (
@@ -2018,6 +2076,8 @@ class DeterministicLookupService:
         appointment_query = any(marker in q for marker in ["appointment", "appointments", "clinic", "slot", "referral"])
         if appointment_query:
             return "appointments"
+        if _is_staff_rota_query(query):
+            return "staff_rota"
         if any(marker in q for marker in ["contact", "phone", "email", "bleep", "extension", "call", "reach"]):
             return "contacts"
         patient_location_query = any(
@@ -2027,8 +2087,6 @@ class DeterministicLookupService:
             return "patients"
         if any(marker in q for marker in ["patient", "mrn", "nhs", "date of birth", "dob"]):
             return "patients"
-        if _is_staff_rota_query(query):
-            return "staff_rota"
         if any(marker in q for marker in ["doctor", "physician", "consultant", "clinician"]):
             return "doctors"
         if any(marker in q for marker in ["department", "service", "unit"]):
@@ -2060,12 +2118,13 @@ class DeterministicLookupService:
             return []
 
         lookup_scopes = _staff_rota_access_scopes(scopes)
-        requested_dates = _requested_rota_dates(query)
-        requested_groups = _requested_rota_role_groups(query)
+        rota_query = _staff_rota_query_focus(query)
+        requested_dates = _requested_rota_dates(rota_query)
+        requested_groups = _requested_rota_role_groups(rota_query)
         department_terms = [
             term
             for term in _expanded_search_terms(
-                query,
+                rota_query,
                 STOPWORDS | STAFF_ROTA_QUERY_MARKERS | DOCTOR_ROLE_MARKERS | NURSE_ROLE_MARKERS,
             )
             if term not in {"list", "me", "available", "availability", "today", "tomorrow", "csv", "file"}
