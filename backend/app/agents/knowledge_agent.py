@@ -2689,6 +2689,22 @@ class SupervisorAgent:
                 )
             return self.append_synthesis_decision(state, "llm_supervisor_routes_complete")
 
+        if _has_catalog_intent(original_query):
+            missing_catalog_routes = [
+                route
+                for route in self.planned_guard_missing_routes(state, "supervisor_catalog_guard_initial")
+                if _canonical_tool_name(str(route.get("tool") or "")) == "catalogue_search"
+            ]
+            if missing_catalog_routes:
+                first_route = missing_catalog_routes.pop(0)
+                state = {**state, "remaining_routes": missing_catalog_routes}
+                return self.route_to_tool(
+                    state,
+                    tool_name=first_route["tool"],
+                    query=first_route["query"],
+                    reason=first_route["reason"],
+                )
+
         routing_prompt = (
             f"{self.context.user_prompt}\n\n"
             "Supervisor routing task:\n"
@@ -3377,16 +3393,13 @@ class PolicyAgent(SpecialistGraphAgent):
     agent_name = "PolicyAgent"
     node_name = "policy"
     default_tool = "policy_search"
-    allowed_tools = ("policy_search", "catalogue_search", "document_search", "rag_search")
-    prompt = "Choose policy/SOP/pathway/guideline retrieval tools and verify policy evidence before answering."
+    allowed_tools = ("policy_search",)
+    prompt = "Use policy_search for policy/SOP/pathway/guideline retrieval and verify policy evidence before answering."
 
     def choose_tools(self, task: SpecialistTask, state: dict[str, Any]) -> list[str]:
-        tools: list[str] = []
         if "policy_search" in self.context.tool_names:
-            tools.append("policy_search")
-        elif "document_search" in self.context.tool_names:
-            tools.append("document_search")
-        return tools or super().choose_tools(task, state)
+            return ["policy_search"]
+        return super().choose_tools(task, state)
 
     def validate_report(
         self,
