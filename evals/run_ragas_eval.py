@@ -302,7 +302,7 @@ def publish_langfuse_scores(report: dict[str, Any], args: argparse.Namespace, cl
 
 
 def default_langfuse_secret_name(stage: str) -> str:
-    return f"/dstrmaysam-healthcare-knowledge-agent/{stage}/langfuse"
+    return f"/dstrmaysam-healthcare-knowledge-multi-agent-{stage}/langfuse"
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
@@ -358,13 +358,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run golden-data RAGAS evaluation")
     parser.add_argument("--api-url", default="http://localhost:8000")
     parser.add_argument("--token", required=True)
-    parser.add_argument("--dataset", default=str(Path(__file__).with_name("golden_dataset.csv")))
+    parser.add_argument("--dataset", default=str(Path(__file__).with_name("healthcare_golden_dataset.csv")))
     parser.add_argument("--output", default="ragas_report.json")
     parser.add_argument("--publish-langfuse", action="store_true")
     parser.add_argument("--aws-region", default="eu-west-2")
     parser.add_argument("--secrets-stage", default="dev")
     parser.add_argument("--langfuse-secret-name", default=None)
-    parser.add_argument("--eval-run-name", default="dstrmaysam-healthcare-knowledge-agent-ragas-eval")
+    parser.add_argument("--eval-run-name", default="dstrmaysam-healthcare-knowledge-multi-agent-ragas-eval")
     args = parser.parse_args()
     if not args.langfuse_secret_name:
         args.langfuse_secret_name = default_langfuse_secret_name(args.secrets_stage)
