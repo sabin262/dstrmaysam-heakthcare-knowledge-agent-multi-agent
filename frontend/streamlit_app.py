@@ -25,6 +25,8 @@ CHAT_PROGRESS_MESSAGES = [
     "Checking structured lookup data and indexed documents if needed.",
     "Preparing a concise answer.",
 ]
+CHAT_SESSION_QUERY_PARAM = "chat_session"
+CRM_SECTION_QUERY_PARAM = "crm_section"
 MCP_SERVER_URL_OPTIONS = [
     (
         "Shared MCP Server",
@@ -475,6 +477,92 @@ def inject_app_theme() -> None:
         }
         div[data-testid="stChatInput"] > div {
             padding-top: 0.35rem !important;
+        }
+        .hka-chat-history-marker {
+            display: none;
+        }
+        .hka-chat-history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            margin-top: 0.35rem;
+        }
+        .hka-chat-history-row {
+            align-items: center;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            color: inherit;
+            display: flex;
+            height: 2.45rem;
+            justify-content: flex-start;
+            min-height: 2.45rem;
+            overflow: hidden;
+            padding: 0.45rem 0.65rem;
+            text-align: left;
+            text-decoration: none;
+            transition: background-color 140ms ease, border-color 140ms ease;
+            width: 100%;
+        }
+        .hka-chat-history-row:hover {
+            background: rgba(15, 118, 110, 0.12);
+            border-color: rgba(15, 118, 110, 0.24);
+            color: inherit;
+            text-decoration: none;
+        }
+        .hka-chat-history-row.is-active {
+            background: rgba(15, 118, 110, 0.18);
+            border-color: rgba(15, 118, 110, 0.44);
+        }
+        .hka-chat-history-title {
+            display: block;
+            line-height: 1.2;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.92rem;
+        }
+        .hka-sidebar-nav-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            margin: 0.25rem 0 0.85rem;
+        }
+        .hka-sidebar-nav-row {
+            align-items: center;
+            border-radius: 8px;
+            color: inherit;
+            display: flex;
+            gap: 0.55rem;
+            min-height: 2rem;
+            padding: 0.38rem 0.65rem;
+            text-decoration: none;
+            transition: background-color 140ms ease, color 140ms ease;
+        }
+        .hka-sidebar-nav-row:hover {
+            background: rgba(148, 163, 184, 0.15);
+            color: inherit;
+            text-decoration: none;
+        }
+        .hka-sidebar-nav-row.is-active {
+            background: rgba(148, 163, 184, 0.32);
+            color: inherit;
+            font-weight: 720;
+        }
+        .hka-sidebar-nav-icon {
+            color: #8ea1bd;
+            flex: 0 0 auto;
+            font-size: 0.88rem;
+            line-height: 1;
+            width: 1.05rem;
+        }
+        .hka-sidebar-nav-label {
+            display: block;
+            font-size: 0.94rem;
+            line-height: 1.2;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         </style>
         """,
@@ -1181,7 +1269,6 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
             specialist_detail.append(f"sources {source_count}")
         if specialist_latency:
             specialist_detail.append(f"{specialist_latency} ms")
-        route_tool_label = ", ".join(decision_tools)
         branches.append(
             f"""
             <div class="tree-branch">
@@ -1190,7 +1277,6 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
                     <div class="tree-name">SupervisorAgent</div>
                     <div class="tree-detail">
                         routes to {html.escape(selected_agent)}
-                        {html.escape(' using ' + route_tool_label if route_tool_label else '')}
                     </div>
                     <div class="tree-reason">{html.escape(str(decision.get("reason") or ""))}</div>
                 </div>
@@ -1597,11 +1683,10 @@ def render_admin_dashboard() -> None:
     metric_columns[7].metric("Guardrails", summary.get("guardrail_trigger_count", 0))
 
     st.divider()
-    chart_columns = st.columns(4)
+    chart_columns = st.columns(3)
     tool_rows = count_rows(summary.get("tool_flow_counts") or summary.get("tool_counts") or {}, "Tool")
     agent_summary_rows = count_rows(summary.get("agent_counts") or {}, "Agent")
     user_rows = count_rows(summary.get("user_counts") or {}, "User")
-    model_rows = count_rows(summary.get("model_counts") or {}, "Model")
     with chart_columns[0]:
         st.subheader("Tool flow")
         if tool_rows:
@@ -1620,12 +1705,6 @@ def render_admin_dashboard() -> None:
             st.bar_chart(user_rows, x="User", y="Count")
         else:
             st.caption("No user activity yet")
-    with chart_columns[3]:
-        st.subheader("Models")
-        if model_rows:
-            st.bar_chart(model_rows, x="Model", y="Count")
-        else:
-            st.caption("No model activity yet")
 
     st.divider()
     st.subheader("Per-query details")
@@ -1720,6 +1799,40 @@ CRM_PRIMARY_SECTIONS = (
     "appointments",
     "finance",
 )
+
+
+CRM_SECTION_NAV_ICONS = {
+    "patients": "Pt",
+    "doctors": "Dr",
+    "departments": "Dp",
+    "schedule": "Sc",
+    "appointments": "Ap",
+    "finance": "Fi",
+}
+
+
+def render_crm_section_nav(section_keys: list[str], active_section: str) -> None:
+    rows = []
+    for section_key in section_keys:
+        label = CRM_SECTION_LABELS.get(section_key, section_key.title())
+        active_class = " is-active" if section_key == active_section else ""
+        icon = CRM_SECTION_NAV_ICONS.get(section_key, "")
+        rows.append(
+            f"""
+            <a class="hka-sidebar-nav-row{active_class}" href="?{CRM_SECTION_QUERY_PARAM}={quote(section_key)}" target="_self">
+                <span class="hka-sidebar-nav-icon">{html.escape(icon)}</span>
+                <span class="hka-sidebar-nav-label">{html.escape(label)}</span>
+            </a>
+            """
+        )
+    st.markdown(
+        f"""
+        <div class="hka-sidebar-nav-list">
+            {''.join(rows)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 CRM_FIELD_LABELS = {
@@ -2715,7 +2828,6 @@ def render_chat_progress(
                         f"**{status_label}: {step['label']}**  \n"
                         f"{step['agent']} / {step['tool']} - {step['detail']}"
                     )
-    scroll_chat_to_latest()
 
 
 def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> None:
@@ -2752,6 +2864,7 @@ def submit_chat_query_with_progress(query: str, progress_placeholder: Any) -> No
     progress_placeholder.empty()
     st.session_state.session_id = payload["session_id"]
     st.session_state.messages.append({"role": "assistant", "content": payload["answer"]})
+    st.session_state.focus_latest_answer = True
 
 
 def render_chat_messages() -> Any:
@@ -2766,19 +2879,26 @@ def render_chat_messages() -> Any:
         role = "assistant" if message.get("role") == "assistant" else "user"
         with st.chat_message(role):
             st.markdown(message.get("content", ""), unsafe_allow_html=role == "assistant")
+        if role == "assistant":
+            st.markdown('<span class="hka-latest-answer-anchor"></span>', unsafe_allow_html=True)
     progress_placeholder = st.empty()
     st.markdown('<span class="hka-chat-bottom-anchor"></span>', unsafe_allow_html=True)
     return progress_placeholder
 
 
-def scroll_chat_to_latest() -> None:
-    components.html(
-        """
+def scroll_chat_to_latest(*, prefer_answer: bool = False, observe_mutations: bool = True) -> None:
+    prefer_answer_js = "true" if prefer_answer else "false"
+    observe_mutations_js = "true" if observe_mutations else "false"
+    script = """
         <script>
+        const preferAnswer = __PREFER_ANSWER__;
+        const observeMutations = __OBSERVE_MUTATIONS__;
         const scrollLatestChat = () => {
             const doc = window.parent.document;
             const anchors = Array.from(doc.querySelectorAll(".hka-chat-bottom-anchor"));
             const anchor = anchors[anchors.length - 1];
+            const answerAnchors = Array.from(doc.querySelectorAll(".hka-latest-answer-anchor"));
+            const answerAnchor = answerAnchors[answerAnchors.length - 1];
             const markers = Array.from(doc.querySelectorAll(".hka-chat-window-marker"));
             const marker = markers[markers.length - 1];
             if (!marker) return;
@@ -2800,11 +2920,14 @@ def scroll_chat_to_latest() -> None:
             for (const element of scrollables) {
                 element.scrollTop = element.scrollHeight;
             }
-            const target = anchor || wrapper.querySelector('[data-testid="stChatMessage"]:last-of-type') || marker;
+            const target = (preferAnswer && answerAnchor)
+                ? answerAnchor.closest('[data-testid="stChatMessage"]') || answerAnchor
+                : anchor || wrapper.querySelector('[data-testid="stChatMessage"]:last-of-type') || marker;
             target.scrollIntoView({ block: "end", inline: "nearest" });
         };
 
         const installChatAutoScroll = () => {
+            if (!observeMutations) return;
             const doc = window.parent.document;
             const marker = Array.from(doc.querySelectorAll(".hka-chat-window-marker")).pop();
             if (!marker) return;
@@ -2831,7 +2954,13 @@ def scroll_chat_to_latest() -> None:
         [0, 25, 75, 150, 350, 750, 1500, 2500].forEach((delay) => setTimeout(scrollLatestChat, delay));
         setTimeout(installChatAutoScroll, 25);
         </script>
-        """,
+        """
+    script = script.replace("__PREFER_ANSWER__", prefer_answer_js).replace(
+        "__OBSERVE_MUTATIONS__",
+        observe_mutations_js,
+    )
+    components.html(
+        script,
         height=0,
     )
 
@@ -2846,21 +2975,20 @@ def render_chat_page() -> None:
             st.session_state.setdefault("messages", []).append({"role": "user", "content": pending_query})
         progress_placeholder = render_chat_messages()
         if pending_query:
-            scroll_chat_to_latest()
+            scroll_chat_to_latest(observe_mutations=False)
             try:
                 submit_chat_query_with_progress(pending_query, progress_placeholder)
             except Exception as exc:
                 st.error(f"Chat failed: {exc}")
-                scroll_chat_to_latest()
+                scroll_chat_to_latest(observe_mutations=False)
                 return
-            scroll_chat_to_latest()
             st.rerun()
+        elif st.session_state.pop("focus_latest_answer", False):
+            scroll_chat_to_latest(prefer_answer=True, observe_mutations=False)
     query = st.chat_input("Ask a question about healthcare knowledge")
     if query and query.strip():
         st.session_state.pending_chat_query = query.strip()
-        scroll_chat_to_latest()
         st.rerun()
-    scroll_chat_to_latest()
 
 
 def render_login_page() -> None:
@@ -2902,24 +3030,84 @@ def render_common_sidebar() -> None:
         sign_out()
 
 
+def get_query_param_value(name: str) -> str | None:
+    value = st.query_params.get(name)
+    if isinstance(value, list):
+        return str(value[0]) if value else None
+    return str(value) if value else None
+
+
+def clear_query_param(name: str) -> None:
+    try:
+        del st.query_params[name]
+    except KeyError:
+        pass
+
+
+def chat_session_sidebar_label(session: dict[str, Any], *, max_chars: int = 44) -> str:
+    label = str(session.get("title") or session.get("session_id") or "Untitled chat").strip()
+    if len(label) <= max_chars:
+        return label
+    return f"{label[: max_chars - 1].rstrip()}..."
+
+
+def load_chat_session(session_id: str) -> None:
+    detail = get_json(f"/chat/sessions/{session_id}")
+    st.session_state.session_id = session_id
+    st.session_state.messages = detail.get("messages", [])
+
+
+def render_chat_history_list(sessions: list[dict[str, Any]]) -> None:
+    active_session_id = st.session_state.get("session_id")
+    rows = []
+    for session in sessions[:20]:
+        session_id = str(session.get("session_id") or "")
+        if not session_id:
+            continue
+        full_label = str(session.get("title") or session_id).strip()
+        display_label = chat_session_sidebar_label(session)
+        active_class = " is-active" if session_id == active_session_id else ""
+        rows.append(
+            f"""
+            <a class="hka-chat-history-row{active_class}" href="?{CHAT_SESSION_QUERY_PARAM}={quote(session_id)}" target="_self" title="{html.escape(full_label, quote=True)}">
+                <span class="hka-chat-history-title">{html.escape(display_label)}</span>
+            </a>
+            """
+        )
+    if not rows:
+        return
+    st.markdown(
+        f"""
+        <span class="hka-chat-history-marker"></span>
+        <div class="hka-chat-history-list">
+            {''.join(rows)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_chat_sidebar() -> None:
     if st.button("New chat"):
         st.session_state.session_id = None
         st.session_state.messages = []
+        clear_query_param(CHAT_SESSION_QUERY_PARAM)
         st.rerun()
 
     try:
         sessions = get_json("/chat/sessions")
         if sessions:
+            session_ids = {str(session.get("session_id")) for session in sessions if session.get("session_id")}
+            selected_session_id = get_query_param_value(CHAT_SESSION_QUERY_PARAM)
+            if selected_session_id and selected_session_id in session_ids:
+                if selected_session_id != st.session_state.get("session_id"):
+                    load_chat_session(selected_session_id)
+                    st.rerun()
+            elif selected_session_id:
+                clear_query_param(CHAT_SESSION_QUERY_PARAM)
             st.divider()
             st.caption("Previous chats")
-            for session in sessions[:20]:
-                label = session.get("title") or session["session_id"]
-                if st.button(label, key=f"session-{session['session_id']}"):
-                    detail = get_json(f"/chat/sessions/{session['session_id']}")
-                    st.session_state.session_id = session["session_id"]
-                    st.session_state.messages = detail.get("messages", [])
-                    st.rerun()
+            render_chat_history_list(sessions)
     except Exception:
         st.caption("Chat history unavailable")
 
@@ -2957,15 +3145,6 @@ def render_patient_details_app_page() -> None:
     with st.sidebar:
         render_common_sidebar()
         st.divider()
-        primary_labels = [CRM_SECTION_LABELS[key] for key in CRM_PRIMARY_SECTIONS]
-        crm_section_label = st.radio(
-            "CRM sections",
-            primary_labels,
-            index=0,
-        )
-        radio_section = next(
-            key for key, value in CRM_SECTION_LABELS.items() if value == crm_section_label
-        )
         try:
             available_sections = get_json("/admin/crm/sections")
         except Exception:
@@ -2974,16 +3153,38 @@ def render_patient_details_app_page() -> None:
         if not table_keys:
             st.error("Unable to load CRM tables.")
             return
-        if radio_section in table_keys:
-            default_table_index = table_keys.index(radio_section)
+        primary_section_keys = [key for key in CRM_PRIMARY_SECTIONS if key in table_keys]
+        selected_section_param = get_query_param_value(CRM_SECTION_QUERY_PARAM)
+        if selected_section_param in table_keys:
+            selected_section = selected_section_param
+            st.session_state.crm_section = selected_section
+            st.session_state["crm_all_tables_select"] = CRM_SECTION_LABELS[selected_section]
+            clear_query_param(CRM_SECTION_QUERY_PARAM)
+        else:
+            if selected_section_param:
+                clear_query_param(CRM_SECTION_QUERY_PARAM)
+            selected_section = st.session_state.get("crm_section") or (
+                primary_section_keys[0] if primary_section_keys else table_keys[0]
+            )
+        if selected_section not in table_keys:
+            selected_section = table_keys[0]
+        st.session_state.crm_section = selected_section
+
+        st.caption("CRM sections")
+        render_crm_section_nav(primary_section_keys, selected_section)
+
+        if selected_section in table_keys:
+            default_table_index = table_keys.index(selected_section)
         else:
             default_table_index = 0
         table_label = st.selectbox(
             "All tables",
             [CRM_SECTION_LABELS[key] for key in table_keys],
             index=default_table_index,
+            key="crm_all_tables_select",
         )
     section = next(key for key in table_keys if CRM_SECTION_LABELS[key] == table_label)
+    st.session_state.crm_section = section
     render_manifest_status_overlay()
     render_hospital_crm_dashboard(section)
 
