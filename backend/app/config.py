@@ -88,6 +88,8 @@ class AppSettings:
     guardian_api_key: str = ""
     guardian_news_refresh_seconds: int = 300
     guardian_news_page_size: int = 10
+    llm_input_cost_per_million_tokens: float = 0.40
+    llm_output_cost_per_million_tokens: float = 1.60
 
     @classmethod
     def from_env(cls) -> "AppSettings":
@@ -178,6 +180,12 @@ class AppSettings:
             guardian_api_key=_env("GUARDIAN_API_KEY", ""),
             guardian_news_refresh_seconds=int(_env("GUARDIAN_NEWS_REFRESH_SECONDS", "300")),
             guardian_news_page_size=int(_env("GUARDIAN_NEWS_PAGE_SIZE", "10")),
+            llm_input_cost_per_million_tokens=max(
+                0.0, _env_float("LLM_INPUT_COST_PER_MILLION_TOKENS", "0.40")
+            ),
+            llm_output_cost_per_million_tokens=max(
+                0.0, _env_float("LLM_OUTPUT_COST_PER_MILLION_TOKENS", "1.60")
+            ),
         )
 
     def public_summary(self) -> dict[str, str | int | float]:
@@ -239,6 +247,8 @@ class AppSettings:
             "guardian_api_configured": str(bool(self.guardian_api_key)),
             "guardian_news_refresh_seconds": self.guardian_news_refresh_seconds,
             "guardian_news_page_size": self.guardian_news_page_size,
+            "llm_input_cost_per_million_tokens": self.llm_input_cost_per_million_tokens,
+            "llm_output_cost_per_million_tokens": self.llm_output_cost_per_million_tokens,
         }
 
     def use_local_resources(self) -> bool:
