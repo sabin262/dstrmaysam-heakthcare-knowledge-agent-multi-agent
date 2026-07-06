@@ -286,6 +286,77 @@ class FakePatientPreferredLookup(DeterministicLookupService):
         ]
 
 
+class FakeOperationalCategoryLookup(DeterministicLookupService):
+    def __init__(self):
+        super().__init__(FakeSettings())
+        self.category_calls = []
+
+    def _lookup_category(self, category, query, scopes, limit, *, stopwords=None):
+        self.category_calls.append({"category": category, "query": query})
+        if category == "formulary":
+            return [
+                {
+                    "source_table": "formulary",
+                    "source_filename": "formulary",
+                    "row_number": "MED-001",
+                    "row": {
+                        "medicine_id": "MED-001",
+                        "medicine_name": "Morphine",
+                        "category": "Analgesic",
+                        "restricted": "Yes",
+                        "monitoring_required": "Respiratory rate",
+                    },
+                    "access_level": "clinical",
+                }
+            ]
+        if category == "compliance_audits":
+            return [
+                {
+                    "source_table": "compliance_audits",
+                    "source_filename": "compliance_audits",
+                    "row_number": "AUD-001",
+                    "row": {
+                        "audit_id": "AUD-001",
+                        "topic": "Patient safety audit",
+                        "department_name": "Emergency Department",
+                        "status": "Due",
+                    },
+                    "access_level": "manager",
+                }
+            ]
+        if category == "training":
+            return [
+                {
+                    "source_table": "training_records",
+                    "source_filename": "training_records",
+                    "row_number": "TRN-001",
+                    "row": {
+                        "training_id": "TRN-001",
+                        "staff_name": "Lucy Hall",
+                        "training_module": "Safeguarding",
+                        "status": "Complete",
+                    },
+                    "access_level": "manager",
+                }
+            ]
+        if category == "finance":
+            return [
+                {
+                    "source_table": "finance_records",
+                    "source_filename": "finance_records",
+                    "row_number": "FIN-001",
+                    "row": {
+                        "finance_id": "FIN-001",
+                        "patient_name": "John Spencer",
+                        "invoice_status": "Open",
+                        "balance": "120.00",
+                    },
+                    "access_level": "manager",
+                }
+            ]
+        return []
+
+
 class FakeRotaCsvLookup(DeterministicLookupService):
     def __init__(self):
         super().__init__(FakeSettings())
@@ -886,6 +957,33 @@ class DeterministicLookupToolTests(unittest.TestCase):
         this_month = _requested_rota_dates("show rota this month", today=base)
         self.assertEqual(this_month[0], "2026-06-01")
         self.assertEqual(this_month[-1], "2026-06-30")
+
+    def test_generic_info_query_can_resolve_exact_formulary_row(self):
+        service = FakeOperationalCategoryLookup()
+
+        result = service.lookup(
+            "info on morphine",
+            HealthcareUserContext(user_id="admin", roles=("admin",)),
+        )
+
+        self.assertEqual(result.category, "formulary")
+        self.assertEqual(result.rows[0]["row"]["medicine_name"], "Morphine")
+        self.assertEqual(service.category_calls[0]["category"], "formulary")
+
+    def test_audit_training_and_finance_queries_use_operational_tables(self):
+        service = FakeOperationalCategoryLookup()
+        user = HealthcareUserContext(user_id="admin", roles=("admin",))
+
+        audit = service.lookup("list compliance audits due", user)
+        training = service.lookup("training record for Lucy Hall", user)
+        finance = service.lookup("finance balance for John Spencer", user)
+
+        self.assertEqual(audit.category, "compliance_audits")
+        self.assertEqual(audit.rows[0]["source_table"], "compliance_audits")
+        self.assertEqual(training.category, "training")
+        self.assertEqual(training.rows[0]["source_table"], "training_records")
+        self.assertEqual(finance.category, "finance")
+        self.assertEqual(finance.rows[0]["source_table"], "finance_records")
 
 
 if __name__ == "__main__":

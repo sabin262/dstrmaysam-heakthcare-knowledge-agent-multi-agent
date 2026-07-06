@@ -120,6 +120,11 @@ QUERY_INTENT_MARKERS = {
     "consultants",
     "contact",
     "contacts",
+    "audit",
+    "audits",
+    "compliance",
+    "competency",
+    "competencies",
     "department",
     "departments",
     "doctor",
@@ -127,6 +132,8 @@ QUERY_INTENT_MARKERS = {
     "drug",
     "drugs",
     "email",
+    "finance",
+    "financial",
     "formulary",
     "future",
     "inpatient",
@@ -146,6 +153,11 @@ QUERY_INTENT_MARKERS = {
     "scheduled",
     "service",
     "services",
+    "training",
+    "invoice",
+    "invoices",
+    "balance",
+    "payer",
     "unit",
     "units",
     "upcoming",
@@ -162,6 +174,10 @@ AUTHORITATIVE_LOOKUP_CATEGORIES = {
     "formulary",
     "equipment",
     "staff_rota",
+    "clinic_sessions",
+    "finance",
+    "compliance_audits",
+    "training",
 }
 
 CRM_TABLES: dict[str, dict[str, Any]] = {
@@ -713,6 +729,34 @@ def _is_medicine_list_query(query: str) -> bool:
     return bool(terms & {"medicine", "medicines", "medication", "medications", "drug", "drugs", "formulary"})
 
 
+def _has_generic_info_intent(query: str) -> bool:
+    q = query.lower().strip()
+    return bool(
+        re.search(r"\b(info|information|details?|detail|facts?)\s+(on|about|for)\b", q)
+        or re.search(r"\bwhat\s+is\b", q)
+    )
+
+
+def _row_matches_query_entity(row: dict[str, Any], query: str, fields: Sequence[str]) -> bool:
+    query_terms = {
+        term
+        for term in _expanded_search_terms(query, QUERY_INTENT_MARKERS | ROW_VALUE_CONTEXT_STOPWORDS)
+        if len(term) > 2
+    }
+    if not query_terms:
+        return False
+    for field in fields:
+        value = str((row.get("row") or row).get(field) or "").lower()
+        if not value:
+            continue
+        value_terms = set(_terms(value))
+        if query_terms & value_terms:
+            return True
+        if any(term in value for term in query_terms):
+            return True
+    return False
+
+
 def _requested_rota_dates(query: str, today: date | None = None) -> list[str]:
     q = query.lower()
     base_date = today or date.today()
@@ -1246,6 +1290,21 @@ class DeterministicLookupService:
                             stopwords=lookup_stopwords,
                         )
                     )
+            elif category == "directory" and _has_generic_info_intent(query):
+                formulary_rows = self._lookup_category(
+                    "formulary",
+                    query,
+                    scopes,
+                    limit,
+                    stopwords=lookup_stopwords,
+                )
+                rows = [
+                    row for row in formulary_rows
+                    if _row_matches_query_entity(row, query, ("medicine_name", "medicine", "drug"))
+                ]
+                if rows:
+                    category = "formulary"
+                    matched_table_sources = ["formulary"]
             elif selected_tables and category_first:
                 rows = self._lookup_category(category, query, scopes, limit, stopwords=lookup_stopwords)
                 if not rows and not authoritative_patient_lookup:
@@ -1850,7 +1909,59 @@ class DeterministicLookupService:
                     return self._query_formulary(cur, terms, scopes, limit, stopwords)
                 if category == "equipment":
                     return self._query_equipment(cur, terms, scopes, limit, stopwords)
+                if category in {"clinic_sessions", "finance", "compliance_audits", "training"}:
+                    return self._query_configured_table(cur, category, query, terms, scopes, limit, stopwords)
                 return self._query_directory(cur, primary, scopes, limit, stopwords)
+
+    def _query_configured_table(
+        self,
+        cur,
+        category: str,
+        query: str,
+        terms: list[str],
+        scopes: tuple[str, ...],
+        limit: int,
+        stopwords: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        config = CRM_TABLES.get(category)
+        if not config:
+            return []
+        active_stopwords = STOPWORDS | QUERY_INTENT_MARKERS | AGGREGATE_QUERY_MARKERS | (stopwords or set())
+        useful_terms = [
+            term
+            for term in _expanded_search_terms(query, active_stopwords)
+            if len(term) > 2 and term not in active_stopwords
+        ]
+        where_parts = [self._access_sql()]
+        params: list[Any] = [list(scopes)]
+        search_columns = [column for column in config["search"] if column in config["columns"]]
+        if useful_terms:
+            match_parts: list[str] = []
+            for term in useful_terms[:8]:
+                pattern = _like(term)
+                term_parts = [f"lower(CAST({column} AS TEXT)) LIKE %s" for column in search_columns]
+                if term_parts:
+                    match_parts.append("(" + " OR ".join(term_parts) + ")")
+                    params.extend([pattern] * len(search_columns))
+            if match_parts:
+                where_parts.append("(" + " OR ".join(match_parts) + ")")
+        elif not _has_list_intent(query):
+            return []
+        params.append(limit)
+        cur.execute(
+            f"""
+            SELECT {", ".join(config["columns"])}
+            FROM {config["table"]}
+            WHERE {" AND ".join(where_parts)}
+            ORDER BY {config["pk"]}
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+        return [
+            self._row_from_table_result(str(config["table"]), config, dict(row))
+            for row in cur.fetchall()
+        ]
 
     def _table_configs_for_names(self, table_names: Sequence[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
         if not table_names:
@@ -2093,6 +2204,12 @@ class DeterministicLookupService:
             return "appointments"
         if _is_staff_rota_query(query):
             return "staff_rota"
+        if any(marker in q for marker in ["audit", "audits", "compliance audit", "compliance audits"]):
+            return "compliance_audits"
+        if any(marker in q for marker in ["training", "competency", "competencies", "mandatory training"]):
+            return "training"
+        if any(marker in q for marker in ["finance", "financial", "invoice", "invoices", "balance", "payer", "billing"]):
+            return "finance"
         if any(marker in q for marker in ["contact", "phone", "email", "bleep", "extension", "call", "reach"]):
             return "contacts"
         patient_location_query = any(
