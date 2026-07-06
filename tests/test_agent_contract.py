@@ -75,9 +75,57 @@ class SupervisorRoutingContractTests(unittest.TestCase):
             ["policy_search"],
         )
 
+    def test_document_content_questions_override_structured_table_markers(self):
+        cases = (
+            "what does the patient billing guide say about refunds?",
+            "what does the outpatient appointments document say?",
+        )
+
+        for query in cases:
+            with self.subTest(query=query):
+                self.assertEqual(_planned_tool_names(query), ["policy_search"])
+
     def test_policy_first_only_replaces_rag_fallback(self):
         self.assertEqual(_planned_tool_names("information on IoT"), ["policy_search"])
         self.assertEqual(_planned_tool_names("who is on call today"), ["postgres_deterministic_lookup"])
+
+    def test_compliance_audit_lookup_keeps_audit_fields_in_answer(self):
+        answer = _format_deterministic_lookup_payload(
+            "list compliance audits due",
+            {
+                "category": "compliance_audits",
+                "rows": [
+                    {
+                        "source_table": "compliance_audits",
+                        "row": {
+                            "audit_id": "AUD-001",
+                            "topic": "Patient safety audit",
+                            "department_name": "Emergency Department",
+                            "status": "Due",
+                            "due_date": "2026-07-14",
+                            "lead": "Duty Manager",
+                        },
+                    },
+                    {
+                        "source_table": "compliance_audits",
+                        "row": {
+                            "audit_id": "AUD-002",
+                            "topic": "Medication governance audit",
+                            "department_name": "Pharmacy",
+                            "status": "Due",
+                            "due_date": "2026-07-21",
+                            "lead": "Pharmacy Lead",
+                        },
+                    },
+                ],
+                "lookup_plan": {"category": "compliance_audits"},
+            },
+        )
+
+        self.assertIn("Compliance audits due", answer)
+        self.assertIn("Patient safety audit", answer)
+        self.assertIn("Status: Due", answer)
+        self.assertIn("Due date: 2026-07-14", answer)
 
 
 class FakeDocuments(DocumentStore):

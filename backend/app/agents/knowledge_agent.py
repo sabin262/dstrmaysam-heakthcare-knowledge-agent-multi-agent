@@ -814,6 +814,11 @@ def _has_document_content_intent(text: str) -> bool:
     return _contains_marker(text, DOCUMENT_CONTENT_MARKERS)
 
 
+def _has_document_content_reference(text: str) -> bool:
+    lowered = text.lower()
+    return _has_document_type_reference(lowered) and _has_document_content_intent(lowered)
+
+
 def _has_document_inventory_intent(text: str) -> bool:
     lowered = text.lower()
     if not _has_document_type_reference(lowered):
@@ -830,6 +835,8 @@ def _has_policy_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_catalog_intent(lowered):
         return False
+    if _has_document_content_reference(lowered):
+        return True
     if _has_operational_table_lookup_intent(text):
         return False
     if _contains_marker(lowered, POLICY_QUERY_MARKERS):
@@ -841,6 +848,8 @@ def _has_policy_intent(text: str) -> bool:
 
 def _has_operational_table_lookup_intent(text: str) -> bool:
     lowered = text.lower()
+    if _has_document_content_reference(lowered):
+        return False
     if any(marker in lowered for marker in ("policy", "guideline", "procedure", "sop", "pathway")):
         return False
     operational_subject = any(
@@ -896,6 +905,8 @@ def _has_retention_policy_intent(text: str) -> bool:
 
 def _has_deterministic_intent(text: str) -> bool:
     if _has_catalog_intent(text):
+        return False
+    if _has_document_content_reference(text):
         return False
     if _safety_should_suppress_deterministic(text):
         return False
@@ -1267,8 +1278,12 @@ DETERMINISTIC_DETAIL_LABELS = {
     "contact": "Contact",
     "contact_name": "Contact name",
     "contact_type": "Contact type",
+    "department_name": "Department",
+    "due_date": "Due date",
     "email": "Email",
     "escalation_contact": "Escalation contact",
+    "last_score_percent": "Last score",
+    "lead": "Lead",
     "main_phone": "Phone",
     "max_adult_dose": "Maximum adult dose",
     "monitoring_required": "Monitoring required",
@@ -1278,6 +1293,8 @@ DETERMINISTIC_DETAIL_LABELS = {
     "service_lead": "Service lead",
     "shift_end": "Shift end",
     "shift_start": "Shift start",
+    "status": "Status",
+    "topic": "Topic",
 }
 DETERMINISTIC_DETAIL_ORDER = (
     "category",
@@ -1461,6 +1478,41 @@ def _format_count_detail(payload: dict[str, Any]) -> str:
     if parts:
         return "; ".join(parts)
     return _lookup_list_name(payload)
+
+
+def _is_compliance_audit_payload(payload: dict[str, Any]) -> bool:
+    normalized_keys = {_normalize_payload_key(key) for key in payload}
+    return bool(
+        normalized_keys
+        & {
+            "audit_id",
+            "topic",
+            "due_date",
+            "last_score_percent",
+        }
+    )
+
+
+def _format_compliance_audit_answer(query: str, row_payloads: list[dict[str, Any]]) -> str:
+    audit_payloads = [payload for payload in row_payloads if _is_compliance_audit_payload(payload)]
+    if not audit_payloads:
+        return ""
+
+    title = "Compliance audits due" if "due" in query.lower() else "Compliance audits"
+    lines = [f"{title} returned by deterministic lookup:"]
+    lines.append("")
+    for index, payload in enumerate(audit_payloads[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
+        topic = str(payload.get("topic") or "Audit")
+        lines.append(f"{index}. {topic}")
+        for field in ("department_name", "status", "due_date", "lead", "last_score_percent"):
+            value = payload.get(field)
+            if value in (None, "", []):
+                continue
+            lines.append(f"   - {_detail_label(field)}: {_detail_value(field, value)}")
+    if len(audit_payloads) > DETERMINISTIC_INLINE_ROW_LIMIT:
+        lines.append("")
+        lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(audit_payloads)} compliance audit row(s).")
+    return "\n".join(lines) + _expandable_all_rows(audit_payloads, summary="Show all compliance audit rows")
 
 
 def _has_contact_intent(query: str) -> bool:
@@ -2019,6 +2071,10 @@ def _format_deterministic_lookup_payload(query: str, payload: dict[str, Any]) ->
         contact_answer = _format_contact_answer(query, row_payloads)
         if contact_answer:
             return contact_answer
+
+    audit_answer = _format_compliance_audit_answer(query, row_payloads)
+    if audit_answer:
+        return audit_answer
 
     equipment_payloads = [payload for payload in row_payloads if _is_equipment_payload(payload)]
     equipment_availability = _has_equipment_availability_intent(query)
