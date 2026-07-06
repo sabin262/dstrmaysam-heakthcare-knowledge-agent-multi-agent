@@ -82,13 +82,13 @@
       "minimum_score": 0.86
     },
     {
-      "id": "det_medicine_dopamine",
+      "id": "det_medicine_paracetamol",
       "category": "deterministic",
-      "query": "info on dopamine",
+      "query": "info on paracetamol",
       "expected_agents": ["DeterministicLookupAgent"],
       "expected_tools": ["postgres_deterministic_lookup"],
       "expected_sources": ["formulary"],
-      "required_answer_patterns": ["Dopamine", "category|restricted|monitoring"],
+      "required_answer_patterns": ["Paracetamol", "category|restricted|monitoring"],
       "max_latency_ms": 30000,
       "minimum_score": 0.86
     },
