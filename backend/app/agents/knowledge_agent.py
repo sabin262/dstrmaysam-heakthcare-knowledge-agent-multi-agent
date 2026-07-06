@@ -255,6 +255,22 @@ DETERMINISTIC_QUERY_MARKERS = {
     "drugs",
     "formulary",
     "restricted",
+    "audit",
+    "audits",
+    "compliance audit",
+    "compliance audits",
+    "training",
+    "training record",
+    "training records",
+    "competency",
+    "competencies",
+    "finance",
+    "financial",
+    "invoice",
+    "invoices",
+    "balance",
+    "billing",
+    "payer",
     "role",
     "roles",
     "rota",
@@ -284,9 +300,14 @@ STRUCTURED_ROW_VALUE_MARKERS = {
     "availability",
     "device",
     "devices",
+    "defibrillator",
+    "defibrillators",
+    "dialysis",
     "ecg",
     "equipment",
     "equipments",
+    "hoist",
+    "hoists",
     "inventory",
     "machine",
     "machines",
@@ -295,7 +316,9 @@ STRUCTURED_ROW_VALUE_MARKERS = {
     "oxygen",
     "pump",
     "pumps",
+    "syringe",
     "stock",
+    "ultrasound",
     "ventilator",
     "ventilators",
     "wheelchair",
@@ -807,11 +830,48 @@ def _has_policy_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_catalog_intent(lowered):
         return False
+    if _has_operational_table_lookup_intent(text):
+        return False
     if _contains_marker(lowered, POLICY_QUERY_MARKERS):
         return True
     if _has_research_data_policy_intent(lowered):
         return True
     return _has_retention_policy_intent(lowered)
+
+
+def _has_operational_table_lookup_intent(text: str) -> bool:
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("policy", "guideline", "procedure", "sop", "pathway")):
+        return False
+    operational_subject = any(
+        marker in lowered
+        for marker in (
+            "audit",
+            "audits",
+            "compliance audit",
+            "compliance audits",
+            "training",
+            "training record",
+            "training records",
+            "competency",
+            "competencies",
+            "finance",
+            "financial",
+            "invoice",
+            "invoices",
+            "balance",
+            "billing",
+            "payer",
+        )
+    )
+    if not operational_subject:
+        return False
+    return (
+        _contains_marker(lowered, LIST_LOOKUP_MARKERS)
+        or _contains_marker(lowered, STRUCTURED_AGGREGATE_MARKERS)
+        or any(marker in lowered for marker in ENTITY_LOOKUP_MARKERS)
+        or any(marker in lowered for marker in ("record", "records", "due", "status", "for "))
+    )
 
 
 def _has_research_data_policy_intent(text: str) -> bool:

@@ -56,6 +56,26 @@ class FakeRetrieval(RetrievalService):
         ][:top_k]
 
 
+class SupervisorRoutingContractTests(unittest.TestCase):
+    def test_operational_table_queries_route_to_deterministic_lookup(self):
+        cases = {
+            "list compliance audits due": ["postgres_deterministic_lookup"],
+            "training record for Lucy Hall": ["postgres_deterministic_lookup"],
+            "how many defibrillators does the hospital have?": ["postgres_deterministic_lookup"],
+            "info on dopamine": ["postgres_deterministic_lookup"],
+        }
+
+        for query, expected_tools in cases.items():
+            with self.subTest(query=query):
+                self.assertEqual(_planned_tool_names(query), expected_tools)
+
+    def test_policy_wording_still_routes_to_policy_search(self):
+        self.assertEqual(
+            _planned_tool_names("what does the compliance policy say about audits?"),
+            ["policy_search"],
+        )
+
+
 class FakeDocuments(DocumentStore):
     def __init__(self):
         pass
