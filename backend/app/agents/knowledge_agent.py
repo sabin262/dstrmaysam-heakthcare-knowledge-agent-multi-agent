@@ -919,6 +919,8 @@ def _has_deterministic_intent(text: str) -> bool:
         or _has_generic_row_value_list_intent(text)
         or _has_patient_location_lookup_intent(text)
         or _has_patient_appointment_lookup_intent(text)
+        or _has_patient_detail_lookup_intent(text)
+        or _has_unsafe_phi_sharing_intent(text)
         or _has_identifier_lookup_intent(text)
         or _has_staff_rota_lookup_intent(text)
     )
@@ -973,7 +975,37 @@ def _has_patient_detail_lookup_intent(text: str) -> bool:
             "find",
         )
     )
-    return patient_marker and (detail_marker or _has_identifier_lookup_intent(text))
+    if patient_marker and (detail_marker or _has_identifier_lookup_intent(text)):
+        return True
+    if (
+        detail_marker
+        and not _has_policy_intent(text)
+        and not _has_catalog_intent(text)
+        and not _has_contact_intent(text)
+        and not _contains_marker(lowered, {"doctor", "dr", "department", "ward", "rota", "on call", "on-call"})
+    ):
+        person_match = re.search(
+            r"\b(?:details?|show|lookup|find)\s+(?:for|on|about)?\s*([a-z][a-z.'-]+\s+[a-z][a-z.'-]+)\b",
+            lowered,
+        )
+        if person_match:
+            terms = set(person_match.group(1).split())
+            non_patient_terms = {
+                "policy",
+                "guideline",
+                "procedure",
+                "document",
+                "documents",
+                "equipment",
+                "medicine",
+                "healthcare",
+                "services",
+                "service",
+                "brochure",
+                "iot",
+            }
+            return not bool(terms & non_patient_terms)
+    return False
 
 
 def _has_unsafe_phi_sharing_intent(text: str) -> bool:
@@ -1209,9 +1241,37 @@ def _has_safety_intent(text: str) -> bool:
     if _has_policy_intent(text) and not _has_active_safety_or_privacy_intent(text):
         return False
     if _has_equipment_availability_intent(text):
-        return any(marker in lowered for marker in ("urgent", "urgently", "quick", "quickly", "emergency"))
+        return any(
+            marker in lowered
+            for marker in (
+                "urgent",
+                "urgently",
+                "quick",
+                "quickly",
+                "emergency",
+                "unavailable",
+                "not available",
+                "breathing support",
+                "respiratory support",
+                "life support",
+            )
+        )
     if _has_patient_detail_lookup_intent(text) and not _has_unsafe_phi_sharing_intent(text):
-        return False
+        return any(
+            marker in lowered
+            for marker in (
+                "abnormal lab",
+                "critical result",
+                "diagnose",
+                "diagnosis",
+                "treatment",
+                "symptoms",
+                "clinical advice",
+                "what should i prescribe",
+                "what should we prescribe",
+                "what medication",
+            )
+        )
     return any(marker in lowered for marker in SAFETY_QUERY_MARKERS)
 
 
@@ -1251,9 +1311,11 @@ def _has_active_safety_or_privacy_intent(text: str) -> bool:
 def _safety_should_suppress_deterministic(text: str) -> bool:
     if not _has_safety_intent(text):
         return False
+    if _has_unsafe_phi_sharing_intent(text):
+        return False
     if _has_equipment_availability_intent(text):
         return False
-    if _has_patient_detail_lookup_intent(text) and not _has_unsafe_phi_sharing_intent(text):
+    if _has_patient_detail_lookup_intent(text):
         return False
     if _has_contact_intent(text) or _has_staff_rota_lookup_intent(text) or _has_patient_appointment_lookup_intent(text):
         return False
@@ -1313,6 +1375,55 @@ def _deterministic_tool_output_has_results(output: str) -> bool:
         except Exception:
             return False
     return False
+
+
+def _parse_deterministic_tool_payload(output: str) -> dict[str, Any]:
+    text = str(output or "").strip()
+    if not text:
+        return {}
+    for tool_name in DETERMINISTIC_ROUTE_TOOLS:
+        prefix = f"{tool_name} results:"
+        if text.startswith(prefix):
+            text = text.split(prefix, 1)[-1].strip()
+            break
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _deterministic_payload_has_source_table(payload: dict[str, Any], table_name: str) -> bool:
+    expected = table_name.strip().lower()
+    if not expected:
+        return False
+    if str(payload.get("source_table") or "").strip().lower() == expected:
+        return True
+    for row in payload.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("source_table") or "").strip().lower() == expected:
+            return True
+    return False
+
+
+def _deterministic_payload_requires_safety_review(query: str, payload: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    category = str(payload.get("category") or "").strip().lower()
+    has_results = _deterministic_tool_output_has_results(json.dumps(payload))
+    if has_results and (_has_patient_detail_lookup_intent(query) or category in {"patient_details"}):
+        warnings.append("PHI-sensitive deterministic patient details require safety review.")
+    if _has_unsafe_phi_sharing_intent(query):
+        warnings.append("Unsafe PHI sharing request requires safety review.")
+    if _has_equipment_availability_intent(query) and _has_safety_intent(query):
+        warnings.append("Urgent equipment request requires safety review.")
+    if _has_active_safety_or_privacy_intent(query) and (
+        _deterministic_payload_has_source_table(payload, "patients")
+        or _deterministic_payload_has_source_table(payload, "equipment_assets")
+        or _deterministic_payload_has_source_table(payload, "organization_contacts")
+    ):
+        warnings.append("Clinical safety or privacy-sensitive deterministic result requires safety review.")
+    return list(dict.fromkeys(warnings))
 
 
 DETERMINISTIC_DETAIL_LABELS = {
@@ -3856,6 +3967,13 @@ class DeterministicLookupAgent(SpecialistGraphAgent):
         started_at: float,
     ) -> SpecialistReport:
         report = super().validate_report(task=task, tool_results=tool_results, started_at=started_at)
+        for result in tool_results:
+            payload = _parse_deterministic_tool_payload(result.answer_fragment or result.tool_context)
+            if not payload:
+                continue
+            query = str(result.performance.get("effective_query") or task.query)
+            report.warnings.extend(_deterministic_payload_requires_safety_review(query, payload))
+        report.warnings = list(dict.fromkeys(report.warnings))
         if not any(_deterministic_tool_output_has_results(result.answer_fragment) for result in tool_results):
             report.status = "no_evidence"
             report.confidence = 0.2

@@ -93,14 +93,14 @@ class SupervisorRoutingContractTests(unittest.TestCase):
         self.assertEqual(_planned_tool_names("information on IoT"), ["policy_search"])
         self.assertEqual(_planned_tool_names("who is on call today"), ["postgres_deterministic_lookup"])
 
-    def test_patient_details_route_to_deterministic_unless_unsafe_sharing(self):
+    def test_patient_details_route_to_deterministic_with_safety_for_unsafe_sharing(self):
         self.assertEqual(
             _planned_tool_names("show patient details for MRN10001"),
             ["postgres_deterministic_lookup"],
         )
         self.assertEqual(
             _planned_tool_names("share patient MRN10001 on whatsapp"),
-            ["safety_guard"],
+            ["postgres_deterministic_lookup", "safety_guard"],
         )
 
     def test_compliance_audit_lookup_keeps_audit_fields_in_answer(self):
@@ -819,6 +819,43 @@ class AgentContractTests(unittest.TestCase):
         self.assertNotEqual(result.metadata["performance"]["agent_mode"], "deterministic_preflight")
         self.assertEqual(lookup.calls[0]["csv_assets"][0]["filename"], "doctor_rota.csv")
 
+    def test_patient_detail_lookup_routes_through_deterministic_then_safety_then_synthesis(self):
+        fake_llm = FakeLLM([])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "patient_details",
+                    "message": "Found 1 matching patient row.",
+                    "rows": [
+                        {
+                            "source_table": "patients",
+                            "row": {
+                                "patient_name": "John Spencer",
+                                "mrn": "MRN10001",
+                                "ward": "Cardiology Ward A",
+                                "department": "Cardiology",
+                                "consultant": "Dr James Wilson",
+                                "care_status": "Inpatient",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "show patient details for MRN10001", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup", "safety_guard"])
+        self.assertEqual(
+            result.metadata["agents_used"],
+            ["DeterministicLookupAgent", "SafetyAgent", "SynthesisAgent"],
+        )
+        self.assertEqual(result.metadata["performance"]["agent_mode"], "langgraph")
+        self.assertNotEqual(result.metadata["performance"]["agent_mode"], "deterministic_preflight")
+        self.assertEqual(fake_llm.messages, [])
+
     def test_ambiguous_on_call_question_uses_supervisor_before_lookup(self):
         fake_llm = FakeLLM(
             [
@@ -1506,12 +1543,16 @@ class AgentContractTests(unittest.TestCase):
 
         result = agent.answer("user", "in need a ventilator quick", session_id="session")
 
-        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup", "safety_guard"])
         self.assertIn("Ventilator availability from deterministic lookup:", result.answer)
         self.assertIn("- Status: Available", result.answer)
         self.assertIn("- Location: Mental Health Ward", result.answer)
         self.assertNotIn("Respiratory Ward", result.answer)
         self.assertEqual(len(fake_llm.messages), 1)
+        self.assertEqual(
+            result.metadata["agents_used"],
+            ["DeterministicLookupAgent", "SafetyAgent", "SynthesisAgent"],
+        )
 
     def test_synthesis_treats_safety_review_as_verdict_not_duplicate_evidence(self):
         query = "i need an ecg machine quick"
