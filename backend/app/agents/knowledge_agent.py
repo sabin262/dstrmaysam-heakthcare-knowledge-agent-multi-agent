@@ -956,6 +956,47 @@ def _has_identifier_lookup_intent(text: str) -> bool:
     return bool(re.search(r"\b(?:mrn|nhs)?\d{4,}\b", lowered)) or bool(re.search(r"\bw\d+\b", lowered))
 
 
+def _has_patient_detail_lookup_intent(text: str) -> bool:
+    lowered = text.lower()
+    patient_marker = any(marker in lowered for marker in ("patient", "mrn", "nhs number", "nhs"))
+    detail_marker = any(
+        marker in lowered
+        for marker in (
+            "detail",
+            "details",
+            "record",
+            "records",
+            "info",
+            "information",
+            "show",
+            "lookup",
+            "find",
+        )
+    )
+    return patient_marker and (detail_marker or _has_identifier_lookup_intent(text))
+
+
+def _has_unsafe_phi_sharing_intent(text: str) -> bool:
+    lowered = text.lower()
+    sharing_marker = any(
+        marker in lowered
+        for marker in (
+            "share",
+            "send",
+            "forward",
+            "export",
+            "download",
+            "email",
+            "whatsapp",
+            "personal account",
+            "outside",
+            "external",
+        )
+    )
+    patient_marker = any(marker in lowered for marker in ("patient", "mrn", "nhs number", "nhs"))
+    return sharing_marker and patient_marker
+
+
 def _has_staff_rota_lookup_intent(text: str) -> bool:
     lowered = text.lower()
     if _has_policy_intent(text):
@@ -1169,6 +1210,8 @@ def _has_safety_intent(text: str) -> bool:
         return False
     if _has_equipment_availability_intent(text):
         return any(marker in lowered for marker in ("urgent", "urgently", "quick", "quickly", "emergency"))
+    if _has_patient_detail_lookup_intent(text) and not _has_unsafe_phi_sharing_intent(text):
+        return False
     return any(marker in lowered for marker in SAFETY_QUERY_MARKERS)
 
 
@@ -1209,6 +1252,8 @@ def _safety_should_suppress_deterministic(text: str) -> bool:
     if not _has_safety_intent(text):
         return False
     if _has_equipment_availability_intent(text):
+        return False
+    if _has_patient_detail_lookup_intent(text) and not _has_unsafe_phi_sharing_intent(text):
         return False
     if _has_contact_intent(text) or _has_staff_rota_lookup_intent(text) or _has_patient_appointment_lookup_intent(text):
         return False
@@ -1569,6 +1614,21 @@ def _contact_display_name(payload: dict[str, Any]) -> str:
     return "Contact"
 
 
+def _is_department_contact_query(query: str) -> bool:
+    lowered = query.lower()
+    asks_for_contact = any(marker in lowered for marker in ("contact", "call", "phone", "email", "reach"))
+    asks_for_department = any(marker in lowered for marker in ("department", "dept", "service", "unit"))
+    asks_for_person = any(marker in lowered for marker in ("doctor", "dr ", "patient", "ward", "staff", "person"))
+    return asks_for_contact and asks_for_department and not asks_for_person
+
+
+def _is_department_directory_payload(payload: dict[str, Any]) -> bool:
+    return payload.get("department_name") not in (None, "", []) and any(
+        payload.get(field) not in (None, "", [])
+        for field in ("main_phone", "service_lead", "escalation_contact", "location")
+    )
+
+
 def _format_contact_option(payload: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     detail_fields = (
@@ -1604,10 +1664,54 @@ def _format_contact_option(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_department_contact_answer(query: str, contact_payloads: list[dict[str, Any]]) -> str:
+    department_payloads = [payload for payload in contact_payloads if _is_department_directory_payload(payload)]
+    if not department_payloads:
+        return ""
+    department_first = _is_department_directory_payload(contact_payloads[0]) if contact_payloads else False
+    if not (_is_department_contact_query(query) or department_first):
+        return ""
+
+    department = department_payloads[0]
+    department_name = str(department.get("department_name") or _contact_target_from_query(query)).strip()
+    lines = [f"Contact information for {department_name} department:"]
+    lines.append("")
+    for field in ("main_phone", "email", "location", "service_lead", "escalation_contact"):
+        value = department.get(field)
+        if value in (None, "", []):
+            continue
+        lines.append(f"- {_detail_label(field)}: {_detail_value(field, value)}")
+
+    department_names = {str(payload.get("department_name") or "").lower() for payload in department_payloads}
+    additional = [
+        payload
+        for payload in contact_payloads
+        if not _is_department_directory_payload(payload)
+        and str(payload.get("department_name") or "").lower() in department_names
+    ]
+    if additional:
+        lines.append("")
+        lines.append("Additional contact options:")
+        lines.append("")
+        for index, payload in enumerate(additional[:DETERMINISTIC_INLINE_ROW_LIMIT], start=1):
+            lines.append(f"{index}. {_contact_display_name(payload)}")
+            option_lines = _format_contact_option(payload)
+            lines.extend(option_lines or ["   - No direct contact detail is recorded."])
+        if len(additional) > DETERMINISTIC_INLINE_ROW_LIMIT:
+            lines.append("")
+            lines.append(f"Showing first {DETERMINISTIC_INLINE_ROW_LIMIT} of {len(additional)} additional contact option(s).")
+            return "\n".join(lines) + _expandable_all_rows(additional, summary="Show all additional contact options")
+
+    return "\n".join(lines)
+
+
 def _format_contact_answer(query: str, row_payloads: list[dict[str, Any]]) -> str:
     contact_payloads = [payload for payload in row_payloads if _is_contact_payload(payload)]
     if not contact_payloads:
         return ""
+    department_answer = _format_department_contact_answer(query, contact_payloads)
+    if department_answer:
+        return department_answer
     target = _contact_target_from_query(query)
     if len(contact_payloads) == 1:
         lines = [f"Contact information for {target}:"]
@@ -3853,6 +3957,49 @@ class SafetyAgent(SpecialistGraphAgent):
         return report
 
 
+def _extract_tool_payload(output_text: str, tool_name: str) -> dict[str, Any]:
+    prefix = f"{tool_name} results:"
+    if not output_text.startswith(prefix):
+        return {}
+    payload_text = output_text.split(prefix, 1)[-1].strip()
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _safety_review_note_from_outputs(outputs: list[str]) -> str:
+    for output in outputs:
+        payload = _extract_tool_payload(str(output), "safety_guard")
+        if not payload:
+            continue
+        flags = [str(flag).lower() for flag in payload.get("flags") or []]
+        risk_level = str(payload.get("risk_level") or "").lower()
+        escalation_required = bool(payload.get("escalation_required"))
+        allow_answer = payload.get("allow_answer")
+        message = str(payload.get("message") or "").strip()
+        meaningful_flags = [
+            flag
+            for flag in flags
+            if flag
+            and flag
+            not in {
+                "missing_cited_sources",
+                "patient_specific_or_clinical_advice",
+            }
+        ]
+        if escalation_required:
+            return "Safety note: This may require urgent escalation. Follow the local escalation pathway and contact the appropriate clinical or site team immediately."
+        if allow_answer is False and message:
+            return f"Safety note: {message}"
+        if risk_level in {"high", "critical"} and message:
+            return f"Safety note: {message}"
+        if meaningful_flags and message and "missing cited sources" not in message.lower():
+            return f"Safety note: {message}"
+    return ""
+
+
 class SynthesisAgent:
     agent_name = "SynthesisAgent"
 
@@ -3886,6 +4033,7 @@ class SynthesisAgent:
         deterministic_no_result_sections: list[str] = []
         seen_deterministic_sections: set[str] = set()
         non_deterministic_outputs: list[str] = []
+        safety_outputs: list[str] = []
         deterministic_index = 0
         for output in tool_outputs:
             output_text = str(output)
@@ -3923,11 +4071,18 @@ class SynthesisAgent:
                     elif normalized_formatted not in seen_deterministic_sections:
                         seen_deterministic_sections.add(normalized_formatted)
                         deterministic_sections.append(formatted)
+            elif output_text.startswith("safety_guard results:"):
+                safety_outputs.append(output_text)
             else:
                 non_deterministic_outputs.append(output_text)
 
+        if safety_outputs and not deterministic_sections and not deterministic_no_result_sections:
+            non_deterministic_outputs.extend(safety_outputs)
+
         deterministic_only = bool(tools_used) and all(tool in DETERMINISTIC_ROUTE_TOOLS for tool in tools_used)
         catalog_only = bool(tools_used) and all(_canonical_tool_name(tool) == "catalogue_search" for tool in tools_used)
+        fixed_deterministic_answer = "\n\n".join([*deterministic_sections, *deterministic_no_result_sections]).strip()
+        safety_review_note = _safety_review_note_from_outputs(safety_outputs)
         if direct_answer and not tool_context:
             answer = direct_answer
             synthesis_status = "direct_answer"
@@ -3948,11 +4103,19 @@ class SynthesisAgent:
             synthesis_status = "catalog_structured_answer"
             synthesis_ms = _elapsed_ms(started)
             ragas_contexts = owner._ragas_contexts_from_evidence(tool_context)
+        elif fixed_deterministic_answer and not non_deterministic_outputs:
+            answer = fixed_deterministic_answer
+            if safety_review_note:
+                answer = answer + "\n\n" + safety_review_note
+            synthesis_status = (
+                "deterministic_structured_answer_with_safety_review"
+                if safety_outputs
+                else "deterministic_structured_answer"
+            )
+            synthesis_ms = _elapsed_ms(started)
+            ragas_contexts = owner._ragas_contexts_from_evidence(fixed_deterministic_answer)
         else:
             policy_context = "\n\n".join(non_deterministic_outputs)
-            fixed_deterministic_answer = "\n\n".join(
-                [*deterministic_sections, *deterministic_no_result_sections]
-            ).strip()
             bounded_policy_context = owner._bounded_context(
                 policy_context or "No non-deterministic specialist evidence was returned."
             )
@@ -3992,6 +4155,8 @@ class SynthesisAgent:
             else:
                 if fixed_deterministic_answer:
                     answer = fixed_deterministic_answer + "\n\n" + answer
+                if safety_review_note:
+                    answer = answer + "\n\n" + safety_review_note
                 synthesis_status = "answered"
             ragas_contexts = owner._ragas_contexts_from_evidence(
                 fixed_deterministic_answer,

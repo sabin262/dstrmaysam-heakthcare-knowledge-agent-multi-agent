@@ -1,12 +1,16 @@
+import json
 import unittest
 from dataclasses import replace
 from threading import Event
 
 from backend.app.agent import KnowledgeAgent
+from backend.app.agent import MultiAgentGraphContext
+from backend.app.agent import SynthesisAgent
 from backend.app.agent import _format_deterministic_lookup_payload
 from backend.app.agent import _planned_tool_names
 from backend.app.config import AppSettings
 from backend.app.history import InMemoryChatHistoryRepository
+from backend.app.healthcare import HealthcareUserContext
 from backend.app.observability import ObservabilityClient
 from backend.app.retrieval import RetrievalHit, RetrievalService
 from backend.app.secrets import StaticSecretProvider
@@ -89,6 +93,16 @@ class SupervisorRoutingContractTests(unittest.TestCase):
         self.assertEqual(_planned_tool_names("information on IoT"), ["policy_search"])
         self.assertEqual(_planned_tool_names("who is on call today"), ["postgres_deterministic_lookup"])
 
+    def test_patient_details_route_to_deterministic_unless_unsafe_sharing(self):
+        self.assertEqual(
+            _planned_tool_names("show patient details for MRN10001"),
+            ["postgres_deterministic_lookup"],
+        )
+        self.assertEqual(
+            _planned_tool_names("share patient MRN10001 on whatsapp"),
+            ["safety_guard"],
+        )
+
     def test_compliance_audit_lookup_keeps_audit_fields_in_answer(self):
         answer = _format_deterministic_lookup_payload(
             "list compliance audits due",
@@ -126,6 +140,42 @@ class SupervisorRoutingContractTests(unittest.TestCase):
         self.assertIn("Patient safety audit", answer)
         self.assertIn("Status: Due", answer)
         self.assertIn("Due date: 2026-07-14", answer)
+
+    def test_department_contact_answer_prioritizes_department_directory(self):
+        answer = _format_deterministic_lookup_payload(
+            "how do i contact the radiology department",
+            {
+                "category": "contacts",
+                "rows": [
+                    {
+                        "source_table": "departments",
+                        "row": {
+                            "department_name": "Radiology",
+                            "main_phone": "020-5555-1009",
+                            "email": "radiology@example.nhs",
+                            "location": "Level 0, Imaging Suite",
+                            "service_lead": "Radiology Service Lead",
+                            "escalation_contact": "Urgent Radiology Bleep 2601",
+                        },
+                    },
+                    {
+                        "source_table": "organization_contacts",
+                        "row": {
+                            "department_name": "Radiology",
+                            "contact_type": "urgent report",
+                            "contact_name": "Radiology urgent report Desk",
+                            "phone": "020-5555-1110",
+                        },
+                    },
+                ],
+            },
+        )
+
+        self.assertTrue(answer.startswith("Contact information for Radiology department:"))
+        self.assertIn("- Phone: 020-5555-1009", answer)
+        self.assertIn("- Email: radiology@example.nhs", answer)
+        self.assertIn("Additional contact options:", answer)
+        self.assertNotIn("Contact options for", answer)
 
 
 class FakeDocuments(DocumentStore):
@@ -1462,6 +1512,67 @@ class AgentContractTests(unittest.TestCase):
         self.assertIn("- Location: Mental Health Ward", result.answer)
         self.assertNotIn("Respiratory Ward", result.answer)
         self.assertEqual(len(fake_llm.messages), 1)
+
+    def test_synthesis_treats_safety_review_as_verdict_not_duplicate_evidence(self):
+        query = "i need an ecg machine quick"
+        fake_llm = FakeLLM([fake_ai_message("This should not be used.")])
+        agent = make_agent(fake_llm)
+        context = MultiAgentGraphContext(
+            owner=agent,
+            llm=fake_llm,
+            bound_llm=None,
+            system_prompt="",
+            user_prompt="",
+            original_query=query,
+            user_context=HealthcareUserContext(user_id="user", roles=("staff",)),
+            config={},
+            max_steps=4,
+            tool_names={"postgres_deterministic_lookup", "safety_guard"},
+            deterministic_guard_queries=[],
+            planned_guard_routes=[],
+        )
+        deterministic_payload = {
+            "category": "equipment",
+            "rows": [
+                {
+                    "source_table": "equipment_assets",
+                    "row": {
+                        "equipment_type": "ECG machine",
+                        "status": "Available",
+                        "location": "Cardiology Ward A",
+                        "clinical_engineering_contact": "clinical.engineering@example.nhs",
+                    },
+                }
+            ],
+        }
+        safety_payload = {
+            "risk_level": "medium",
+            "flags": ["missing_cited_sources"],
+            "escalation_required": False,
+            "allow_answer": True,
+            "message": "Safety guard detected issues that should be reflected in the final answer.",
+        }
+
+        result_state = SynthesisAgent(context).run(
+            {
+                "tool_outputs": [
+                    "postgres_deterministic_lookup results: " + json.dumps(deterministic_payload),
+                    "safety_guard results: " + json.dumps(safety_payload),
+                ],
+                "tools_used": ["postgres_deterministic_lookup", "safety_guard"],
+                "agent_flow": [
+                    {"kind": "specialist", "agent": "DeterministicLookupAgent", "query": query},
+                    {"kind": "specialist", "agent": "SafetyAgent", "query": query},
+                ],
+                "performance": {},
+            }
+        )
+        answer = result_state["result"].answer
+
+        self.assertEqual(answer.count("ECG machine availability from deterministic lookup:"), 1)
+        self.assertIn("- Status: Available", answer)
+        self.assertNotIn("missing cited sources", answer.lower())
+        self.assertEqual(fake_llm.messages, [])
 
     def test_generic_device_info_lists_matching_equipment_rows(self):
         lookup = FakeDeterministicLookup(
