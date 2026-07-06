@@ -2094,6 +2094,9 @@ def _tools_for_query_part(part: str) -> list[str]:
         or _has_known_structured_entity_info_intent(part)
     )
 
+    # Policy-first is only a replacement for the old RAG/document fallback path.
+    # Exact operational/table lookups must keep deterministic priority unless
+    # the user explicitly asks for policy/procedure/guideline interpretation.
     if deterministic and (not policy or deterministic_can_coexist_with_policy):
         tools.append("postgres_deterministic_lookup")
     if safety:
@@ -2102,7 +2105,17 @@ def _tools_for_query_part(part: str) -> list[str]:
         tools.append("policy_search")
     if deterministic and not policy and "postgres_deterministic_lookup" not in tools:
         tools.append("postgres_deterministic_lookup")
-    return tools or ["policy_search"]
+    if tools:
+        return tools
+    return ["policy_search"] if _should_policy_first_for_rag_fallback(part) else ["rag_search"]
+
+
+def _should_policy_first_for_rag_fallback(part: str) -> bool:
+    if _has_catalog_intent(part):
+        return False
+    if _has_deterministic_intent(part) or _has_safety_intent(part):
+        return False
+    return True
 
 
 def _tool_for_query_part(part: str) -> str:

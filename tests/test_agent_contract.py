@@ -75,6 +75,10 @@ class SupervisorRoutingContractTests(unittest.TestCase):
             ["policy_search"],
         )
 
+    def test_policy_first_only_replaces_rag_fallback(self):
+        self.assertEqual(_planned_tool_names("information on IoT"), ["policy_search"])
+        self.assertEqual(_planned_tool_names("who is on call today"), ["postgres_deterministic_lookup"])
+
 
 class FakeDocuments(DocumentStore):
     def __init__(self):
