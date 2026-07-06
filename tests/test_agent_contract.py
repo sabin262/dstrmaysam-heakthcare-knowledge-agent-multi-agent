@@ -839,6 +839,38 @@ class AgentContractTests(unittest.TestCase):
         self.assertIn("PolicyAgent", result.metadata["agents_used"])
         self.assertNotIn("RAGAgent", result.metadata["agents_used"])
 
+    def test_deterministic_only_query_routes_before_llm_supervisor_policy_choice(self):
+        fake_llm = FakeLLM([fake_ai_message("Synthesis answer")])
+        lookup = FakeDeterministicLookup(
+            FakeLookupResult(
+                {
+                    "category": "formulary",
+                    "message": "Found 1 matching row(s).",
+                    "rows": [
+                        {
+                            "source_table": "formulary",
+                            "source_filename": "formulary",
+                            "row": {
+                                "medicine_name": "Dopamine",
+                                "category": "Cardiac",
+                                "restricted": "Yes",
+                                "monitoring_required": "Glucose",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        agent = make_agent(fake_llm)
+        agent.deterministic_lookup = lookup
+
+        result = agent.answer("user", "info on dopamine", session_id="session")
+
+        self.assertEqual(result.tools_used, ["postgres_deterministic_lookup"])
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["selected_agent"], "DeterministicLookupAgent")
+        self.assertEqual(result.metadata["performance"]["agent_flow"][0]["reason"], "supervisor_deterministic_guard_initial")
+        self.assertEqual(len(fake_llm.messages), 0)
+
     def test_compact_oncall_direct_answer_is_forced_to_deterministic_specialist(self):
         fake_llm = FakeLLM([fake_ai_message("Someone is probably on call.")])
         lookup = FakeDeterministicLookup(

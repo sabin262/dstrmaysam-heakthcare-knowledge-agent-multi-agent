@@ -2970,6 +2970,22 @@ class SupervisorAgent:
                     reason=first_route["reason"],
                 )
 
+        if self.planned_requires_only_deterministic():
+            missing_deterministic_routes = [
+                route
+                for route in self.planned_guard_missing_routes(state, "supervisor_deterministic_guard_initial")
+                if _canonical_tool_name(str(route.get("tool") or "")) == "postgres_deterministic_lookup"
+            ]
+            if missing_deterministic_routes:
+                first_route = missing_deterministic_routes.pop(0)
+                state = {**state, "remaining_routes": missing_deterministic_routes}
+                return self.route_to_tool(
+                    state,
+                    tool_name=first_route["tool"],
+                    query=first_route["query"],
+                    reason=first_route["reason"],
+                )
+
         routing_prompt = (
             f"{self.context.user_prompt}\n\n"
             "Supervisor routing task:\n"
