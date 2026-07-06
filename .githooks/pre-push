@@ -6,7 +6,7 @@ echo "Running pre-push checks..."
 PYTHON_BIN="${PYTHON:-python}"
 
 if "$PYTHON_BIN" -c "import pytest" >/dev/null 2>&1; then
-  "$PYTHON_BIN" -m pytest tests/tests_pre_push.py -q
+  "$PYTHON_BIN" -m pytest tests/test_pre_push_critical.py -q
   "$PYTHON_BIN" -m compileall backend frontend tests -q
 elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   echo "pytest is not installed for $PYTHON_BIN; falling back to docker compose."
