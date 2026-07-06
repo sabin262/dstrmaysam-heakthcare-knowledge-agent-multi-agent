@@ -948,6 +948,64 @@ def _access_scopes(user: HealthcareUserContext) -> tuple[str, ...]:
     return tuple(sorted(scopes))
 
 
+def _can_view_full_patient_details(user: HealthcareUserContext) -> bool:
+    roles = {str(role).lower() for role in user.roles}
+    return bool(roles & {"admin", "manager", "department_manager"})
+
+
+PATIENT_CARE_CONTEXT_FIELDS = (
+    "ward_code",
+    "ward_name",
+    "ward_floor",
+    "department_name",
+    "named_consultant",
+    "care_status",
+    "risk_flags",
+)
+
+
+def _patient_payload_for_role(payload: dict[str, Any], *, full_access: bool) -> dict[str, Any]:
+    if full_access:
+        return dict(payload)
+    redacted = {
+        "name": "Patient record",
+        "redaction_note": (
+            "Patient identifiers were redacted because your role only allows care-context access."
+        ),
+    }
+    for field in PATIENT_CARE_CONTEXT_FIELDS:
+        value = payload.get(field)
+        if value not in (None, "", []):
+            redacted[field] = value
+    return redacted
+
+
+def _redact_patient_rows_for_user(
+    rows: Sequence[dict[str, Any]],
+    user: HealthcareUserContext,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not rows:
+        return list(rows), {"applied": False, "redacted_fields": []}
+    full_access = _can_view_full_patient_details(user)
+    if full_access:
+        return [dict(row) for row in rows], {"applied": False, "redacted_fields": []}
+
+    redacted_rows: list[dict[str, Any]] = []
+    redacted_fields = ["full_name", "patient_id", "mrn", "nhs_number", "date_of_birth"]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nested = row.get("row")
+        if isinstance(nested, dict):
+            wrapper = dict(row)
+            wrapper["row"] = _patient_payload_for_role(nested, full_access=False)
+            wrapper["row_number"] = "redacted"
+            redacted_rows.append(wrapper)
+        else:
+            redacted_rows.append(_patient_payload_for_role(row, full_access=False))
+    return redacted_rows, {"applied": True, "redacted_fields": redacted_fields}
+
+
 def _staff_rota_access_scopes(scopes: Sequence[str]) -> tuple[str, ...]:
     expanded = set(scopes)
     if "all_staff" in expanded:
@@ -1203,6 +1261,7 @@ class DeterministicLookupService:
         matched_terms: list[str] = []
         matched_columns: list[str] = []
         distinct_field = ""
+        patient_redaction: dict[str, Any] = {"applied": False, "redacted_fields": []}
         authoritative_patient_lookup = category == "patients" and _is_explicit_patient_lookup(query)
         category_first = (
             category in AUTHORITATIVE_LOOKUP_CATEGORIES
@@ -1411,6 +1470,8 @@ class DeterministicLookupService:
             row_search_terms = _expanded_search_terms(query, row_value_count_stopwords)
             matched_terms = _matched_terms(row_search_terms, rows)
             matched_columns = _matched_columns(row_search_terms, rows)
+            if category == "patients":
+                rows, patient_redaction = _redact_patient_rows_for_user(rows, user)
         except Exception as exc:
             return LookupResult(
                 category,
@@ -1432,6 +1493,7 @@ class DeterministicLookupService:
                     "matched_columns": matched_columns,
                     "resolved_today": resolved_today,
                     "requested_rota_dates": requested_rota_dates,
+                    "patient_redaction": patient_redaction,
                     "date_grounding_rule": (
                         "Do not call any rota row 'today' unless its row date equals resolved_today."
                     ),
@@ -1466,6 +1528,7 @@ class DeterministicLookupService:
                 "matched_columns": matched_columns,
                 "resolved_today": resolved_today,
                 "requested_rota_dates": requested_rota_dates,
+                "patient_redaction": patient_redaction,
                 "date_grounding_rule": "Do not call any rota row 'today' unless its row date equals resolved_today.",
                 "source": "postgres",
             },
@@ -2901,6 +2964,14 @@ class DeterministicLookupService:
         doctor_requested = bool(set(terms) & {"dr", "doctor", "doctors", "consultant", "physician"})
         patient_requested = bool(set(terms) & {"patient", "patients", "mrn", "nhs"})
         person_name_requested = len(person_terms) >= 2
+        contact_terms = set(terms)
+        explicit_department_contact = bool(contact_terms & {"department", "departments", "dept", "service", "unit"})
+        department_contact_requested = (
+            explicit_department_contact
+            or bool(contact_terms & {"contact", "contacts", "call", "phone", "email", "reach"})
+        ) and not (
+            doctor_requested or patient_requested or person_name_requested or bool(contact_terms & {"ward", "wards"})
+        )
 
         def wrapped_rows(source_table: str, fetched: Sequence[dict[str, Any]], pk: str) -> list[dict[str, Any]]:
             wrapped: list[dict[str, Any]] = []
@@ -2974,6 +3045,49 @@ class DeterministicLookupService:
             )
             return wrapped_rows("staff_schedule", list(cur.fetchall()), "schedule_id")
 
+        def fetch_departments(row_limit: int, *, include_service_lead: bool = True) -> list[dict[str, Any]]:
+            service_lead_clause = " OR lower(service_lead) LIKE %s" if include_service_lead else ""
+            cur.execute(
+                f"""
+                SELECT department_id, department_name, specialty_group, location, main_phone,
+                       email, service_lead, escalation_contact, access_level
+                FROM departments
+                WHERE {self._access_sql()}
+                  AND (%s = '%%' OR lower(department_name) LIKE %s OR lower(specialty_group) LIKE %s
+                       {service_lead_clause})
+                ORDER BY department_name
+                LIMIT %s
+                """,
+                (
+                    list(scopes),
+                    pattern,
+                    pattern,
+                    pattern,
+                    *([pattern] if include_service_lead else []),
+                    max(1, row_limit),
+                ),
+            )
+            return wrapped_rows("departments", list(cur.fetchall()), "department_id")
+
+        def fetch_organization_contacts(row_limit: int) -> list[dict[str, Any]]:
+            cur.execute(
+                f"""
+                SELECT contact_id, contact_type, department_name, contact_name, role,
+                       phone, email, available_hours, escalation_level, access_level
+                FROM organization_contacts
+                WHERE {self._access_sql()}
+                  AND (%s = '%%' OR lower(department_name) LIKE %s OR lower(contact_type) LIKE %s
+                       OR lower(role) LIKE %s OR lower(contact_name) LIKE %s)
+                ORDER BY
+                  CASE WHEN lower(department_name) LIKE %s THEN 0 ELSE 1 END,
+                  escalation_level,
+                  contact_name
+                LIMIT %s
+                """,
+                (list(scopes), pattern, pattern, pattern, pattern, pattern, pattern, max(1, row_limit)),
+            )
+            return wrapped_rows("organization_contacts", list(cur.fetchall()), "contact_id")
+
         if doctor_requested:
             doctor_rows = fetch_doctors(limit)
             if doctor_rows:
@@ -2995,39 +3109,16 @@ class DeterministicLookupService:
             if staff_rows:
                 return staff_rows[:limit]
 
-        cur.execute(
-            f"""
-            SELECT contact_id, contact_type, department_name, contact_name, role,
-                   phone, email, available_hours, escalation_level, access_level
-            FROM organization_contacts
-            WHERE {self._access_sql()}
-              AND (%s = '%%' OR lower(department_name) LIKE %s OR lower(contact_type) LIKE %s
-                   OR lower(role) LIKE %s OR lower(contact_name) LIKE %s)
-            ORDER BY
-              CASE WHEN lower(department_name) LIKE %s THEN 0 ELSE 1 END,
-              escalation_level,
-              contact_name
-            LIMIT %s
-            """,
-            (list(scopes), pattern, pattern, pattern, pattern, pattern, pattern, max(1, limit)),
-        )
-        append_rows("organization_contacts", list(cur.fetchall()), "contact_id")
+        if department_contact_requested:
+            rows.extend(fetch_departments(limit, include_service_lead=explicit_department_contact))
+            if len(rows) < limit:
+                rows.extend(fetch_organization_contacts(limit - len(rows)))
+            return rows[:limit]
+
+        rows.extend(fetch_organization_contacts(limit))
 
         if len(rows) < limit:
-            cur.execute(
-                f"""
-                SELECT department_id, department_name, specialty_group, location, main_phone,
-                       email, service_lead, escalation_contact, access_level
-                FROM departments
-                WHERE {self._access_sql()}
-                  AND (%s = '%%' OR lower(department_name) LIKE %s OR lower(specialty_group) LIKE %s
-                       OR lower(service_lead) LIKE %s)
-                ORDER BY department_name
-                LIMIT %s
-                """,
-                (list(scopes), pattern, pattern, pattern, pattern, max(1, limit - len(rows))),
-            )
-            append_rows("departments", list(cur.fetchall()), "department_id")
+            rows.extend(fetch_departments(limit - len(rows)))
 
         if len(rows) < limit and not person_name_requested:
             cur.execute(

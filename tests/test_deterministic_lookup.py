@@ -903,6 +903,39 @@ class DeterministicLookupToolTests(unittest.TestCase):
         self.assertEqual(service.category_calls[0]["category"], "patients")
         self.assertEqual(service.row_search_calls, [])
 
+    def test_patient_lookup_redacts_identifiers_for_non_manager_roles(self):
+        service = FakePatientPreferredLookup(
+            [
+                {
+                    "patient_id": "PAT-001",
+                    "mrn": "MRN10001",
+                    "nhs_number": "9991112222",
+                    "full_name": "John Spencer",
+                    "date_of_birth": "1971-01-03",
+                    "ward_code": "W02",
+                    "ward_name": "Cardiology Ward A",
+                    "department_name": "Cardiology",
+                    "named_consultant": "Dr Aisha Malik",
+                    "care_status": "Inpatient",
+                    "risk_flags": "Falls risk",
+                    "access_level": "clinical",
+                }
+            ]
+        )
+
+        result = service.lookup(
+            "show patient details for MRN10001",
+            HealthcareUserContext(user_id="staff", roles=("staff",)),
+        )
+
+        self.assertEqual(result.rows[0]["name"], "Patient record")
+        self.assertIn("redaction_note", result.rows[0])
+        self.assertEqual(result.rows[0]["ward_name"], "Cardiology Ward A")
+        self.assertEqual(result.rows[0]["named_consultant"], "Dr Aisha Malik")
+        self.assertNotIn("full_name", result.rows[0])
+        self.assertNotIn("mrn", result.rows[0])
+        self.assertTrue(result.lookup_plan["patient_redaction"]["applied"])
+
     def test_patient_lookup_does_not_broaden_when_patient_table_misses(self):
         service = FakePatientPreferredLookup([])
 
