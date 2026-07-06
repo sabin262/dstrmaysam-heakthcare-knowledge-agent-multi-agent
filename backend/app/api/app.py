@@ -900,6 +900,32 @@ def _latency_breakdown_summary(latency_breakdown: dict[str, object]) -> str:
     return ", ".join(f"{label} {value} ms" for label, value in values[:3])
 
 
+def _percentile_ms(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(int(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    bounded = min(100.0, max(0.0, float(percentile)))
+    rank = (bounded / 100.0) * (len(ordered) - 1)
+    lower_index = int(rank)
+    upper_index = min(lower_index + 1, len(ordered) - 1)
+    fraction = rank - lower_index
+    return int(round(ordered[lower_index] + (ordered[upper_index] - ordered[lower_index]) * fraction))
+
+
+def _estimated_llm_cost_usd(input_tokens: int, output_tokens: int) -> float:
+    settings = get_settings()
+    return round(
+        (
+            max(0, int(input_tokens)) * float(settings.llm_input_cost_per_million_tokens)
+            + max(0, int(output_tokens)) * float(settings.llm_output_cost_per_million_tokens)
+        )
+        / 1_000_000,
+        6,
+    )
+
+
 def _parse_dashboard_datetime(value: str) -> datetime | None:
     if not value:
         return None
@@ -1398,6 +1424,7 @@ def admin_dashboard(
     input_tokens: list[int] = []
     output_tokens: list[int] = []
     total_tokens: list[int] = []
+    query_costs_usd: list[float] = []
     ragas_values: dict[str, list[float]] = {
         "ragas_faithfulness": [],
         "ragas_answer_relevancy": [],
@@ -1471,6 +1498,7 @@ def admin_dashboard(
         input_token_count = int(metadata.get("input_tokens") or 0)
         output_token_count = int(metadata.get("output_tokens") or 0)
         total_token_count = input_token_count + output_token_count
+        estimated_cost_usd = _estimated_llm_cost_usd(input_token_count, output_token_count)
         model = str(metadata.get("model") or get_settings().azure_openai_deployment or "unknown")
         guardrail_applied = bool(metadata.get("guardrail_applied") or performance.get("response_guardrail_applied"))
         ragas_scores = metadata.get("ragas") if isinstance(metadata.get("ragas"), dict) else {}
@@ -1486,6 +1514,7 @@ def admin_dashboard(
             output_tokens.append(output_token_count)
         if total_token_count:
             total_tokens.append(total_token_count)
+        query_costs_usd.append(estimated_cost_usd)
         if guardrail_applied:
             guardrail_count += 1
         for score_name in ragas_values:
@@ -1537,6 +1566,7 @@ def admin_dashboard(
                 "input_tokens": input_token_count,
                 "output_tokens": output_token_count,
                 "total_tokens": total_token_count,
+                "estimated_cost_usd": estimated_cost_usd,
                 "agent_mode": performance.get("agent_mode"),
                 "ragas": ragas_scores,
                 "ragas_status": metadata.get("ragas_status"),
@@ -1555,9 +1585,13 @@ def admin_dashboard(
         "unique_users": len(user_counts),
         "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
         "max_latency_ms": max(latencies) if latencies else 0,
+        "p50_latency_ms": _percentile_ms(latencies, 50),
+        "p95_latency_ms": _percentile_ms(latencies, 95),
         "avg_input_tokens": int(sum(input_tokens) / len(input_tokens)) if input_tokens else 0,
         "avg_output_tokens": int(sum(output_tokens) / len(output_tokens)) if output_tokens else 0,
         "avg_total_tokens": int(sum(total_tokens) / len(total_tokens)) if total_tokens else 0,
+        "total_estimated_cost_usd": round(sum(query_costs_usd), 6),
+        "avg_estimated_cost_usd": round(sum(query_costs_usd) / len(query_costs_usd), 6) if query_costs_usd else 0,
         "avg_sources_per_query": (total_sources / len(rows)) if rows else 0,
         "guardrail_trigger_count": guardrail_count,
         "tool_counts": tool_counts,

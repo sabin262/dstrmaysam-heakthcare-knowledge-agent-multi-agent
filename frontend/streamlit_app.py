@@ -1443,12 +1443,13 @@ def render_query_detail(item: dict[str, Any]) -> None:
             if isinstance(step, dict) and step.get("agent") == "SupervisorAgent"
         ]
     )
-    detail_columns = st.columns(5)
+    detail_columns = st.columns(6)
     detail_columns[0].metric("Latency", f"{item.get('latency_ms', 0)} ms")
     detail_columns[1].metric("Sources", item.get("source_count", 0))
     detail_columns[2].metric("Input tokens", item.get("input_tokens") or 0)
     detail_columns[3].metric("Output tokens", item.get("output_tokens") or 0)
     detail_columns[4].metric("Total tokens", item.get("total_tokens") or 0)
+    detail_columns[5].metric("Cost", format_usd_cost(item.get("estimated_cost_usd")))
     st.caption(f"Trace ID: {item.get('trace_id') or 'unavailable'}")
     st.caption(f"Session ID: {item.get('session_id')}")
     st.caption(f"Routing: {item.get('chat_execution_mode_label') or 'Supervisor'}")
@@ -1662,15 +1663,19 @@ def render_admin_dashboard() -> None:
     summary = payload.get("summary") or {}
     queries = payload.get("queries") or []
     ragas_summary = summary.get("ragas") or {}
-    metric_columns = st.columns(8)
+    metric_columns = st.columns(5)
     metric_columns[0].metric("Queries", summary.get("total_queries", 0))
     metric_columns[1].metric("Users", summary.get("unique_users", 0))
     metric_columns[2].metric("Avg latency", f"{summary.get('avg_latency_ms', 0)} ms")
-    metric_columns[3].metric("Max latency", f"{summary.get('max_latency_ms', 0)} ms")
-    metric_columns[4].metric("Avg tokens", summary.get("avg_total_tokens", 0))
-    metric_columns[5].metric("Avg sources", f"{float(summary.get('avg_sources_per_query', 0)):.1f}")
-    metric_columns[6].metric("Avg faithfulness", format_score(ragas_summary.get("ragas_faithfulness")))
-    metric_columns[7].metric("Guardrails", summary.get("guardrail_trigger_count", 0))
+    metric_columns[3].metric("P50 latency", f"{summary.get('p50_latency_ms', 0)} ms")
+    metric_columns[4].metric("P95 latency", f"{summary.get('p95_latency_ms', 0)} ms")
+    cost_columns = st.columns(5)
+    cost_columns[0].metric("Total cost", format_usd_cost(summary.get("total_estimated_cost_usd")))
+    cost_columns[1].metric("Avg cost", format_usd_cost(summary.get("avg_estimated_cost_usd")))
+    cost_columns[2].metric("Avg tokens", summary.get("avg_total_tokens", 0))
+    cost_columns[3].metric("Avg sources", f"{float(summary.get('avg_sources_per_query', 0)):.1f}")
+    cost_columns[4].metric("Guardrails", summary.get("guardrail_trigger_count", 0))
+    st.caption(f"Avg faithfulness: {format_score(ragas_summary.get('ragas_faithfulness'))}")
 
     st.divider()
     chart_columns = st.columns(3)
@@ -1709,6 +1714,7 @@ def render_admin_dashboard() -> None:
                 "Sources": item.get("source_count", 0),
                 "Tokens": item.get("total_tokens", 0),
                 "Latency ms": item.get("latency_ms", 0),
+                "Cost": format_usd_cost(item.get("estimated_cost_usd")),
                 "Guardrail": "Yes" if item.get("guardrail_applied") else "No",
             }
         )
@@ -1729,6 +1735,7 @@ def render_admin_dashboard() -> None:
                 "Sources",
                 "Tokens",
                 "Latency ms",
+                "Cost",
                 "Guardrail",
             ],
             column_config={
@@ -1739,6 +1746,7 @@ def render_admin_dashboard() -> None:
                 "Sources": st.column_config.NumberColumn("Sources", width="small"),
                 "Tokens": st.column_config.NumberColumn("Tokens", width="small"),
                 "Latency ms": st.column_config.NumberColumn("Latency ms", width="small"),
+                "Cost": st.column_config.TextColumn("Cost", width="small"),
                 "Guardrail": st.column_config.TextColumn("Guardrail", width="small"),
             },
         )
@@ -2896,6 +2904,18 @@ def format_score(value: Any) -> str:
         return f"{float(value):.2f}"
     except Exception:
         return "-"
+
+
+def format_usd_cost(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except Exception:
+        amount = 0.0
+    if amount <= 0:
+        return "$0.000000"
+    if amount < 0.000001:
+        return "<$0.000001"
+    return f"${amount:.6f}"
 
 
 def submit_chat_query(query: str) -> None:

@@ -1368,6 +1368,10 @@ Resources:
               Value: "20"
             - Name: LLM_CLIENT_MAX_RETRIES
               Value: "2"
+            - Name: LLM_INPUT_COST_PER_MILLION_TOKENS
+              Value: "0.40"
+            - Name: LLM_OUTPUT_COST_PER_MILLION_TOKENS
+              Value: "1.60"
             - Name: SYSTEM_EVAL_RETRY_ATTEMPTS
               Value: "4"
             - Name: SYSTEM_EVAL_RETRY_INITIAL_SECONDS
