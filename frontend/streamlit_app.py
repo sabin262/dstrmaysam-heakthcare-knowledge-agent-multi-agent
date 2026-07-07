@@ -1215,7 +1215,9 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
         tool_cards = []
         for tool_step in tool_steps:
             tool = str(tool_step.get("tool") or "tool")
-            kind = str(tool_step.get("kind") or "tool").replace("_", " ").title()
+            kind_raw = str(tool_step.get("kind") or "tool")
+            is_helper_tool = kind_raw == "helper_tool"
+            kind = "Shared helper tool" if is_helper_tool else kind_raw.replace("_", " ").title()
             helper_for = str(tool_step.get("helper_for") or "")
             selected_by_agent = bool(tool_step.get("selected_by_agent"))
             latency = int(tool_step.get("latency_ms") or 0)
@@ -1223,7 +1225,8 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
             candidate_count = tool_step.get("candidate_count")
             detail_parts = []
             if helper_for:
-                detail_parts.append(f"helper for {helper_for}")
+                helper_label = "shared helper for" if is_helper_tool else "helper for"
+                detail_parts.append(f"{helper_label} {helper_for}")
             elif selected_by_agent:
                 detail_parts.append("selected by agent")
             if candidate_count not in (None, ""):
@@ -1235,7 +1238,7 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
             tool_cards.append(
                 f"""
                 <div class="tree-node tree-tool">
-                    <div class="tree-kicker">Tool</div>
+                    <div class="tree-kicker">{html.escape(kind)}</div>
                     <div class="tree-name">{html.escape(tool)}</div>
                     <div class="tree-detail">{html.escape(' | '.join(detail_parts) or kind)}</div>
                 </div>

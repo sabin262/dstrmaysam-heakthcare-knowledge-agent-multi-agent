@@ -2713,6 +2713,7 @@ def _tool_flow_from_execution(
             {
                 "tool": "document_catalog",
                 "kind": "helper_tool",
+                "label": "Shared helper tool",
                 "helper_for": tool,
                 "selected_by_agent": False,
                 "query": guidance.get("query"),
@@ -2760,6 +2761,7 @@ def _tool_flow_from_execution(
             {
                 "tool": "document_catalog",
                 "kind": "helper_tool",
+                "label": "Shared helper tool",
                 "helper_for": tool,
                 "selected_by_agent": False,
                 "query": guidance.get("query"),
@@ -5034,6 +5036,36 @@ class KnowledgeAgent:
         self._catalog_candidate_cache[cache_key] = list(candidate_keys)
         return candidate_keys
 
+    def _table_catalog_candidate_keys(self, query: str, user_context: HealthcareUserContext) -> list[str]:
+        try:
+            records = self.access.filter_documents(user_context, self.documents.list_documents())
+        except Exception:
+            return []
+        table_records = []
+        for record in records:
+            metadata = getattr(record, "metadata", {}) or {}
+            if str(metadata.get("asset_source") or "") not in {"postgres_table_lookup", "postgres_uploaded_lookup"}:
+                continue
+            table_records.append(record)
+
+        terms = catalog_query_terms(query)
+        matches = [record for record in table_records if document_matches_catalog_query(record, query)]
+        matches.sort(key=lambda record: self._catalog_match_score(record, terms), reverse=True)
+        selected = matches or table_records
+
+        candidate_keys: list[str] = []
+        seen: set[str] = set()
+        for record in selected:
+            metadata = getattr(record, "metadata", {}) or {}
+            key = str(getattr(record, "key", "") or metadata.get("source_table") or metadata.get("source_table_key") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            candidate_keys.append(key)
+            if len(candidate_keys) >= 20:
+                break
+        return candidate_keys
+
     def _catalog_fingerprint(self, records: list[Any]) -> tuple[Any, ...]:
         return tuple(
             (
@@ -5091,24 +5123,53 @@ class KnowledgeAgent:
     def _run_graph_tool(
         self, name: str, query: str, user_context: HealthcareUserContext
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
-        if name in RETRIEVAL_SOURCE_TOOLS:
+        if _canonical_tool_name(name) in DETERMINISTIC_ROUTE_TOOLS:
+            catalog_started = time.perf_counter()
+            candidate_keys = self._table_catalog_candidate_keys(query, user_context)
+            catalog_ms = _elapsed_ms(catalog_started)
             started = time.perf_counter()
             output = self._run_tool(name, query)
-            sources = _source_dicts_from_retrieval_text(output)
+            lookup_ms = _elapsed_ms(started)
+            payload = _parse_deterministic_tool_payload(f"{name} results:\n{output}")
+            rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
             guidance = {
                 "tool": name,
                 "query": query,
-                "candidate_keys": [],
-                "candidate_count": 0,
-                "catalog_filter_applied": False,
-                "fallback_to_broad_search": True,
+                "candidate_keys": candidate_keys,
+                "candidate_count": len(candidate_keys),
+                "catalog_filter_applied": bool(candidate_keys),
+                "fallback_to_broad_search": False,
                 "timing_ms": {
-                    "catalog_ms": 0,
-                    "retrieval_search_ms": 0,
-                    "returned_hits": len(sources),
-                    "total_ms": _elapsed_ms(started),
+                    "catalog_ms": catalog_ms,
+                    "retrieval_search_ms": lookup_ms,
+                    "returned_hits": len(rows),
+                    "total_ms": catalog_ms + lookup_ms,
                 },
-                "source": "tool_router",
+                "source": "table_catalog_guided_lookup",
+            }
+            return output, [], [guidance]
+        if name in RETRIEVAL_SOURCE_TOOLS:
+            catalog_started = time.perf_counter()
+            candidate_keys = self._catalog_candidate_keys(name, query, user_context)
+            catalog_ms = _elapsed_ms(catalog_started)
+            started = time.perf_counter()
+            output = self._run_tool(name, query)
+            sources = _source_dicts_from_retrieval_text(output)
+            retrieval_ms = _elapsed_ms(started)
+            guidance = {
+                "tool": name,
+                "query": query,
+                "candidate_keys": candidate_keys,
+                "candidate_count": len(candidate_keys),
+                "catalog_filter_applied": bool(candidate_keys),
+                "fallback_to_broad_search": not bool(candidate_keys),
+                "timing_ms": {
+                    "catalog_ms": catalog_ms,
+                    "retrieval_search_ms": retrieval_ms,
+                    "returned_hits": len(sources),
+                    "total_ms": catalog_ms + retrieval_ms,
+                },
+                "source": "catalog_guided_tool_router",
             }
             return output, sources, [guidance]
         return self._run_tool(name, query), [], []
