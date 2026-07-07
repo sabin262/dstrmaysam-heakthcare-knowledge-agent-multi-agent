@@ -681,6 +681,7 @@ def _tool_flow_from_metadata(metadata: dict[str, object], tools_used: list[str])
             {
                 "tool": "document_catalog",
                 "kind": "helper_tool",
+                "label": "Shared helper tool",
                 "helper_for": tool,
                 "selected_by_agent": False,
                 "query": guidance.get("query"),
