@@ -1102,11 +1102,14 @@ def inferred_agent_flow(item: dict[str, Any]) -> list[dict[str, Any]]:
     return flow or existing_steps
 
 
-def _related_tool_steps(tool_flow: list[Any], selected_tool: str) -> list[dict[str, Any]]:
+def _related_tool_steps(tool_flow: list[Any], selected_tool: str, task_id: str = "") -> list[dict[str, Any]]:
     related = []
     seen: set[str] = set()
     for step in tool_flow:
         if not isinstance(step, dict):
+            continue
+        step_task_id = str(step.get("task_id") or "")
+        if task_id and step_task_id and step_task_id != task_id:
             continue
         tool = str(step.get("tool") or "")
         helper_for = str(step.get("helper_for") or "")
@@ -1188,6 +1191,7 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
     for index, decision in enumerate(route_decisions, start=1):
         selected_agent = str(decision.get("selected_agent") or "SpecialistAgent")
         selected_tool = str(decision.get("tool") or "")
+        decision_task_id = str(decision.get("task_id") or "")
         decision_tools = _tools_for_decision(flow_steps, decision, selected_agent, selected_tool)
         specialist_steps = [
             step
@@ -1202,7 +1206,7 @@ def render_agent_decision_tree(agent_flow: list[Any], tool_flow: list[Any]) -> N
         tool_steps = []
         seen_tool_steps: set[str] = set()
         for tool_name in decision_tools:
-            related_steps = _related_tool_steps(tool_flow, tool_name)
+            related_steps = _related_tool_steps(tool_flow, tool_name, decision_task_id)
             if not related_steps:
                 related_steps = [{"tool": tool_name, "kind": "agent_tool", "selected_by_agent": True}]
             for related_step in related_steps:

@@ -2710,13 +2710,14 @@ def _tool_flow_from_execution(
             )
             continue
         flow.append(
-            {
-                "tool": "document_catalog",
-                "kind": "helper_tool",
-                "label": "Shared helper tool",
-                "helper_for": tool,
-                "selected_by_agent": False,
-                "query": guidance.get("query"),
+                {
+                    "tool": "document_catalog",
+                    "kind": "helper_tool",
+                    "label": "Shared helper tool",
+                    "helper_for": tool,
+                    "task_id": guidance.get("task_id"),
+                    "selected_by_agent": False,
+                    "query": guidance.get("query"),
                 "candidate_count": guidance.get("candidate_count", 0),
                 "candidate_keys": guidance.get("candidate_keys", []),
                 "fallback_to_broad_search": guidance.get("fallback_to_broad_search", False),
@@ -2727,6 +2728,7 @@ def _tool_flow_from_execution(
             {
                 "tool": tool,
                 "kind": "agent_tool",
+                "task_id": guidance.get("task_id"),
                 "selected_by_agent": True,
                 "query": guidance.get("query"),
                 "source": "catalog_filtered_retrieval"
@@ -2758,13 +2760,14 @@ def _tool_flow_from_execution(
             )
             continue
         flow.append(
-            {
-                "tool": "document_catalog",
-                "kind": "helper_tool",
-                "label": "Shared helper tool",
-                "helper_for": tool,
-                "selected_by_agent": False,
-                "query": guidance.get("query"),
+                {
+                    "tool": "document_catalog",
+                    "kind": "helper_tool",
+                    "label": "Shared helper tool",
+                    "helper_for": tool,
+                    "task_id": guidance.get("task_id"),
+                    "selected_by_agent": False,
+                    "query": guidance.get("query"),
                 "candidate_count": guidance.get("candidate_count", 0),
                 "candidate_keys": guidance.get("candidate_keys", []),
                 "fallback_to_broad_search": guidance.get("fallback_to_broad_search", False),
@@ -3888,6 +3891,10 @@ class SpecialistGraphAgent:
                     query,
                     self.context.user_context,
                 )
+                specialist_result.catalog_guidance = [
+                    {**guidance, "task_id": task.task_id}
+                    for guidance in specialist_result.catalog_guidance
+                ]
             tool_results.append(specialist_result)
             tool_latency_ms = int(specialist_result.performance.get(_agent_name_for_tool(tool_name), 0) or 0)
             specialist_flow = {
@@ -5769,14 +5776,6 @@ class KnowledgeAgent:
             route for route in _supervisor_guard_routes(original_query)
             if route.get("tool") in tool_names
         ]
-        if known_formulary_guard_query and "postgres_deterministic_lookup" in tool_names:
-            planned_guard_routes.append(
-                {
-                    "tool": "postgres_deterministic_lookup",
-                    "query": known_formulary_guard_query,
-                    "reason": "supervisor_formulary_entity_guard",
-                }
-            )
 
         def next_node(state: dict[str, Any]) -> str:
             return str(state.get("next_node") or "supervisor")
